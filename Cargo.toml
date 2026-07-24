@@ -12,5 +12,5 @@ keywords = ["crdt", "knowledge-base", "sync", "plugin", "distributed"]
 categories = ["filesystem", "database", "network-programming", "asynchronous"]
 
 [dependencies]
-clap = { version = "4.6", features = ["derive"] }
+clap = { version = "4.6", features = ["derive", "env"] }
 loro = "1.13"
