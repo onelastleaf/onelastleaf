@@ -2,5 +2,15 @@
 name = "onelastleaf"
 version = "0.1.0"
 edition = "2024"
+description = "CRDT-powered knowledge base with plugins"
+documentation = "https://docs.onelastleaf.org"
+readme = "README.md"
+homepage = "https://onelastleaf.org"
+repository = "https://github.com/SOV710"
+license = "LICENSE"
+keywords = ["crdt", "knowledge-base", "sync", "plugin", "distributed"]
+categories = ["filesystem", "database", "network-programming", "asynchronous"]
 
 [dependencies]
+clap = { version = "4.6", features = ["derive"] }
+loro = "1.13"
