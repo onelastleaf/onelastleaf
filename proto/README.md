@@ -1,0 +1,155 @@
+# oll protocol
+
+This directory is the wire contract for oll. The package is intentionally named
+`oll.protocol`, without a version component. The first implementation requires
+an exact `protocol_schema_sha256` match during both replication and plugin
+handshakes. A schema change is a coordinated upgrade; this protocol does not
+promise backward compatibility.
+
+The schema hash is a build artifact computed from the canonical, published
+descriptor set. SDKs should embed the hash rather than independently guessing
+which source files and compiler flags are canonical.
+
+## Files
+
+- `oll/common.proto`: identities, tracing/depth metadata, and shared errors.
+- `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
+  configuration-function handles.
+- `oll/document.proto`: paths, directory access, full document access, oll's
+  CRDT abstraction, and optimistic atomic commits.
+- `oll/replication.proto`: symmetric peer replication using opaque Loro update
+  and snapshot payloads.
+- `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
+
+Package installation, Git forge adapters, source builds, release-asset
+selection, process spawning, and the plugin manifest are not wire protocols and
+are therefore outside this directory.
+
+## Document invariants
+
+`Revision` is scoped to the node returned with it. It is opaque to plugins and
+must not be synthesized or parsed. A plugin that reads a document and later
+modifies it includes that revision in `CommitDocumentsRequest.preconditions`.
+oll checks every precondition immediately before opening one local CRDT
+transaction. If any check fails, oll returns `REVISION_CONFLICT` with
+`RevisionConflictDetail` and applies no mutation.
+
+Mutations in one commit are evaluated in order. Indexes used by later mutations
+observe earlier mutations in that commit. Text offsets count Unicode scalar
+values, not UTF-8 bytes, UTF-16 code units, or grapheme clusters. `ListMove` is
+valid only for a movable list; its destination is evaluated after removing the
+source range.
+
+`operation_id` makes retries idempotent while the receiving oll node retains the
+operation result. Callers must reuse it only for a byte-for-byte equivalent
+commit. It is not a distributed transaction ID.
+
+The CRDT model in `document.proto` is an oll API. Implementations translate it
+to Loro internally. Plugins never receive Loro container IDs, frontiers, version
+vectors, or library-specific operations.
+
+CRDT commit and external side effects are not atomic. The runtime provides no
+rollback, compensation, saga, or exactly-once guarantee for external systems.
+
+## Replication stream
+
+The gRPC client/server distinction describes only who opened the connection.
+Both peers are replicas with identical read/write authority and run this state
+machine:
+
+1. Each side sends one `SyncHello` and verifies the exact schema hash and Loro
+   encoding fingerprint. A mismatch closes the stream; there is no downgrade.
+2. Each side chooses parameters supported by the other and sends `SyncReady`.
+3. Either side may advertise replica summaries and request missing updates.
+4. A sender starts a transfer, sends numbered chunks, and completes it. The
+   receiver verifies chunk count, size, and SHA-256 before importing it.
+5. After a successful Loro import, the receiver sends `ReplicaTransferAck` and
+   advertises its new summary when it changes.
+
+The sender must not have more unacknowledged transfer bytes in flight than the
+receiver granted through `FlowControl`. A snapshot is only a transport fallback
+when retained update history cannot satisfy a delta request; it is not an
+authoritative state replacement. Importing concurrent updates still follows
+Loro merge semantics.
+
+Only the replication protocol carries Loro version vectors, frontiers, and
+encoded update/snapshot bytes. Applications and plugins use document revisions.
+The Loro encoding fingerprint is a build artifact covering the Loro export
+implementation and oll's chosen encoding policy; it is not a negotiated API
+version.
+
+## Plugin stream
+
+The plugin process hosts `PluginRuntime`. oll starts the process and opens
+`Connect`; once open, either endpoint can initiate messages on the same stream.
+The session starts as follows:
+
+1. oll sends `HostHello`.
+2. The plugin validates the schema and instance identifiers, then sends
+   `PluginHello` with its actions and event subscriptions.
+3. Both endpoints send `SessionReady`. No job or host call is valid before both
+   ready messages have been observed.
+
+`message_id` is non-zero and unique per sender for the session. A direct response
+sets `reply_to` to the request's ID. Stream readers must continue dispatching
+messages while calls are pending; waiting for a response in the stream-reader
+task would break nested host/config/plugin calls.
+
+`StartJobRequest` is asynchronous. `JobAccepted` only confirms ownership of the
+job ID. Completion is a later terminal `JobUpdate`; the host does not hold a
+synchronous call stack open for the duration of a job. If no deadline is
+provided, oll applies the default 24-hour deadline.
+
+Small structured job results use `ConfigValue`. Large binary results such as PDF
+and `.apkg` files use the artifact sub-protocol. The plugin announces the size,
+hash, and chunk count; waits for `ArtifactTransferAccepted`; sends zero-based
+chunks within the host's advertised size; and finishes with
+`ArtifactTransferComplete`. oll verifies the complete size and SHA-256 before
+replying with `ArtifactStored`. A terminal job update may reference only stored
+artifacts. Failed and partial transfers are discarded.
+
+Nested calls increment `call_depth`. Events caused by another event increment
+`causal_depth`, including events deferred through the scheduler. The initial
+protocol uses a maximum of 10 for both values. A receiver rejects a message over
+the negotiated limit with the matching depth error and does not execute it.
+Known recursive event patterns may be rejected before reaching the limit.
+
+The optional scheduler is owned by oll's Tokio runtime. A host without it returns
+`UNSUPPORTED`. A scheduled task inherits the envelope's `task_group_id` unless
+the host assigns a new group. The first implementation does not promise fairness,
+queue bounds, quotas, or CFS-like scheduling.
+
+Lua configuration executes inside oll. `ConfigFunctionRef` is a session-scoped
+remote handle, not a serialized closure. It becomes invalid when the session or
+Lua runtime ends. Config adapters reject cyclic tables, unsupported userdata,
+threads, and functions not converted to a function handle. Reentrant calls are
+allowed: after a nested call returns, oll must re-read and validate relevant
+state instead of trusting state captured before entering Lua.
+
+Logs are structured `LogRecord` messages. `PluginEnvelope.trace` supplies the
+correlation, parent-call, causal, task, and task-group fields used by log
+aggregation.
+
+Cancellation does not imply rollback. A queued scheduler task can be removed,
+but an executing job is not cooperatively cancelled over RPC. Job timeout or
+`killjob` terminates the plugin process: oll requests graceful shutdown, sends
+`SIGTERM`, waits until the grace deadline, and then sends `SIGKILL`. The
+parent-liveness FD is a spawn-time OS contract: oll keeps it open and the plugin
+exits after EOF if oll dies. Neither signal delivery nor inherited FDs belong in
+protobuf.
+
+Plugins are trusted. This protocol intentionally has no permission grants,
+signatures, marketplace identity, or document capability tokens. Session and
+instance identifiers prevent accidental cross-wiring; they are not a sandbox or
+authentication mechanism.
+
+## Validation
+
+From the repository root:
+
+```sh
+protoc -I proto \
+  --include_imports \
+  --descriptor_set_out=/tmp/oll-protocol.pb \
+  $(find proto/oll -name '*.proto' -print | sort)
+```

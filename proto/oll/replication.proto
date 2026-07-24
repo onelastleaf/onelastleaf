@@ -1,0 +1,134 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/timestamp.proto";
+import "oll/common.proto";
+
+// gRPC determines which peer opens the transport, but neither endpoint has a
+// privileged replication role. Both sides send the same messages.
+service Replication {
+  rpc Synchronize(stream SyncEnvelope) returns (stream SyncEnvelope);
+}
+
+message SyncHello {
+  NodeId node_id = 1;
+  bytes protocol_schema_sha256 = 2;
+  uint64 max_chunk_bytes = 3;
+  repeated Compression supported_compressions = 4;
+  // Opaque hash of the Loro export-format implementation and oll's encoding
+  // policy. The first protocol requires exact equality.
+  bytes loro_encoding_fingerprint = 5;
+}
+
+message SyncReady {
+  Compression compression = 1;
+  uint64 max_chunk_bytes = 2;
+}
+
+message LoroId {
+  uint64 peer_id = 1;
+  sint32 counter = 2;
+}
+
+message LoroVersionEntry {
+  uint64 peer_id = 1;
+  // The exclusive upper bound used by Loro's VersionVector.
+  sint32 counter = 2;
+}
+
+message LoroVersionVector {
+  // Entries must be unique and sorted by peer_id on the wire.
+  repeated LoroVersionEntry entries = 1;
+}
+
+message LoroFrontier {
+  // IDs must be unique and sorted by (peer_id, counter) on the wire.
+  repeated LoroId ids = 1;
+}
+
+enum Compression {
+  COMPRESSION_UNSPECIFIED = 0;
+  COMPRESSION_NONE = 1;
+  COMPRESSION_ZSTD = 2;
+}
+
+message ReplicaSummary {
+  ReplicaId replica_id = 1;
+  // These fields belong only to the replication wire protocol. Plugins never
+  // receive them and must use Revision tokens from document.proto instead.
+  LoroVersionVector loro_version_vector = 2;
+  LoroFrontier loro_frontier = 3;
+}
+
+message AdvertiseReplicas { repeated ReplicaSummary replicas = 1; }
+
+message RequestReplicaDelta {
+  ReplicaId replica_id = 1;
+  LoroVersionVector from_loro_version_vector = 2;
+  bool allow_snapshot_fallback = 3;
+}
+
+enum ReplicaTransferKind {
+  REPLICA_TRANSFER_KIND_UNSPECIFIED = 0;
+  REPLICA_TRANSFER_KIND_LORO_UPDATE_BATCH = 1;
+  REPLICA_TRANSFER_KIND_LORO_SNAPSHOT = 2;
+}
+
+message ReplicaTransferStart {
+  string transfer_id = 1;
+  ReplicaId replica_id = 2;
+  ReplicaTransferKind kind = 3;
+  Compression compression = 4;
+  uint64 uncompressed_size = 5;
+  uint32 chunk_count = 6;
+  LoroVersionVector resulting_loro_version_vector = 7;
+  // Hash of the complete uncompressed Loro export blob.
+  bytes uncompressed_payload_sha256 = 8;
+}
+
+message ReplicaTransferChunk {
+  string transfer_id = 1;
+  uint32 chunk_index = 2;
+  bytes data = 3;
+}
+
+message ReplicaTransferComplete { string transfer_id = 1; }
+
+message ReplicaTransferAck {
+  string transfer_id = 1;
+  ReplicaId replica_id = 2;
+  LoroFrontier imported_loro_frontier = 3;
+}
+
+message FlowControl {
+  // Additional bytes the receiver is prepared to buffer across transfers.
+  uint64 grant_bytes = 1;
+}
+
+message SyncPing {
+  uint64 nonce = 1;
+  google.protobuf.Timestamp sent_at = 2;
+}
+
+message SyncPong { uint64 nonce = 1; }
+
+message SyncEnvelope {
+  uint64 message_id = 1;
+  optional uint64 reply_to = 2;
+
+  oneof payload {
+    SyncHello hello = 10;
+    SyncReady ready = 11;
+    AdvertiseReplicas advertise_replicas = 12;
+    RequestReplicaDelta request_delta = 13;
+    ReplicaTransferStart transfer_start = 14;
+    ReplicaTransferChunk transfer_chunk = 15;
+    ReplicaTransferComplete transfer_complete = 16;
+    ReplicaTransferAck transfer_ack = 17;
+    FlowControl flow_control = 18;
+    SyncPing ping = 19;
+    SyncPong pong = 20;
+    ProtocolError error = 21;
+  }
+}

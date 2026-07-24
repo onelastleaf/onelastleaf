@@ -1,0 +1,247 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/timestamp.proto";
+import "oll/common.proto";
+import "oll/config.proto";
+import "oll/document.proto";
+
+// The plugin hosts this service. oll starts the process, connects as the gRPC
+// transport client, and all calls in either direction share this one stream.
+service PluginRuntime {
+  rpc Connect(stream PluginEnvelope) returns (stream PluginEnvelope);
+}
+
+message HostHello {
+  NodeId node_id = 1;
+  string session_id = 2;
+  string plugin_instance_id = 3;
+  bytes protocol_schema_sha256 = 4;
+  uint32 maximum_call_depth = 5;
+  uint32 maximum_causal_depth = 6;
+  uint64 maximum_artifact_chunk_bytes = 7;
+}
+
+message ActionDescriptor {
+  string name = 1;
+  string description = 2;
+}
+
+enum HostEventKind {
+  HOST_EVENT_KIND_UNSPECIFIED = 0;
+  HOST_EVENT_KIND_DOCUMENT_CHANGED = 1;
+  HOST_EVENT_KIND_NODE_MOVED = 2;
+  HOST_EVENT_KIND_NODE_DELETED = 3;
+}
+
+message EventSubscription {
+  HostEventKind kind = 1;
+  // An empty glob matches every path. Glob syntax is defined by oll, not by
+  // the plugin's implementation language.
+  string path_glob = 2;
+}
+
+message PluginHello {
+  string plugin_name = 1;
+  string plugin_version = 2;
+  bytes protocol_schema_sha256 = 3;
+  repeated ActionDescriptor actions = 4;
+  repeated EventSubscription subscriptions = 5;
+}
+
+message SessionReady {}
+
+message ActionInvocation {
+  string action = 1;
+  ConfigValue input = 2;
+}
+
+message DocumentChangedEvent {
+  DocumentPath path = 1;
+  Revision revision = 2;
+  optional string originating_operation_id = 3;
+}
+
+message NodeMovedEvent {
+  DocumentPath source = 1;
+  DocumentPath destination = 2;
+  Revision revision = 3;
+}
+
+message NodeDeletedEvent { DocumentPath path = 1; }
+
+message HostEvent {
+  string event_id = 1;
+  optional string caused_by_event_id = 2;
+  oneof event {
+    DocumentChangedEvent document_changed = 3;
+    NodeMovedEvent node_moved = 4;
+    NodeDeletedEvent node_deleted = 5;
+  }
+}
+
+message EventInvocation { HostEvent event = 1; }
+
+message ScheduledInvocation {
+  string scheduled_task_id = 1;
+  string callback = 2;
+  ConfigValue input = 3;
+}
+
+message StartJobRequest {
+  string job_id = 1;
+  optional google.protobuf.Timestamp deadline = 2;
+  oneof invocation {
+    ActionInvocation action = 3;
+    EventInvocation event = 4;
+    ScheduledInvocation scheduled = 5;
+  }
+}
+
+message JobAccepted { string job_id = 1; }
+
+enum JobState {
+  JOB_STATE_UNSPECIFIED = 0;
+  JOB_STATE_RUNNING = 1;
+  JOB_STATE_SUCCEEDED = 2;
+  JOB_STATE_FAILED = 3;
+}
+
+message JobUpdate {
+  string job_id = 1;
+  JobState state = 2;
+  optional double progress = 3;
+  optional string status_message = 4;
+  optional ConfigValue result = 5;
+  optional ProtocolError error = 6;
+  // Terminal updates list only artifacts that oll has acknowledged as stored.
+  repeated ArtifactDescriptor artifacts = 7;
+}
+
+message ArtifactDescriptor {
+  string artifact_id = 1;
+  string file_name = 2;
+  string media_type = 3;
+  uint64 size_bytes = 4;
+  bytes sha256 = 5;
+}
+
+message ArtifactTransferStart {
+  string job_id = 1;
+  ArtifactDescriptor artifact = 2;
+  uint32 chunk_count = 3;
+}
+
+message ArtifactTransferAccepted { string artifact_id = 1; }
+
+message ArtifactTransferChunk {
+  string artifact_id = 1;
+  uint32 chunk_index = 2;
+  bytes data = 3;
+}
+
+message ArtifactTransferComplete { string artifact_id = 1; }
+
+message ArtifactStored { string artifact_id = 1; }
+
+message ScheduleTaskRequest {
+  string task_id = 1;
+  string callback = 2;
+  ConfigValue input = 3;
+  google.protobuf.Timestamp not_before = 4;
+}
+
+message ScheduleTaskResponse { string task_id = 1; }
+
+message CancelScheduledTaskRequest { string task_id = 1; }
+
+message CancelScheduledTaskResponse { bool cancelled = 1; }
+
+message HostCallRequest {
+  oneof call {
+    ReadDocumentRequest read_document = 1;
+    ListDirectoryRequest list_directory = 2;
+    GetDirectoryTreeRequest get_directory_tree = 3;
+    ReadCrdtRequest read_crdt = 4;
+    CommitDocumentsRequest commit_documents = 5;
+    GetConfigRequest get_config = 6;
+    InvokeConfigFunctionRequest invoke_config_function = 7;
+    ScheduleTaskRequest schedule_task = 8;
+    CancelScheduledTaskRequest cancel_scheduled_task = 9;
+  }
+}
+
+message HostCallResponse {
+  oneof result {
+    ReadDocumentResponse read_document = 1;
+    ListDirectoryResponse list_directory = 2;
+    GetDirectoryTreeResponse get_directory_tree = 3;
+    ReadCrdtResponse read_crdt = 4;
+    CommitDocumentsResponse commit_documents = 5;
+    GetConfigResponse get_config = 6;
+    InvokeConfigFunctionResponse invoke_config_function = 7;
+    ScheduleTaskResponse schedule_task = 8;
+    CancelScheduledTaskResponse cancel_scheduled_task = 9;
+    ProtocolError error = 15;
+  }
+}
+
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_TRACE = 1;
+  LOG_LEVEL_DEBUG = 2;
+  LOG_LEVEL_INFO = 3;
+  LOG_LEVEL_WARN = 4;
+  LOG_LEVEL_ERROR = 5;
+}
+
+message LogRecord {
+  google.protobuf.Timestamp timestamp = 1;
+  LogLevel level = 2;
+  string target = 3;
+  string message = 4;
+  map<string, ConfigValue> fields = 5;
+}
+
+message Heartbeat { uint64 nonce = 1; }
+
+message ShutdownRequest {
+  string reason = 1;
+  google.protobuf.Timestamp force_kill_after = 2;
+}
+
+message ShutdownAcknowledged {}
+
+// message_id is unique per sender within a session. Direct responses set
+// reply_to. New nested calls set parent_call_id and increment call_depth.
+// Derived events increment causal_depth even when execution is deferred through
+// the scheduler.
+message PluginEnvelope {
+  uint64 message_id = 1;
+  optional uint64 reply_to = 2;
+  string session_id = 3;
+  string plugin_instance_id = 4;
+  TraceContext trace = 5;
+
+  oneof payload {
+    HostHello host_hello = 10;
+    PluginHello plugin_hello = 11;
+    SessionReady ready = 12;
+    StartJobRequest start_job = 13;
+    JobAccepted job_accepted = 14;
+    JobUpdate job_update = 15;
+    HostCallRequest host_call = 16;
+    HostCallResponse host_result = 17;
+    LogRecord log = 18;
+    Heartbeat heartbeat = 19;
+    ShutdownRequest shutdown = 20;
+    ShutdownAcknowledged shutdown_acknowledged = 21;
+    ProtocolError protocol_error = 22;
+    ArtifactTransferStart artifact_start = 23;
+    ArtifactTransferAccepted artifact_accepted = 24;
+    ArtifactTransferChunk artifact_chunk = 25;
+    ArtifactTransferComplete artifact_complete = 26;
+    ArtifactStored artifact_stored = 27;
+  }
+}

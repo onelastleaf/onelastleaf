@@ -1,0 +1,56 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/duration.proto";
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+// A closure is never serialized. This is a session-scoped remote method
+// handle owned by oll's embedded configuration runtime.
+message ConfigFunctionRef {
+  string session_id = 1;
+  string function_id = 2;
+}
+
+message ConfigList { repeated ConfigValue values = 1; }
+
+message ConfigMap { map<string, ConfigValue> entries = 1; }
+
+// The only value format crossing the plugin/config boundary. Lua adapters must
+// reject cyclic tables and values that cannot be represented here.
+message ConfigValue {
+  oneof kind {
+    google.protobuf.NullValue null_value = 1;
+    bool bool_value = 2;
+    sint64 integer_value = 3;
+    double number_value = 4;
+    string string_value = 5;
+    bytes bytes_value = 6;
+    ConfigList list_value = 7;
+    ConfigMap map_value = 8;
+    ConfigFunctionRef function_value = 9;
+    google.protobuf.Timestamp timestamp_value = 10;
+    google.protobuf.Duration duration_value = 11;
+  }
+}
+
+message ConfigPathSegment {
+  oneof kind {
+    string key = 1;
+    uint64 index = 2;
+  }
+}
+
+message ConfigPath { repeated ConfigPathSegment segments = 1; }
+
+message GetConfigRequest { ConfigPath path = 1; }
+
+message GetConfigResponse { ConfigValue value = 1; }
+
+message InvokeConfigFunctionRequest {
+  ConfigFunctionRef function = 1;
+  repeated ConfigValue arguments = 2;
+}
+
+message InvokeConfigFunctionResponse { repeated ConfigValue results = 1; }

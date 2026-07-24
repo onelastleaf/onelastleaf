@@ -1,0 +1,332 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/struct.proto";
+import "oll/common.proto";
+
+// Paths are absolute, slash-separated, UTF-8 paths in the replica namespace.
+// They never contain '.', '..', an empty segment, or a trailing slash (except
+// for the root path "/").
+message DocumentPath { string value = 1; }
+
+enum NodeKind {
+  NODE_KIND_UNSPECIFIED = 0;
+  NODE_KIND_DOCUMENT = 1;
+  NODE_KIND_DIRECTORY = 2;
+}
+
+message NodeMetadata {
+  DocumentPath path = 1;
+  NodeKind kind = 2;
+  Revision revision = 3;
+  optional string media_type = 4;
+  uint64 size_bytes = 5;
+}
+
+message CrdtScalar {
+  oneof kind {
+    bool bool_value = 1;
+    sint64 integer_value = 2;
+    double number_value = 3;
+    string string_value = 4;
+    bytes bytes_value = 5;
+    google.protobuf.NullValue null_value = 6;
+  }
+}
+
+message CrdtTextMark {
+  uint64 start_scalar = 1;
+  uint64 end_scalar = 2;
+  string name = 3;
+  CrdtScalar value = 4;
+}
+
+message CrdtText {
+  string text = 1;
+  repeated CrdtTextMark marks = 2;
+}
+
+message CrdtList {
+  repeated CrdtValue values = 1;
+  // Move is valid only for a movable list. Plain lists support insert/delete.
+  bool movable = 2;
+}
+
+message CrdtMap { map<string, CrdtValue> entries = 1; }
+
+message CrdtTreeNode {
+  string node_id = 1;
+  optional string parent_id = 2;
+  optional uint64 index_in_parent = 3;
+  map<string, CrdtScalar> metadata = 4;
+}
+
+message CrdtTree { repeated CrdtTreeNode nodes = 1; }
+
+message CrdtCounter { double value = 1; }
+
+// This is oll's stable CRDT data model. It is deliberately not a serialized
+// Loro object and does not expose Loro container IDs or methods.
+message CrdtValue {
+  oneof kind {
+    CrdtScalar scalar = 1;
+    CrdtText text = 2;
+    CrdtList list = 3;
+    CrdtMap map = 4;
+    CrdtTree tree = 5;
+    CrdtCounter counter = 6;
+  }
+}
+
+enum DocumentProjection {
+  DOCUMENT_PROJECTION_UNSPECIFIED = 0;
+  DOCUMENT_PROJECTION_CONTENT = 1;
+  DOCUMENT_PROJECTION_CRDT = 2;
+}
+
+message ReadDocumentRequest {
+  DocumentPath path = 1;
+  DocumentProjection projection = 2;
+}
+
+message DocumentSnapshot {
+  NodeMetadata metadata = 1;
+  oneof representation {
+    bytes content = 2;
+    CrdtValue crdt = 3;
+  }
+}
+
+message ReadDocumentResponse { DocumentSnapshot document = 1; }
+
+message ListDirectoryRequest {
+  DocumentPath path = 1;
+  bool recursive = 2;
+}
+
+message ListDirectoryResponse {
+  NodeMetadata directory = 1;
+  repeated NodeMetadata entries = 2;
+}
+
+message GetDirectoryTreeRequest { DocumentPath root = 1; }
+
+message DirectoryTreeNode {
+  NodeMetadata metadata = 1;
+  repeated DirectoryTreeNode children = 2;
+}
+
+message GetDirectoryTreeResponse { DirectoryTreeNode root = 1; }
+
+message CrdtPathSegment {
+  oneof kind {
+    string map_key = 1;
+    uint64 list_index = 2;
+    string tree_node_id = 3;
+  }
+}
+
+message CrdtObjectPath { repeated CrdtPathSegment segments = 1; }
+
+message ReadCrdtRequest {
+  DocumentPath document = 1;
+  CrdtObjectPath object = 2;
+}
+
+message ReadCrdtResponse {
+  Revision revision = 1;
+  CrdtValue value = 2;
+}
+
+message MapSet {
+  CrdtObjectPath target = 1;
+  string key = 2;
+  CrdtValue value = 3;
+}
+
+message MapDelete {
+  CrdtObjectPath target = 1;
+  string key = 2;
+}
+
+message ListInsert {
+  CrdtObjectPath target = 1;
+  uint64 index = 2;
+  repeated CrdtValue values = 3;
+}
+
+message ListDelete {
+  CrdtObjectPath target = 1;
+  uint64 index = 2;
+  uint64 count = 3;
+}
+
+message ListMove {
+  CrdtObjectPath target = 1;
+  uint64 index = 2;
+  uint64 count = 3;
+  // Evaluated after removing the source range.
+  uint64 destination = 4;
+}
+
+message TextInsert {
+  CrdtObjectPath target = 1;
+  uint64 scalar_index = 2;
+  string text = 3;
+}
+
+message TextDelete {
+  CrdtObjectPath target = 1;
+  uint64 scalar_index = 2;
+  uint64 scalar_count = 3;
+}
+
+message TextMark {
+  CrdtObjectPath target = 1;
+  uint64 start_scalar = 2;
+  uint64 end_scalar = 3;
+  string name = 4;
+  CrdtScalar value = 5;
+}
+
+message TextUnmark {
+  CrdtObjectPath target = 1;
+  uint64 start_scalar = 2;
+  uint64 end_scalar = 3;
+  string name = 4;
+}
+
+message CounterIncrement {
+  CrdtObjectPath target = 1;
+  double delta = 2;
+}
+
+message TreeCreateNode {
+  CrdtObjectPath target = 1;
+  string node_id = 2;
+  optional string parent_id = 3;
+  uint64 index = 4;
+  map<string, CrdtScalar> metadata = 5;
+}
+
+message TreeDeleteNode {
+  CrdtObjectPath target = 1;
+  string node_id = 2;
+}
+
+message TreeMoveNode {
+  CrdtObjectPath target = 1;
+  string node_id = 2;
+  optional string parent_id = 3;
+  uint64 index = 4;
+}
+
+message TreeSetMetadata {
+  CrdtObjectPath target = 1;
+  string node_id = 2;
+  string key = 3;
+  optional CrdtScalar value = 4;
+}
+
+message CrdtOperation {
+  oneof operation {
+    MapSet map_set = 1;
+    MapDelete map_delete = 2;
+    ListInsert list_insert = 3;
+    ListDelete list_delete = 4;
+    ListMove list_move = 5;
+    TextInsert text_insert = 6;
+    TextDelete text_delete = 7;
+    TextMark text_mark = 8;
+    TextUnmark text_unmark = 9;
+    CounterIncrement counter_increment = 10;
+    TreeCreateNode tree_create_node = 11;
+    TreeDeleteNode tree_delete_node = 12;
+    TreeMoveNode tree_move_node = 13;
+    TreeSetMetadata tree_set_metadata = 14;
+  }
+}
+
+message NodePrecondition {
+  DocumentPath path = 1;
+  oneof condition {
+    Revision unchanged_since = 2;
+    bool must_exist = 3;
+    bool must_not_exist = 4;
+  }
+}
+
+message CreateDirectory { DocumentPath path = 1; }
+
+message CreateDocument {
+  DocumentPath path = 1;
+  string media_type = 2;
+  bytes content = 3;
+}
+
+message ReplaceDocument {
+  DocumentPath path = 1;
+  bytes content = 2;
+  optional string media_type = 3;
+}
+
+message SpliceDocumentText {
+  DocumentPath path = 1;
+  uint64 scalar_index = 2;
+  uint64 delete_scalar_count = 3;
+  string insert_text = 4;
+}
+
+message DeleteNode {
+  DocumentPath path = 1;
+  bool recursive = 2;
+}
+
+message MoveNode {
+  DocumentPath source = 1;
+  DocumentPath destination = 2;
+}
+
+message ApplyCrdtOperations {
+  DocumentPath document = 1;
+  repeated CrdtOperation operations = 2;
+}
+
+message DocumentMutation {
+  oneof mutation {
+    CreateDirectory create_directory = 1;
+    CreateDocument create_document = 2;
+    ReplaceDocument replace_document = 3;
+    SpliceDocumentText splice_document_text = 4;
+    DeleteNode delete_node = 5;
+    MoveNode move_node = 6;
+    ApplyCrdtOperations apply_crdt_operations = 7;
+  }
+}
+
+// All preconditions are checked immediately before one local CRDT transaction.
+// A mismatch returns REVISION_CONFLICT and applies none of the mutations.
+message CommitDocumentsRequest {
+  string operation_id = 1;
+  repeated NodePrecondition preconditions = 2;
+  repeated DocumentMutation mutations = 3;
+}
+
+message UpdatedNode {
+  DocumentPath path = 1;
+  optional Revision revision = 2;
+  bool deleted = 3;
+}
+
+message CommitDocumentsResponse {
+  string operation_id = 1;
+  repeated UpdatedNode updated_nodes = 2;
+}
+
+message RevisionConflictDetail {
+  DocumentPath path = 1;
+  optional Revision expected = 2;
+  optional Revision actual = 3;
+  bool exists = 4;
+}
