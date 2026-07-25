@@ -13,12 +13,13 @@ service Replication {
 
 message SyncHello {
   NodeId node_id = 1;
-  bytes protocol_schema_sha256 = 2;
-  uint64 max_chunk_bytes = 3;
-  repeated Compression supported_compressions = 4;
+  ReplicaId replica_id = 2;
+  bytes protocol_schema_sha256 = 3;
+  uint64 max_chunk_bytes = 4;
+  repeated Compression supported_compressions = 5;
   // Opaque hash of the Loro export-format implementation and oll's encoding
   // policy. The first protocol requires exact equality.
-  bytes loro_encoding_fingerprint = 5;
+  bytes loro_encoding_fingerprint = 6;
 }
 
 message SyncReady {
@@ -53,18 +54,27 @@ enum Compression {
   COMPRESSION_ZSTD = 2;
 }
 
-message ReplicaSummary {
-  ReplicaId replica_id = 1;
+message CatalogObject {}
+
+message ReplicaObjectRef {
+  oneof object {
+    CatalogObject catalog = 1;
+    DocumentId document = 2;
+  }
+}
+
+message ReplicaObjectSummary {
+  ReplicaObjectRef object = 1;
   // These fields belong only to the replication wire protocol. Plugins never
   // receive them and must use Revision tokens from document.proto instead.
   LoroVersionVector loro_version_vector = 2;
   LoroFrontier loro_frontier = 3;
 }
 
-message AdvertiseReplicas { repeated ReplicaSummary replicas = 1; }
+message AdvertiseReplica { repeated ReplicaObjectSummary objects = 1; }
 
 message RequestReplicaDelta {
-  ReplicaId replica_id = 1;
+  ReplicaObjectRef object = 1;
   LoroVersionVector from_loro_version_vector = 2;
   bool allow_snapshot_fallback = 3;
 }
@@ -77,7 +87,7 @@ enum ReplicaTransferKind {
 
 message ReplicaTransferStart {
   string transfer_id = 1;
-  ReplicaId replica_id = 2;
+  ReplicaObjectRef object = 2;
   ReplicaTransferKind kind = 3;
   Compression compression = 4;
   uint64 uncompressed_size = 5;
@@ -97,7 +107,7 @@ message ReplicaTransferComplete { string transfer_id = 1; }
 
 message ReplicaTransferAck {
   string transfer_id = 1;
-  ReplicaId replica_id = 2;
+  ReplicaObjectRef object = 2;
   LoroFrontier imported_loro_frontier = 3;
 }
 
@@ -120,7 +130,7 @@ message SyncEnvelope {
   oneof payload {
     SyncHello hello = 10;
     SyncReady ready = 11;
-    AdvertiseReplicas advertise_replicas = 12;
+    AdvertiseReplica advertise_replica = 12;
     RequestReplicaDelta request_delta = 13;
     ReplicaTransferStart transfer_start = 14;
     ReplicaTransferChunk transfer_chunk = 15;

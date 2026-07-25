@@ -15,8 +15,8 @@ which source files and compiler flags are canonical.
 - `oll/common.proto`: identities, tracing/depth metadata, and shared errors.
 - `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
   configuration-function handles.
-- `oll/document.proto`: paths, directory access, full document access, oll's
-  CRDT abstraction, and optimistic atomic commits.
+- `oll/document.proto`: stable document identities, paths, directory access,
+  full document access, oll's CRDT abstraction, and optimistic host commits.
 - `oll/replication.proto`: symmetric peer replication using opaque Loro update
   and snapshot payloads.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
@@ -30,9 +30,11 @@ are therefore outside this directory.
 `Revision` is scoped to the node returned with it. It is opaque to plugins and
 must not be synthesized or parsed. A plugin that reads a document and later
 modifies it includes that revision in `CommitDocumentsRequest.preconditions`.
-oll checks every precondition immediately before opening one local CRDT
-transaction. If any check fails, oll returns `REVISION_CONFLICT` with
-`RevisionConflictDetail` and applies no mutation.
+oll checks every precondition immediately before opening one host-level commit.
+If any check fails, oll returns `REVISION_CONFLICT` with
+`RevisionConflictDetail` and applies no mutation. The catalog and documents are
+separate LoroDocs, so local atomic visibility requires the replica write
+coordinator and crash-recovery journal; it is not one Loro transaction.
 
 Mutations in one commit are evaluated in order. Indexes used by later mutations
 observe earlier mutations in that commit. Text offsets count Unicode scalar
@@ -57,20 +59,23 @@ The gRPC client/server distinction describes only who opened the connection.
 Both peers are replicas with identical read/write authority and run this state
 machine:
 
-1. Each side sends one `SyncHello` and verifies the exact schema hash and Loro
-   encoding fingerprint. A mismatch closes the stream; there is no downgrade.
+1. Each side sends one `SyncHello` and verifies the one `ReplicaId`, exact schema
+   hash, and Loro encoding fingerprint. A mismatch closes the stream; there is
+   no downgrade.
 2. Each side chooses parameters supported by the other and sends `SyncReady`.
-3. Either side may advertise replica summaries and request missing updates.
+3. Either side may advertise catalog/document object summaries and request
+   missing updates for each object's LoroDoc.
 4. A sender starts a transfer, sends numbered chunks, and completes it. The
    receiver verifies chunk count, size, and SHA-256 before importing it.
 5. After a successful Loro import, the receiver sends `ReplicaTransferAck` and
    advertises its new summary when it changes.
 
 The sender must not have more unacknowledged transfer bytes in flight than the
-receiver granted through `FlowControl`. A snapshot is only a transport fallback
-when retained update history cannot satisfy a delta request; it is not an
-authoritative state replacement. Importing concurrent updates still follows
-Loro merge semantics.
+receiver granted through `FlowControl`. A Loro object snapshot is only a
+transport fallback when retained update history cannot satisfy a delta request;
+it is not an authoritative state replacement. It is distinct from the tar+zstd
+oll replica snapshot documented in `docs/snapshot-format.md`. Importing
+concurrent updates still follows Loro merge semantics.
 
 Only the replication protocol carries Loro version vectors, frontiers, and
 encoded update/snapshot bytes. Applications and plugins use document revisions.

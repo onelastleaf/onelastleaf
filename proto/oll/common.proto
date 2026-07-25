@@ -10,8 +10,13 @@ message NodeId { string value = 1; }
 
 message ReplicaId { string value = 1; }
 
+message DocumentId { string value = 1; }
+
+message CatalogNodeId { string value = 1; }
+
 message Revision {
-  // An opaque, stable token representing the observed state of one node.
+  // An opaque, stable token representing the observed state of one catalog or
+  // document object.
   // This intentionally does not expose Loro's frontier or version-vector API.
   bytes token = 1;
 }

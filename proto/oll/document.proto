@@ -22,6 +22,9 @@ message NodeMetadata {
   Revision revision = 3;
   optional string media_type = 4;
   uint64 size_bytes = 5;
+  CatalogNodeId node_id = 6;
+  // Present only when kind is NODE_KIND_DOCUMENT.
+  optional DocumentId document_id = 7;
 }
 
 message CrdtScalar {
@@ -305,8 +308,11 @@ message DocumentMutation {
   }
 }
 
-// All preconditions are checked immediately before one local CRDT transaction.
-// A mismatch returns REVISION_CONFLICT and applies none of the mutations.
+// All preconditions are checked immediately before one host-level commit. A
+// mismatch returns REVISION_CONFLICT and applies none of the mutations. Because
+// the catalog and documents are separate LoroDocs, the host uses its replica
+// write coordinator and crash-recovery journal rather than one Loro
+// transaction.
 message CommitDocumentsRequest {
   string operation_id = 1;
   repeated NodePrecondition preconditions = 2;
