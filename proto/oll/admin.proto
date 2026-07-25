@@ -1,0 +1,46 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/timestamp.proto";
+import "oll/common.proto";
+
+// Local administration is served only over the daemon's Unix domain socket.
+// This service is extended stage by stage; it must not grow stringly typed
+// command forwarding for unimplemented subsystems.
+service Admin {
+  rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
+  rpc Shutdown(AdminShutdownRequest) returns (AdminShutdownResponse);
+}
+
+// Every unary Admin request carries this context. Exact fingerprint equality is
+// required because the local Admin API does not negotiate schema versions.
+message AdminCallContext {
+  bytes protocol_schema_sha256 = 1;
+  TraceContext trace = 2;
+}
+
+enum NodeLifecycleState {
+  NODE_LIFECYCLE_STATE_UNSPECIFIED = 0;
+  NODE_LIFECYCLE_STATE_STARTING = 1;
+  NODE_LIFECYCLE_STATE_RUNNING = 2;
+  NODE_LIFECYCLE_STATE_STOPPING = 3;
+}
+
+message GetStatusRequest { AdminCallContext context = 1; }
+
+message GetStatusResponse {
+  NodeId node_id = 1;
+  NodeLifecycleState lifecycle = 2;
+  google.protobuf.Timestamp started_at = 3;
+  uint32 process_id = 4;
+}
+
+message AdminShutdownRequest {
+  AdminCallContext context = 1;
+  string reason = 2;
+}
+
+// Acceptance is returned before the daemon begins ordered shutdown so the
+// response is not lost when the Admin UDS closes.
+message AdminShutdownResponse { bool accepted = 1; }
