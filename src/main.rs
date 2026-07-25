@@ -4,17 +4,22 @@ use clap::Parser;
 use onelastleaf::cli::{Cli, EXIT_UNAVAILABLE, Environment};
 
 fn main() -> ExitCode {
-    let mut cli = Cli::parse();
+    let cli = Cli::parse();
     if let Err(error) = cli.validate() {
         error.exit();
     }
 
-    if let Err(error) = cli.resolve_client_paths_from_process() {
+    let mut intent = match cli.into_intent() {
+        Ok(intent) => intent,
+        Err(error) => error.exit(),
+    };
+
+    if let Err(error) = intent.resolve_client_paths_from_process() {
         eprintln!("oll: {error}");
         return error.exit_code();
     }
 
-    if let Err(error) = cli.validate_environment(&Environment::from_process()) {
+    if let Err(error) = intent.validate_environment(&Environment::from_process()) {
         eprintln!("oll: {error}");
         return error.exit_code();
     }

@@ -152,6 +152,59 @@ fn missing_home_is_a_configuration_error_when_default_is_needed() {
 }
 
 #[test]
+fn local_file_and_log_intents_do_not_require_home_or_config() {
+    for arguments in [
+        vec!["replica", "snapshot", "inspect", "file.ollsnap"],
+        vec!["replica", "snapshot", "verify", "file.ollsnap"],
+        vec!["sync", "--log"],
+        vec!["plugin", "--log"],
+        vec!["plugin", "--log", "__all__"],
+    ] {
+        let output = oll()
+            .env_remove("HOME")
+            .env_remove("OLL_CONFIG")
+            .env_remove("OLL_REPLICA")
+            .args(&arguments)
+            .output()
+            .unwrap();
+
+        assert_eq!(
+            output.status.code(),
+            Some(EXIT_UNAVAILABLE),
+            "unexpected result for {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+}
+
+#[test]
+fn admin_intents_require_config_but_not_a_client_replica_root() {
+    for arguments in [
+        vec!["replica", "inspect", "/note.md"],
+        vec!["replica", "export", "--output", "file.ollsnap"],
+        vec!["replica", "import", "file.ollsnap"],
+    ] {
+        let missing_config = oll()
+            .env_remove("HOME")
+            .env_remove("OLL_CONFIG")
+            .env_remove("OLL_REPLICA")
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(missing_config.status.code(), Some(EXIT_CONFIG));
+
+        let configured = oll()
+            .env_remove("HOME")
+            .env("OLL_CONFIG", "/tmp/oll-config.lua")
+            .env_remove("OLL_REPLICA")
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(configured.status.code(), Some(EXIT_UNAVAILABLE));
+    }
+}
+
+#[test]
 fn operational_command_is_unavailable_until_implemented() {
     let output = oll().args(["sync", "node-a", "-n", "3"]).output().unwrap();
     assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));

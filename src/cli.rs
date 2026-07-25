@@ -17,7 +17,6 @@ pub const EXIT_CONFIG: u8 = 78;
 
 const DEFAULT_CONFIG_SUFFIX: &str = ".config/oll/config.lua";
 const DEFAULT_REPLICA_SUFFIX: &str = ".local/share/oll";
-const ALL_PLUGIN_LOGS: &str = "__all__";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -46,62 +45,47 @@ impl Cli {
         Ok(())
     }
 
-    pub fn validate_environment(&self, environment: &Environment) -> Result<(), CliError> {
-        match &self.command {
-            Command::Init(args) => {
-                let _ = args.replica_root(environment)?;
-                let _ = environment.config_path()?;
-            }
-            Command::Run(args) => {
-                let _ = args.config_path(environment)?;
-            }
-            Command::Start => {
-                let _ = environment.config_path()?;
-            }
-            Command::Stop => {
-                let _ = environment.config_path()?;
-            }
-            Command::Status(_) => {
-                let _ = environment.config_path()?;
-            }
-            Command::Replica(_) => {
-                let _ = environment.replica_root()?;
-            }
-            Command::Sync(_) => {
-                let _ = environment.config_path()?;
-            }
-            Command::Ping(_) => {
-                let _ = environment.config_path()?;
-            }
-            Command::Plugin(_) => {
-                let _ = environment.config_path()?;
-            }
-            Command::Job(_) => {
-                let _ = environment.config_path()?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// Resolve OS paths that will cross the Admin API using the client's
-    /// launch directory. This deliberately joins without checking the
-    /// filesystem or calling `canonicalize`; replica handlers apply namespace
-    /// validation after receiving the absolute path.
-    pub fn resolve_client_paths(&mut self, cwd: &Path) {
-        if let Command::Replica(args) = &mut self.command {
-            args.resolve_paths(cwd);
+    pub fn into_intent(self) -> Result<CliIntent, clap::Error> {
+        match self.command {
+            Command::Init(args) => Ok(CliIntent::Init(InitIntent {
+                node_name: args.node_name,
+                profile: args.profile,
+                connect: args.connect,
+                listen: args.listen,
+                replica: args.replica,
+            })),
+            Command::Run(args) => Ok(CliIntent::Run(RunIntent {
+                config: args.config,
+                listen: args.listen,
+                connect: args.connect,
+                pingback: args.pingback,
+            })),
+            Command::Start => Ok(CliIntent::Start),
+            Command::Stop => Ok(CliIntent::Stop),
+            Command::Status(args) => Ok(CliIntent::Status { json: args.json }),
+            Command::Replica(args) => Ok(CliIntent::Replica(args.command.into())),
+            Command::Sync(args) => match (args.log, args.node_name, args.retries) {
+                (true, None, None) => Ok(CliIntent::Sync(SyncIntent::ViewLog)),
+                (false, node_name, retries) => Ok(CliIntent::Sync(SyncIntent::Synchronize {
+                    node_name,
+                    retries,
+                })),
+                _ => Err(intent_error(
+                    ErrorKind::ArgumentConflict,
+                    "--log cannot be combined with a node name or --retries",
+                )),
+            },
+            Command::Ping(args) => Ok(CliIntent::Ping {
+                node_name: args.node_name,
+            }),
+            Command::Plugin(args) => plugin_intent(args).map(CliIntent::Plugin),
+            Command::Job(args) => Ok(CliIntent::Job(args.command.into())),
         }
     }
+}
 
-    /// Resolve client paths using the process working directory captured at
-    /// startup.
-    pub fn resolve_client_paths_from_process(&mut self) -> Result<(), CliError> {
-        let cwd =
-            env::current_dir().map_err(|error| CliError::CurrentDirectory(error.to_string()))?;
-        self.resolve_client_paths(&cwd);
-        Ok(())
-    }
+fn intent_error(kind: ErrorKind, message: impl fmt::Display) -> clap::Error {
+    Cli::command().error(kind, message)
 }
 
 #[derive(Debug, Subcommand)]
@@ -303,28 +287,6 @@ pub struct ReplicaArgs {
     pub command: ReplicaCommand,
 }
 
-impl ReplicaArgs {
-    fn resolve_paths(&mut self, cwd: &Path) {
-        match &mut self.command {
-            ReplicaCommand::Inspect { document } | ReplicaCommand::Ops { document, .. } => {
-                *document = resolve_client_path(document, cwd);
-            }
-            ReplicaCommand::Export { output } => {
-                *output = resolve_client_path(output, cwd);
-            }
-            ReplicaCommand::Import { snapshot } => {
-                *snapshot = resolve_client_path(snapshot, cwd);
-            }
-            ReplicaCommand::Snapshot(snapshot) => match &mut snapshot.command {
-                SnapshotCommand::Inspect { snapshot, .. }
-                | SnapshotCommand::Verify { snapshot } => {
-                    *snapshot = resolve_client_path(snapshot, cwd);
-                }
-            },
-        }
-    }
-}
-
 #[derive(Debug, Subcommand)]
 pub enum ReplicaCommand {
     /// Inspect one document's current state.
@@ -399,30 +361,11 @@ pub struct PluginArgs {
     #[arg(
         long,
         value_name = "PLUGIN_ID",
-        num_args = 0..=1,
-        default_missing_value = ALL_PLUGIN_LOGS
+        num_args = 0..=1
     )]
-    pub log: Option<String>,
+    pub log: Option<Option<String>>,
     #[command(subcommand)]
     pub command: Option<PluginCommand>,
-}
-
-impl PluginArgs {
-    pub fn log_target(&self) -> Option<PluginLogTarget<'_>> {
-        self.log.as_deref().map(|value| {
-            if value == ALL_PLUGIN_LOGS {
-                PluginLogTarget::All
-            } else {
-                PluginLogTarget::Plugin(value)
-            }
-        })
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum PluginLogTarget<'a> {
-    All,
-    Plugin(&'a str),
 }
 
 #[derive(Debug, Subcommand)]
@@ -485,6 +428,356 @@ pub enum JobCommand {
     Info { job_id: String },
     /// Gracefully stop the plugin process that owns a job.
     Stop { job_id: String },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum CliIntent {
+    Init(InitIntent),
+    Run(RunIntent),
+    Start,
+    Stop,
+    Status { json: bool },
+    Replica(ReplicaIntent),
+    Sync(SyncIntent),
+    Ping { node_name: NodeName },
+    Plugin(PluginIntent),
+    Job(JobIntent),
+}
+
+#[derive(Debug, PartialEq)]
+pub struct InitIntent {
+    pub node_name: NodeName,
+    pub profile: Option<Profile>,
+    pub connect: Vec<ConnectUrl>,
+    pub listen: Option<SocketAddr>,
+    pub replica: Option<PathBuf>,
+}
+
+impl InitIntent {
+    pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_path(
+            self.replica.as_ref(),
+            environment.replica.as_ref(),
+            environment.home.as_ref(),
+            DEFAULT_REPLICA_SUFFIX,
+            "replica root",
+        )
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub struct RunIntent {
+    pub config: Option<PathBuf>,
+    pub listen: Option<SocketAddr>,
+    pub connect: Vec<ConnectUrl>,
+    pub pingback: Option<LoopbackAddr>,
+}
+
+impl RunIntent {
+    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_path(
+            self.config.as_ref(),
+            environment.config.as_ref(),
+            environment.home.as_ref(),
+            DEFAULT_CONFIG_SUFFIX,
+            "config path",
+        )
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum ReplicaIntent {
+    Inspect {
+        document: PathBuf,
+    },
+    Ops {
+        document: PathBuf,
+        limit: Option<NonZeroUsize>,
+        format: OutputFormat,
+    },
+    Export {
+        output: PathBuf,
+    },
+    Import {
+        snapshot: PathBuf,
+    },
+    SnapshotInspect {
+        snapshot: PathBuf,
+        json: bool,
+    },
+    SnapshotVerify {
+        snapshot: PathBuf,
+    },
+}
+
+impl From<ReplicaCommand> for ReplicaIntent {
+    fn from(command: ReplicaCommand) -> Self {
+        match command {
+            ReplicaCommand::Inspect { document } => Self::Inspect { document },
+            ReplicaCommand::Ops {
+                document,
+                limit,
+                format,
+            } => Self::Ops {
+                document,
+                limit,
+                format,
+            },
+            ReplicaCommand::Export { output } => Self::Export { output },
+            ReplicaCommand::Import { snapshot } => Self::Import { snapshot },
+            ReplicaCommand::Snapshot(snapshot) => match snapshot.command {
+                SnapshotCommand::Inspect { snapshot, json } => {
+                    Self::SnapshotInspect { snapshot, json }
+                }
+                SnapshotCommand::Verify { snapshot } => Self::SnapshotVerify { snapshot },
+            },
+        }
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum SyncIntent {
+    Synchronize {
+        node_name: Option<NodeName>,
+        retries: Option<NonZeroU32>,
+    },
+    ViewLog,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum GitSelector {
+    Default,
+    Revision(String),
+    Branch(String),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum InstallMode {
+    Source,
+    Release,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PluginLogTarget {
+    All,
+    Plugin(String),
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PluginIntent {
+    Install {
+        repository: Url,
+        selector: GitSelector,
+        mode: InstallMode,
+    },
+    List,
+    Info {
+        plugin_id: String,
+    },
+    Start {
+        plugin_id: String,
+    },
+    Stop {
+        plugin_id: String,
+    },
+    Restart {
+        plugin_id: String,
+    },
+    Update {
+        plugin_id: String,
+    },
+    Remove {
+        plugin_id: String,
+    },
+    ViewLog {
+        target: PluginLogTarget,
+    },
+    Call {
+        plugin_id: String,
+        action: String,
+        arguments: Vec<String>,
+    },
+}
+
+fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
+    match (args.log, args.command) {
+        (Some(None), None) => Ok(PluginIntent::ViewLog {
+            target: PluginLogTarget::All,
+        }),
+        (Some(Some(plugin_id)), None) => Ok(PluginIntent::ViewLog {
+            target: PluginLogTarget::Plugin(plugin_id),
+        }),
+        (None, Some(command)) => match command {
+            PluginCommand::Install {
+                repository,
+                rev,
+                branch,
+                release,
+                source,
+            } => {
+                let selector = match (rev, branch) {
+                    (None, None) => GitSelector::Default,
+                    (Some(revision), None) => GitSelector::Revision(revision),
+                    (None, Some(branch)) => GitSelector::Branch(branch),
+                    (Some(_), Some(_)) => {
+                        return Err(intent_error(
+                            ErrorKind::ArgumentConflict,
+                            "--rev cannot be combined with --branch",
+                        ));
+                    }
+                };
+                let mode = match (release, source) {
+                    (false, _) => InstallMode::Source,
+                    (true, false) => InstallMode::Release,
+                    (true, true) => {
+                        return Err(intent_error(
+                            ErrorKind::ArgumentConflict,
+                            "--release cannot be combined with --source",
+                        ));
+                    }
+                };
+                Ok(PluginIntent::Install {
+                    repository,
+                    selector,
+                    mode,
+                })
+            }
+            PluginCommand::List => Ok(PluginIntent::List),
+            PluginCommand::Info { plugin_id } => Ok(PluginIntent::Info { plugin_id }),
+            PluginCommand::Start { plugin_id } => Ok(PluginIntent::Start { plugin_id }),
+            PluginCommand::Stop { plugin_id } => Ok(PluginIntent::Stop { plugin_id }),
+            PluginCommand::Restart { plugin_id } => Ok(PluginIntent::Restart { plugin_id }),
+            PluginCommand::Update { plugin_id } => Ok(PluginIntent::Update { plugin_id }),
+            PluginCommand::Remove { plugin_id } => Ok(PluginIntent::Remove { plugin_id }),
+            PluginCommand::Call {
+                plugin_id,
+                action,
+                arguments,
+            } => Ok(PluginIntent::Call {
+                plugin_id,
+                action,
+                arguments,
+            }),
+        },
+        (None, None) => Err(intent_error(
+            ErrorKind::MissingSubcommand,
+            "either a plugin subcommand or --log is required",
+        )),
+        (Some(_), Some(_)) => Err(intent_error(
+            ErrorKind::ArgumentConflict,
+            "--log cannot be combined with a plugin subcommand",
+        )),
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfirmationRequirement {
+    ReplicaBackupCreated,
+    ReplicaReplacementApproved,
+}
+
+impl ConfirmationRequirement {
+    pub fn prompt(self) -> &'static str {
+        match self {
+            Self::ReplicaBackupCreated => {
+                "Have you exported the current replica to a backup snapshot?"
+            }
+            Self::ReplicaReplacementApproved => {
+                "Import replaces the entire current replica. Continue?"
+            }
+        }
+    }
+}
+
+impl CliIntent {
+    pub fn confirmation_requirements(&self) -> &'static [ConfirmationRequirement] {
+        match self {
+            Self::Replica(ReplicaIntent::Import { .. }) => &[
+                ConfirmationRequirement::ReplicaBackupCreated,
+                ConfirmationRequirement::ReplicaReplacementApproved,
+            ],
+            _ => &[],
+        }
+    }
+
+    pub fn resolve_client_paths_from_process(&mut self) -> Result<(), CliError> {
+        if !matches!(self, Self::Replica(_)) {
+            return Ok(());
+        }
+
+        let cwd =
+            env::current_dir().map_err(|error| CliError::CurrentDirectory(error.to_string()))?;
+        self.resolve_client_paths(&cwd);
+        Ok(())
+    }
+
+    /// Resolve client OS paths without checking the filesystem or normalizing
+    /// `.` and `..` segments. Operation handlers apply their own validation.
+    pub fn resolve_client_paths(&mut self, cwd: &Path) {
+        let Self::Replica(intent) = self else {
+            return;
+        };
+
+        let path = match intent {
+            ReplicaIntent::Inspect { document } | ReplicaIntent::Ops { document, .. } => document,
+            ReplicaIntent::Export { output } => output,
+            ReplicaIntent::Import { snapshot }
+            | ReplicaIntent::SnapshotInspect { snapshot, .. }
+            | ReplicaIntent::SnapshotVerify { snapshot } => snapshot,
+        };
+        *path = resolve_client_path(path, cwd);
+    }
+
+    pub fn validate_environment(&self, environment: &Environment) -> Result<(), CliError> {
+        match self {
+            Self::Init(args) => {
+                let _ = args.replica_root(environment)?;
+                let _ = environment.config_path()?;
+            }
+            Self::Run(args) => {
+                let _ = args.config_path(environment)?;
+            }
+            Self::Start | Self::Stop | Self::Status { .. } | Self::Ping { .. } | Self::Job(_) => {
+                let _ = environment.config_path()?;
+            }
+            Self::Replica(
+                ReplicaIntent::Inspect { .. }
+                | ReplicaIntent::Ops { .. }
+                | ReplicaIntent::Export { .. }
+                | ReplicaIntent::Import { .. },
+            )
+            | Self::Sync(SyncIntent::Synchronize { .. }) => {
+                let _ = environment.config_path()?;
+            }
+            Self::Replica(
+                ReplicaIntent::SnapshotInspect { .. } | ReplicaIntent::SnapshotVerify { .. },
+            )
+            | Self::Sync(SyncIntent::ViewLog)
+            | Self::Plugin(PluginIntent::ViewLog { .. }) => {}
+            Self::Plugin(_) => {
+                let _ = environment.config_path()?;
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub enum JobIntent {
+    List,
+    Info { job_id: String },
+    Stop { job_id: String },
+}
+
+impl From<JobCommand> for JobIntent {
+    fn from(command: JobCommand) -> Self {
+        match command {
+            JobCommand::List => Self::List,
+            JobCommand::Info { job_id } => Self::Info { job_id },
+            JobCommand::Stop { job_id } => Self::Stop { job_id },
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -603,6 +896,10 @@ mod tests {
 
     fn parse(arguments: &[&str]) -> Cli {
         parse_from(arguments).unwrap()
+    }
+
+    fn intent(arguments: &[&str]) -> CliIntent {
+        parse(arguments).into_intent().unwrap()
     }
 
     #[test]
@@ -793,22 +1090,18 @@ mod tests {
 
     #[test]
     fn resolves_replica_paths_against_client_cwd_without_canonicalizing() {
-        let mut cli = parse(&[
+        let mut intent = parse(&[
             "oll",
             "replica",
             "snapshot",
             "inspect",
             "nested/../backup.ollsnap",
             "--json",
-        ]);
-        cli.resolve_client_paths(Path::new("/client/work"));
-        let Command::Replica(args) = cli.command else {
-            panic!()
-        };
-        let ReplicaCommand::Snapshot(snapshot) = args.command else {
-            panic!()
-        };
-        let SnapshotCommand::Inspect { snapshot, .. } = snapshot.command else {
+        ])
+        .into_intent()
+        .unwrap();
+        intent.resolve_client_paths(Path::new("/client/work"));
+        let CliIntent::Replica(ReplicaIntent::SnapshotInspect { snapshot, .. }) = intent else {
             panic!()
         };
         assert_eq!(
@@ -816,12 +1109,11 @@ mod tests {
             PathBuf::from("/client/work/nested/../backup.ollsnap")
         );
 
-        let mut cli = parse(&["oll", "replica", "inspect", "/replica/../note.md"]);
-        cli.resolve_client_paths(Path::new("/different/client"));
-        let Command::Replica(args) = cli.command else {
-            panic!()
-        };
-        let ReplicaCommand::Inspect { document } = args.command else {
+        let mut intent = parse(&["oll", "replica", "inspect", "/replica/../note.md"])
+            .into_intent()
+            .unwrap();
+        intent.resolve_client_paths(Path::new("/different/client"));
+        let CliIntent::Replica(ReplicaIntent::Inspect { document }) = intent else {
             panic!()
         };
         assert_eq!(document, PathBuf::from("/replica/../note.md"));
@@ -851,21 +1143,19 @@ mod tests {
                 PathBuf::from("/client/verify.ollsnap"),
             ),
         ] {
-            let mut cli = parse(&arguments);
-            cli.resolve_client_paths(Path::new("/client"));
-            let Command::Replica(args) = cli.command else {
+            let mut intent = parse(&arguments).into_intent().unwrap();
+            intent.resolve_client_paths(Path::new("/client"));
+            let CliIntent::Replica(intent) = intent else {
                 panic!()
             };
-            let path = match args.command {
-                ReplicaCommand::Inspect { document } | ReplicaCommand::Ops { document, .. } => {
+            let path = match intent {
+                ReplicaIntent::Inspect { document } | ReplicaIntent::Ops { document, .. } => {
                     document
                 }
-                ReplicaCommand::Export { output } => output,
-                ReplicaCommand::Import { snapshot } => snapshot,
-                ReplicaCommand::Snapshot(snapshot) => match snapshot.command {
-                    SnapshotCommand::Inspect { snapshot, .. }
-                    | SnapshotCommand::Verify { snapshot } => snapshot,
-                },
+                ReplicaIntent::Export { output } => output,
+                ReplicaIntent::Import { snapshot }
+                | ReplicaIntent::SnapshotInspect { snapshot, .. }
+                | ReplicaIntent::SnapshotVerify { snapshot } => snapshot,
             };
             assert_eq!(path, expected);
         }
@@ -895,6 +1185,22 @@ mod tests {
             panic!()
         };
         assert_eq!(args.node_name.as_str(), "node-a");
+    }
+
+    #[test]
+    fn converts_sync_modes_to_distinct_intents() {
+        assert_eq!(
+            intent(&["oll", "sync", "--log"]),
+            CliIntent::Sync(SyncIntent::ViewLog)
+        );
+
+        let CliIntent::Sync(SyncIntent::Synchronize { node_name, retries }) =
+            intent(&["oll", "sync", "node-a", "--retries", "3"])
+        else {
+            panic!()
+        };
+        assert_eq!(node_name.unwrap().as_str(), "node-a");
+        assert_eq!(retries.unwrap().get(), 3);
     }
 
     #[test]
@@ -959,7 +1265,7 @@ mod tests {
 
     #[test]
     fn preserves_plugin_action_argv_verbatim() {
-        let cli = parse(&[
+        let call_intent = intent(&[
             "oll",
             "plugin",
             "call",
@@ -970,15 +1276,11 @@ mod tests {
             "--flag",
             "value",
         ]);
-        let Command::Plugin(PluginArgs {
-            command:
-                Some(PluginCommand::Call {
-                    plugin_id,
-                    action,
-                    arguments,
-                }),
-            ..
-        }) = cli.command
+        let CliIntent::Plugin(PluginIntent::Call {
+            plugin_id,
+            action,
+            arguments,
+        }) = call_intent
         else {
             panic!()
         };
@@ -986,15 +1288,131 @@ mod tests {
         assert_eq!(action, "publish");
         assert_eq!(arguments, vec!["", "--flag", "--flag", "value"]);
 
-        let cli = parse(&["oll", "plugin", "call", "oll.example", "health"]);
-        let Command::Plugin(PluginArgs {
-            command: Some(PluginCommand::Call { arguments, .. }),
-            ..
-        }) = cli.command
-        else {
+        let health_intent = intent(&["oll", "plugin", "call", "oll.example", "health"]);
+        let CliIntent::Plugin(PluginIntent::Call { arguments, .. }) = health_intent else {
             panic!()
         };
         assert!(arguments.is_empty());
+    }
+
+    #[test]
+    fn converts_plugin_modes_without_sentinels_or_boolean_state() {
+        assert_eq!(
+            intent(&["oll", "plugin", "--log"]),
+            CliIntent::Plugin(PluginIntent::ViewLog {
+                target: PluginLogTarget::All,
+            })
+        );
+        assert_eq!(
+            intent(&["oll", "plugin", "--log", "__all__"]),
+            CliIntent::Plugin(PluginIntent::ViewLog {
+                target: PluginLogTarget::Plugin("__all__".to_owned()),
+            })
+        );
+
+        let CliIntent::Plugin(PluginIntent::Install { selector, mode, .. }) = intent(&[
+            "oll",
+            "plugin",
+            "install",
+            "https://example.com/plugin.git",
+            "--branch",
+            "main",
+            "--release",
+        ]) else {
+            panic!()
+        };
+        assert_eq!(selector, GitSelector::Branch("main".to_owned()));
+        assert_eq!(mode, InstallMode::Release);
+
+        let CliIntent::Plugin(PluginIntent::Install { selector, mode, .. }) =
+            intent(&["oll", "plugin", "install", "https://example.com/plugin.git"])
+        else {
+            panic!()
+        };
+        assert_eq!(selector, GitSelector::Default);
+        assert_eq!(mode, InstallMode::Source);
+    }
+
+    #[test]
+    fn intent_whitelist_rejects_invalid_programmatic_states() {
+        let sync = Cli {
+            command: Command::Sync(SyncArgs {
+                node_name: Some("node-a".parse().unwrap()),
+                retries: None,
+                log: true,
+            }),
+        };
+        assert!(sync.into_intent().is_err());
+
+        let install = Cli {
+            command: Command::Plugin(PluginArgs {
+                log: None,
+                command: Some(PluginCommand::Install {
+                    repository: "https://example.com/plugin.git".parse().unwrap(),
+                    rev: Some("v1".to_owned()),
+                    branch: Some("main".to_owned()),
+                    release: true,
+                    source: true,
+                }),
+            }),
+        };
+        assert!(install.into_intent().is_err());
+
+        let plugin = Cli {
+            command: Command::Plugin(PluginArgs {
+                log: Some(None),
+                command: Some(PluginCommand::List),
+            }),
+        };
+        assert!(plugin.into_intent().is_err());
+    }
+
+    #[test]
+    fn environment_dependencies_follow_the_concrete_intent() {
+        let empty = Environment::default();
+        for arguments in [
+            vec!["oll", "replica", "snapshot", "inspect", "file.ollsnap"],
+            vec!["oll", "replica", "snapshot", "verify", "file.ollsnap"],
+            vec!["oll", "sync", "--log"],
+            vec!["oll", "plugin", "--log"],
+        ] {
+            intent(&arguments).validate_environment(&empty).unwrap();
+        }
+
+        for arguments in [
+            vec!["oll", "replica", "inspect", "/note.md"],
+            vec!["oll", "replica", "export", "--output", "file.ollsnap"],
+            vec!["oll", "replica", "import", "file.ollsnap"],
+            vec!["oll", "sync", "node-a"],
+            vec!["oll", "plugin", "list"],
+        ] {
+            assert!(intent(&arguments).validate_environment(&empty).is_err());
+        }
+    }
+
+    #[test]
+    fn replica_import_requires_backup_and_replacement_confirmations() {
+        let import_intent = intent(&["oll", "replica", "import", "file.ollsnap"]);
+        assert_eq!(
+            import_intent.confirmation_requirements(),
+            [
+                ConfirmationRequirement::ReplicaBackupCreated,
+                ConfirmationRequirement::ReplicaReplacementApproved,
+            ]
+        );
+        assert_eq!(
+            import_intent.confirmation_requirements()[0].prompt(),
+            "Have you exported the current replica to a backup snapshot?"
+        );
+        assert_eq!(
+            import_intent.confirmation_requirements()[1].prompt(),
+            "Import replaces the entire current replica. Continue?"
+        );
+        assert!(
+            intent(&["oll", "replica", "snapshot", "verify", "file.ollsnap"])
+                .confirmation_requirements()
+                .is_empty()
+        );
     }
 
     #[test]

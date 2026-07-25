@@ -129,24 +129,19 @@ It preserves `ReplicaId` and `DocumentId` values but the deployment retains or
 creates its own `NodeIdentity` and uses fresh peer identity for future Loro
 changes.
 
-### Merge
-
-If a replica already exists, the snapshot `ReplicaId` MUST equal the current
-`ReplicaId`. The importer merges the catalog and each document snapshot using
-Loro import semantics. Objects present only in the local replica are not deleted
-merely because they are absent from an older snapshot.
-
-Merge is performed against a staged copy of the current replica store. The
-active store is replaced only after every object import and post-import
-invariant check succeeds. A failed merge leaves the active replica byte-for-byte
-untouched.
-
 ### Replace
 
-Destructive restore is a separate explicit operation. It requires the daemon's
-normal mutation/sync/plugin activity to be stopped, requires the same
-`ReplicaId`, installs a fully validated staged store by atomic rename, and keeps
-a recoverable previous store until the replacement succeeds.
+If a replica already exists, the snapshot `ReplicaId` MUST equal the current
+`ReplicaId`. Import is a destructive restore, not a CRDT merge: documents and
+catalog state that exist only in the active replica are removed. The CLI must
+separately confirm that the user has exported the active replica to a backup
+snapshot and that the user accepts replacement before it sends the import
+request.
+
+Replacement requires the daemon's normal mutation, sync, and plugin activity to
+be stopped. It installs the fully validated staged store by atomic rename and
+keeps a recoverable previous store until replacement succeeds. A failed import
+leaves the active replica byte-for-byte untouched.
 
 A snapshot with a different `ReplicaId` is rejected. oll does not convert that
 case into a second managed replica or silently fork identities.

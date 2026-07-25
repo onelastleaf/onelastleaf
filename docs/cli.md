@@ -16,8 +16,9 @@ syntax errors use exit code `2`.
 `run` is the only daemon-side subcommand. Every other subcommand is a bounded
 client selected directly by the parsed subcommand, never by a global mode flag.
 `init` performs local bootstrap and `start` launches and verifies a detached
-`run` child; all other operational clients send typed requests to the Admin UDS.
-See `admin-api.md`.
+`run` child. Operations that need daemon-owned state send typed requests to the
+Admin UDS; local snapshot inspection, snapshot verification, and log viewing do
+not. See `admin-api.md`.
 
 ## Paths and environment
 
@@ -36,6 +37,17 @@ default is needed.
 
 Paths are accepted as OS paths and are not required to exist during argument
 parsing.
+
+Clap types are raw syntax only. After parsing, oll converts them into a
+validated `CliIntent` whose enums enumerate every supported operation and mode.
+Runtime handlers accept `CliIntent`, never the raw Clap structs. Clap conflicts
+provide early diagnostics, while the conversion independently rejects every
+field combination that is not on the supported-intent whitelist.
+
+Environment and runtime dependencies are selected from the concrete intent,
+not from its top-level command. In particular, local snapshot inspection,
+snapshot verification, and fixed log-file viewing do not require a config path,
+Admin connection, or replica root.
 
 ## Node commands
 
@@ -99,6 +111,15 @@ oll replica snapshot verify <snapshot>
 `--limit` must be greater than zero. The CLI does not enforce a snapshot file
 extension; the format itself is defined in `snapshot-format.md`.
 
+`replica import` replaces the node's one replica with the complete replica in
+the snapshot; it is not a CRDT merge and never adds a second replica. Immediately
+before submitting the import, an interactive client MUST separately ask the
+user to confirm that the current replica has been exported to a backup snapshot
+and that the destructive replacement should proceed. Either negative answer,
+end-of-file, or inability to read interactive confirmation cancels the import
+without sending the Admin request. The first implementation has no flag that
+bypasses these confirmations.
+
 Replica document and snapshot path arguments are OS paths represented by
 `PathBuf`. Before an Admin request is constructed, the client captures its
 startup working directory and joins it to each relative path. Absolute paths
@@ -107,7 +128,10 @@ are passed through unchanged; the client does not check existence or call
 them. Replica handlers later verify root containment and convert document paths
 to the normalized replica namespace. Snapshot import, export, inspect, and
 verify apply the same client-working-directory rule, with their operation
-specific output or input checks performed by the handler.
+specific output or input checks performed by the handler. Document operations,
+export, and import use the configured Admin API. Snapshot `inspect` and `verify`
+operate only on their input file and do not require the current node's config or
+replica root.
 
 ## Sync commands
 
@@ -126,7 +150,8 @@ connection target. A URL-only target cannot be selected by name until one
 successful handshake has established and persisted that identity binding.
 `-n`/`--retries` must be greater than zero. `sync --log` views
 `/var/log/oll/sync.log`; it is a log-view mode and conflicts with `node-name`
-and `--retries`.
+and `--retries`. It reads that fixed file locally and does not require node
+configuration or an Admin connection.
 
 ## Plugin commands
 
@@ -150,6 +175,9 @@ Source installation is the default. `--release` and `--source` conflict;
 plugin stage is implemented. Its arguments are shell-style UTF-8 argv strings;
 the client preserves their order, duplicates, empty strings, and leading `-`
 characters without parsing or inferring types.
+
+`plugin --log` reads `/var/log/oll/plugin.log` locally, optionally filtering for
+one plugin ID. It does not require node configuration or an Admin connection.
 
 A newly installed plugin is initially stopped. `plugin start` persistently sets
 its desired state to running; `plugin stop` persistently sets it to stopped
