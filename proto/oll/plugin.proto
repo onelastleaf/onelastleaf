@@ -14,7 +14,7 @@ service PluginRuntime {
 }
 
 message HostHello {
-  NodeId node_id = 1;
+  NodeIdentity node = 1;
   string session_id = 2;
   string plugin_instance_id = 3;
   bytes protocol_schema_sha256 = 4;

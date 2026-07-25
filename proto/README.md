@@ -44,6 +44,13 @@ for replica, sync, and plugin management are added only in their respective
 implementation stages. Future CLI arguments must not be tunneled as generic
 strings to avoid extending this schema.
 
+`GetStatus` returns `NodeIdentity`, the durable one-to-one pairing of opaque
+`NodeId` and human-readable `NodeName`. The name is node-declared and globally
+consistent, not a receiver-local label or a value inferred from a connect URL.
+Its peer entries associate each configured connect URL with connection state
+and, after `SyncHello`, the optional remote `NodeIdentity` learned from that
+endpoint.
+
 gRPC Server Reflection is a debug-build facility registered only on the Admin
 UDS. It is compiled out of release builds. Production `TRACE` logs include
 redacted request metadata, never complete protobuf requests or prohibited
@@ -83,9 +90,10 @@ The gRPC client/server distinction describes only who opened the connection.
 Both peers are replicas with identical read/write authority and run this state
 machine:
 
-1. Each side sends one `SyncHello` and verifies the one `ReplicaId`, exact schema
-   hash, and Loro encoding fingerprint. A mismatch closes the stream; there is
-   no downgrade.
+1. Each side sends one `SyncHello` and verifies the remote `NodeIdentity`, one
+   `ReplicaId`, exact schema hash, and Loro encoding fingerprint. A contradictory
+   known name-to-ID or ID-to-name binding closes the stream, as does another
+   mismatch; there is no downgrade or receiver-local rename.
 2. Each side chooses parameters supported by the other and sends `SyncReady`.
 3. Either side may advertise catalog/document object summaries and request
    missing updates for each object's LoroDoc.

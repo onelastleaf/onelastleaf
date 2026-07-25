@@ -43,7 +43,7 @@ Completion criteria:
 The node stage establishes the long-running daemon shell without implementing
 replica behavior:
 
-- `NodeId` creation and durable loading;
+- atomic `NodeId`/`NodeName` identity creation and durable loading;
 - process lifecycle and graceful shutdown;
 - the typed Admin gRPC service over UDS;
 - detached `start` launch, single-instance enforcement, and nonce pingback;
@@ -57,6 +57,7 @@ replica behavior:
 Completion criteria:
 
 - a node starts, reports status, and shuts down deterministically;
+- status reports the complete local `NodeIdentity`;
 - release builds contain no gRPC reflection service; debug builds expose it only
   on the Admin UDS;
 - `oll.log` and `sync.log` initialize with correct ownership and emit valid JSON
@@ -93,11 +94,13 @@ Sync is implemented only after the replica object model is stable. It adds:
 - catalog and document object advertisements;
 - per-object delta or snapshot transfer;
 - chunk validation, flow control, import acknowledgement, and reconnection;
+- durable remote `NodeIdentity` bindings and collision rejection;
 - offline edits and concurrent multi-writer convergence tests.
 
 Completion criteria:
 
 - neither transport endpoint has replication authority;
+- contradictory remote name-to-ID or ID-to-name bindings are rejected;
 - independently edited nodes converge for catalog and document changes;
 - a missing document object is requested after its catalog entry arrives;
 - interrupted transfers resume by re-advertising state, not by trusting partial

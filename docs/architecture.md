@@ -40,8 +40,26 @@ Administrative clients use the typed gRPC-over-UDS boundary described in
 
 ### Node
 
-A running `oll` daemon participating in replication. `NodeId` identifies the
-node and is not copied by snapshot import into a newly initialized deployment.
+A running `oll` daemon participating in replication. Its durable
+`NodeIdentity` is the one-to-one pair of an opaque `NodeId` and a human-readable
+`NodeName`. The name is declared by the node itself and is identical for every
+peer; it is not a receiver-local connection label, a URL label, or an authority
+role.
+
+`NodeName` is a lowercase ASCII DNS label: 1 to 63 bytes, starting and ending
+with an ASCII letter or digit, with hyphens allowed internally. The complete
+`NodeIdentity` is created atomically by `oll init`. Neither member may be changed
+or rebound independently in the first implementation: one `NodeId` has exactly
+one `NodeName`, and one `NodeName` identifies exactly one `NodeId`. Reusing a
+name for a replacement `NodeId` or renaming an existing `NodeId` requires an
+explicit future identity-migration design.
+
+There is no central name allocator. Two isolated nodes can therefore choose the
+same name before they meet. Nodes persist the identity bindings they learn and
+MUST reject a handshake if a known `NodeId` presents another name or a known
+name presents another `NodeId`; they never resolve a collision by silently
+renaming either endpoint. `NodeIdentity` is deployment state and is not copied
+by replica snapshot import.
 
 ### Replica
 

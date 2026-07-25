@@ -56,6 +56,11 @@ status and graceful shutdown. Replica, sync, and plugin RPCs are added only when
 their domain models have met the preceding stage's completion criteria; the
 Admin API MUST NOT use stringly typed placeholders for those future methods.
 
+`GetStatus` returns the local node's complete `NodeIdentity`, not only its opaque
+`NodeId`, plus each configured connect URL's state and optional remote identity
+learned through `SyncHello`. Future sync and ping Admin requests use `NodeName`
+as their typed human-facing selector after the daemon has learned that identity.
+
 ## Background startup
 
 `oll start` uses a one-use readiness channel that is separate from the Admin

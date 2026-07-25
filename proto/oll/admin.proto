@@ -27,13 +27,29 @@ enum NodeLifecycleState {
   NODE_LIFECYCLE_STATE_STOPPING = 3;
 }
 
+enum PeerConnectionState {
+  PEER_CONNECTION_STATE_UNSPECIFIED = 0;
+  PEER_CONNECTION_STATE_PENDING = 1;
+  PEER_CONNECTION_STATE_CONNECTING = 2;
+  PEER_CONNECTION_STATE_READY = 3;
+  PEER_CONNECTION_STATE_BACKOFF = 4;
+}
+
+message PeerStatus {
+  string connect_url = 1;
+  // Absent until a successful SyncHello establishes the remote identity.
+  NodeIdentity node = 2;
+  PeerConnectionState connection_state = 3;
+}
+
 message GetStatusRequest { AdminCallContext context = 1; }
 
 message GetStatusResponse {
-  NodeId node_id = 1;
+  NodeIdentity node = 1;
   NodeLifecycleState lifecycle = 2;
   google.protobuf.Timestamp started_at = 3;
   uint32 process_id = 4;
+  repeated PeerStatus peers = 5;
 }
 
 message AdminShutdownRequest {

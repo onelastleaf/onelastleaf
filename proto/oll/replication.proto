@@ -12,7 +12,7 @@ service Replication {
 }
 
 message SyncHello {
-  NodeId node_id = 1;
+  NodeIdentity node = 1;
   ReplicaId replica_id = 2;
   bytes protocol_schema_sha256 = 3;
   uint64 max_chunk_bytes = 4;

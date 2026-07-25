@@ -120,7 +120,7 @@ pub enum Command {
     Replica(ReplicaArgs),
     /// Synchronize with configured peers or inspect the sync log.
     Sync(SyncArgs),
-    /// Test connectivity to a configured node.
+    /// Test connectivity to a protocol-named node.
     Ping(PingArgs),
     /// Install and manage plugins.
     Plugin(PluginArgs),
@@ -132,6 +132,50 @@ pub enum Command {
 pub enum Profile {
     Client,
     Server,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct NodeName(String);
+
+impl NodeName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for NodeName {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for NodeName {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let bytes = input.as_bytes();
+        if !(1..=63).contains(&bytes.len()) {
+            return Err("node name must be between 1 and 63 bytes".to_owned());
+        }
+
+        let is_alphanumeric = |byte: u8| byte.is_ascii_lowercase() || byte.is_ascii_digit();
+        if !is_alphanumeric(bytes[0]) || !is_alphanumeric(bytes[bytes.len() - 1]) {
+            return Err(
+                "node name must start and end with a lowercase ASCII letter or digit".to_owned(),
+            );
+        }
+        if !bytes
+            .iter()
+            .all(|byte| is_alphanumeric(*byte) || *byte == b'-')
+        {
+            return Err(
+                "node name may contain only lowercase ASCII letters, digits, and hyphens"
+                    .to_owned(),
+            );
+        }
+
+        Ok(Self(input.to_owned()))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,6 +210,9 @@ impl FromStr for ConnectUrl {
 
 #[derive(Debug, Args)]
 pub struct InitArgs {
+    /// Durable human-readable name paired with this node's generated NodeId.
+    #[arg(value_name = "NODE_NAME")]
+    pub node_name: NodeName,
     /// Optional initialization profile; it does not grant node authority.
     #[arg(long, value_enum)]
     pub profile: Option<Profile>,
@@ -327,9 +374,9 @@ pub enum SnapshotCommand {
 
 #[derive(Debug, Args)]
 pub struct SyncArgs {
-    /// Synchronize only with this configured node.
+    /// Synchronize only with this protocol-named node.
     #[arg(value_name = "NODE_NAME", conflicts_with = "log")]
-    pub node_name: Option<String>,
+    pub node_name: Option<NodeName>,
     /// Maximum synchronization attempts.
     #[arg(short = 'n', long, conflicts_with = "log")]
     pub retries: Option<NonZeroU32>,
@@ -340,7 +387,9 @@ pub struct SyncArgs {
 
 #[derive(Debug, Args)]
 pub struct PingArgs {
-    pub node_name: String,
+    /// Protocol-declared name of the node to ping.
+    #[arg(value_name = "NODE_NAME")]
+    pub node_name: NodeName,
 }
 
 #[derive(Debug, Args)]
@@ -569,6 +618,7 @@ mod tests {
             replica: Some("/env/replica".into()),
         };
         let init = InitArgs {
+            node_name: "test-node".parse().unwrap(),
             profile: None,
             connect: Vec::new(),
             listen: None,
@@ -624,17 +674,24 @@ mod tests {
     #[test]
     fn parses_init_and_run_topologies() {
         for arguments in [
-            vec!["oll", "init"],
-            vec!["oll", "init", "--profile", "server"],
+            vec!["oll", "init", "test-node"],
+            vec!["oll", "init", "test-node", "--profile", "server"],
             vec![
                 "oll",
                 "init",
+                "test-node",
                 "--profile",
                 "server",
                 "--listen",
                 "127.0.0.1:7443",
             ],
-            vec!["oll", "init", "--replica", "/path/to/replica/root"],
+            vec![
+                "oll",
+                "init",
+                "test-node",
+                "--replica",
+                "/path/to/replica/root",
+            ],
             vec!["oll", "run"],
             vec![
                 "oll",
@@ -655,6 +712,7 @@ mod tests {
         let cli = parse(&[
             "oll",
             "init",
+            "test-node",
             "--profile",
             "client",
             "--connect",
@@ -666,6 +724,7 @@ mod tests {
             panic!()
         };
         assert_eq!(args.profile, Some(Profile::Client));
+        assert_eq!(args.node_name.as_str(), "test-node");
         assert_eq!(args.connect.len(), 1);
         assert_eq!(args.listen, Some("127.0.0.1:7443".parse().unwrap()));
 
@@ -683,6 +742,31 @@ mod tests {
             panic!()
         };
         assert_eq!(args.connect.len(), 2);
+    }
+
+    #[test]
+    fn validates_node_names_as_lowercase_dns_labels() {
+        let name: NodeName = "home-server-2".parse().unwrap();
+        assert_eq!(name.as_str(), "home-server-2");
+        assert_eq!(name.to_string(), "home-server-2");
+
+        for invalid in [
+            "",
+            "Home",
+            "-home",
+            "home-",
+            "home_server",
+            "home.example",
+            "node name",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ] {
+            assert!(invalid.parse::<NodeName>().is_err(), "accepted {invalid:?}");
+        }
+
+        assert!(parse_from(["oll", "init"]).is_err());
+        assert!(parse_from(["oll", "init", "Home"]).is_err());
+        assert!(parse_from(["oll", "sync", "home.example"]).is_err());
+        assert!(parse_from(["oll", "ping", "node name"]).is_err());
     }
 
     #[test]
@@ -799,6 +883,18 @@ mod tests {
         ] {
             parse(&arguments);
         }
+
+        let cli = parse(&["oll", "sync", "node-a", "-n", "3"]);
+        let Command::Sync(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.node_name.unwrap().as_str(), "node-a");
+
+        let cli = parse(&["oll", "ping", "node-a"]);
+        let Command::Ping(args) = cli.command else {
+            panic!()
+        };
+        assert_eq!(args.node_name.as_str(), "node-a");
     }
 
     #[test]

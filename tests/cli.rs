@@ -27,6 +27,24 @@ fn help_exposes_the_complete_command_surface() {
 }
 
 #[test]
+fn node_name_is_the_human_facing_identity_selector() {
+    for arguments in [
+        vec!["init", "--help"],
+        vec!["sync", "--help"],
+        vec!["ping", "--help"],
+    ] {
+        let output = oll().args(arguments).output().unwrap();
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.contains("NODE_NAME"),
+            "missing NODE_NAME in:\n{stdout}"
+        );
+        assert!(!stdout.contains("NODE_ID"), "exposed NodeId in:\n{stdout}");
+    }
+}
+
+#[test]
 fn pingback_is_internal_but_parseable_by_start() {
     let help = oll().args(["run", "--help"]).output().unwrap();
     assert!(help.status.success());
@@ -51,7 +69,10 @@ fn clap_errors_use_exit_code_two() {
         vec!["init", "--profile", "authority"],
         vec!["run", "--listen", "not-an-address"],
         vec!["run", "--connect", "ftp://example.com"],
+        vec!["init"],
+        vec!["init", "Home"],
         vec!["replica", "ops", "/note.md", "--limit", "0"],
+        vec!["sync", "home.example"],
         vec!["sync", "node-a", "--log"],
         vec!["plugin"],
     ] {
@@ -71,7 +92,7 @@ fn unavailable_commands_fail_without_side_effects() {
     let replica = temporary.join("replica");
 
     let output = oll()
-        .args(["init", "--replica"])
+        .args(["init", "test-node", "--replica"])
         .arg(&replica)
         .output()
         .unwrap();
@@ -107,7 +128,7 @@ fn explicit_and_environment_paths_do_not_require_home() {
     let init = oll()
         .env_remove("HOME")
         .env("OLL_CONFIG", "/tmp/oll-env-config.lua")
-        .args(["init", "--replica", "/tmp/oll-replica"])
+        .args(["init", "test-node", "--replica", "/tmp/oll-replica"])
         .output()
         .unwrap();
     assert_eq!(init.status.code(), Some(EXIT_UNAVAILABLE));

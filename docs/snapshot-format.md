@@ -126,7 +126,8 @@ replica.
 
 If the node's replica slot is empty, import initializes it from the snapshot.
 It preserves `ReplicaId` and `DocumentId` values but the deployment retains or
-creates its own `NodeId` and uses fresh peer identity for future Loro changes.
+creates its own `NodeIdentity` and uses fresh peer identity for future Loro
+changes.
 
 ### Merge
 
@@ -154,7 +155,7 @@ case into a second managed replica or silently fork identities.
 
 A replica snapshot MUST NOT contain:
 
-- `NodeId` or Loro peer identity used for future local operations;
+- `NodeIdentity` or Loro peer identity used for future local operations;
 - `connect`/`listen` configuration;
 - plugin executables, source trees, or package-manager state;
 - Lua configuration, secrets, or credentials;

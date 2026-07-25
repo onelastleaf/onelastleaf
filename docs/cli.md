@@ -40,11 +40,11 @@ parsing.
 ## Node commands
 
 ```text
-oll init
-oll init --profile server
-oll init --profile client --connect https://oll.example.com
-oll init --profile server --listen 127.0.0.1:7443
-oll init --replica /path/to/replica/root
+oll init <node-name>
+oll init home-server --profile server
+oll init home-laptop --profile client --connect https://oll.example.com
+oll init home-server --profile server --listen 127.0.0.1:7443
+oll init home-laptop --replica /path/to/replica/root
 
 oll run
 oll run --config ~/.config/oll/config.lua
@@ -65,6 +65,12 @@ initialization profile, not a replication role or authority level. Either
 profile may use `connect`, `listen`, both, or neither. `--connect` is repeatable;
 `--listen` accepts one socket address.
 
+`node-name` is required when initializing a deployment. It is the durable,
+globally presented human name paired one-to-one with the generated `NodeId`, not
+a receiver-local name for a connection. It uses the lowercase DNS-label syntax
+defined in `architecture.md`. The first implementation does not rename a node
+or reuse its name for another `NodeId`.
+
 `run` starts the same `oll` binary in the foreground. CLI `listen`/`connect`
 values are temporary runtime overrides and do not rewrite Lua configuration.
 It also has a hidden internal `--pingback <loopback-address>` option used only by
@@ -73,8 +79,11 @@ the background and verifies readiness with the nonce exchange specified in
 `admin-api.md`. `stop` uses the configured Admin API to gracefully stop oll and
 all child processes.
 
-`status` reports node state and configured connection targets. `--json` selects
-the machine-readable schema; human-readable output is the default.
+`status` reports the local `NodeName` prominently, its `NodeId`, and configured
+connection targets. A target learned through `SyncHello` is displayed with the
+remote node's protocol-declared `NodeName` and `NodeId`; a target whose first
+handshake has not completed is displayed by URL as pending. `--json` selects the
+machine-readable schema; human-readable output is the default.
 
 ## Replica commands
 
@@ -110,9 +119,14 @@ oll sync --log
 oll ping <node-name>
 ```
 
-`node-name` is obtained from `oll status`. `-n`/`--retries` must be greater than
-zero. `sync --log` views `/var/log/oll/sync.log`; it is a log-view mode and
-conflicts with `node-name` and `--retries`.
+`node-name` is the remote node's protocol-declared `NodeName`, obtained from
+`oll status`; it is not a `NodeId`, URL-derived display name, or local peer
+label. The daemon maps a learned remote `NodeIdentity` back to its configured
+connection target. A URL-only target cannot be selected by name until one
+successful handshake has established and persisted that identity binding.
+`-n`/`--retries` must be greater than zero. `sync --log` views
+`/var/log/oll/sync.log`; it is a log-view mode and conflicts with `node-name`
+and `--retries`.
 
 ## Plugin commands
 

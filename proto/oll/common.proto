@@ -8,6 +8,18 @@ import "google/protobuf/any.proto";
 // equally collision-resistant representation, but peers must not parse them.
 message NodeId { string value = 1; }
 
+// A durable human-facing node name. Implementations validate the lowercase
+// DNS-label syntax documented in architecture.md.
+message NodeName { string value = 1; }
+
+// NodeId and NodeName are both required and have a durable one-to-one
+// relationship. A node presents this same pair at every local and remote
+// protocol boundary.
+message NodeIdentity {
+  NodeId node_id = 1;
+  NodeName node_name = 2;
+}
+
 message ReplicaId { string value = 1; }
 
 message DocumentId { string value = 1; }

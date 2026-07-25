@@ -19,6 +19,11 @@ ReplicaId
 Each object has its own Loro version vector and frontier. Deltas and snapshots
 are requested and imported per object.
 
+Every endpoint also has one durable `NodeIdentity`: an opaque `NodeId` paired
+one-to-one with its human-readable `NodeName`. The node declares this same pair
+to every peer. Names are not chosen by receivers and are never derived from a
+connect URL.
+
 ## Transport
 
 `Replication.Synchronize` is one gRPC bidirectional stream. gRPC decides which
@@ -27,14 +32,19 @@ types and have identical replication rights.
 
 The stream handshake is:
 
-1. both peers send `SyncHello`;
-2. both verify the exact protobuf schema hash and Loro encoding fingerprint;
+1. both peers send `SyncHello` with their complete `NodeIdentity`;
+2. both verify the exact protobuf schema hash, Loro encoding fingerprint, and
+   the one-to-one `NodeId`/`NodeName` binding against durable identities already
+   known locally;
 3. both select mutually supported compression/chunk parameters and send
    `SyncReady`;
 4. either side advertises replica-object summaries;
 5. either side requests missing object updates.
 
-Mismatch closes the stream. There is no protocol downgrade.
+An identity collision closes the stream with `ALREADY_EXISTS`; fingerprint and
+replica mismatches also close it. There is no protocol downgrade,
+receiver-local renaming, or fallback from `NodeName` to URL or `NodeId` as the
+CLI selector.
 
 ## Transfer
 
@@ -99,4 +109,6 @@ Sync tests must cover:
 - interrupted and duplicated transfers;
 - delta fallback to object snapshot;
 - nodes configured as connect-only, listen-only, and both;
+- stable `NodeIdentity` presentation and rejection of both name-to-ID and
+  ID-to-name collisions;
 - exact schema and Loro fingerprint rejection.

@@ -10,7 +10,7 @@ The catalog is responsible for namespace state:
 - stable tree-node identity;
 - directory/document kind;
 - parent-child relationships;
-- node names;
+- catalog entry names;
 - the `DocumentId` referenced by each document node;
 - deletion/tombstone state needed for replication.
 
@@ -19,12 +19,12 @@ containers. Paths are resolved through the catalog.
 
 ## Identity
 
-`ReplicaId`, `NodeId`, and `DocumentId` have different lifetimes:
+`ReplicaId`, `NodeIdentity`, and `DocumentId` have different lifetimes:
 
 | Identifier | Meaning | Preserved by snapshot |
 |---|---|---|
 | `ReplicaId` | Logical document tree | Yes |
-| `NodeId` | Running daemon/deployment | No when initializing another deployment |
+| `NodeIdentity` | One-to-one `NodeId`/`NodeName` deployment identity | No when initializing another deployment |
 | `DocumentId` | Stable document object | Yes |
 
 Renaming or moving a document changes only catalog state. Synchronization and

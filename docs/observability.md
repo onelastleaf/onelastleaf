@@ -58,7 +58,7 @@ It MUST NOT contain per-chunk sync traces or raw payloads.
 stream:
 
 - listen/connect addresses, DNS, TCP, TLS, HTTP/2, and gRPC failures;
-- local and peer `NodeId`, `ReplicaId`, and connection identity;
+- local and peer `NodeName`, `NodeId`, `ReplicaId`, and connection identity;
 - `SyncHello`/`SyncReady` results and fingerprint mismatches;
 - catalog/document advertisements and delta requests;
 - snapshot fallback decisions;
@@ -129,7 +129,7 @@ of event meaning.
 Relevant events SHOULD add typed fields rather than concatenate data into
 `message`, including:
 
-- `node_id`, `peer_node_id`, and `replica_id`;
+- `node_name`, `node_id`, `peer_node_name`, `peer_node_id`, and `replica_id`;
 - `catalog_node_id`, `document_id`, and sanitized `path`;
 - `connection_id`, `transfer_id`, and `message_id`;
 - `plugin_instance_id`, `job_id`, `task_id`, and `task_group_id`;

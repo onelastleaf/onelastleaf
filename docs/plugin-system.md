@@ -110,8 +110,8 @@ host death; it is not needed for oll to observe child exit.
 
 The protobuf session handshake is:
 
-1. oll sends `HostHello` with node/session/instance IDs, exact schema hash,
-   depth limits, and artifact chunk limit;
+1. oll sends `HostHello` with `NodeIdentity`, session/instance IDs, exact schema
+   hash, depth limits, and artifact chunk limit;
 2. the plugin validates it and sends `PluginHello` with identity, actions, and
    event subscriptions;
 3. both sides send `SessionReady`;
