@@ -128,6 +128,13 @@ sets `reply_to` to the request's ID. Stream readers must continue dispatching
 messages while calls are pending; waiting for a response in the stream-reader
 task would break nested host/config/plugin calls.
 
+After readiness, a `Heartbeat` request is answered by a `Heartbeat` with the
+same nonce and `reply_to` set to the request message ID. oll uses a response
+deadline to detect a process that still exists but no longer services its
+protocol. Normal process exit is observed from the host-owned child-process
+handle, not by heartbeat or process-table polling. The plugin does not supply a
+reverse liveness FD.
+
 `StartJobRequest` is asynchronous. `JobAccepted` only confirms ownership of the
 job ID. Completion is a later terminal `JobUpdate`; the host does not hold a
 synchronous call stack open for the duration of a job. If no deadline is
@@ -175,6 +182,12 @@ escalated through `SIGTERM` and `SIGKILL` as enforcement of that request. The
 parent-liveness FD is a spawn-time OS contract: oll keeps it open and the plugin
 exits after EOF if oll dies. Neither signal delivery nor inherited FDs belong in
 protobuf.
+
+Desired and observed plugin process states belong to the local supervisor, not
+this plugin wire protocol. Plugin-level stop and kill both persist desired
+`stopped`; job stop, killjob, timeout, crash, and protocol failure leave desired
+state unchanged. A desired-running plugin is therefore restarted after the
+current instance exits, while a desired-stopped plugin is not.
 
 Plugins are trusted. This protocol intentionally has no permission grants,
 signatures, marketplace identity, or document capability tokens. Session and

@@ -89,6 +89,10 @@ Clap CLI / daemon entry
 
 The node runtime owns lifecycle, configuration, the single replica, peer
 connections, plugin processes, structured logs, and shutdown ordering.
+The plugin supervisor shown above is the node runtime's internal owner of those
+child processes. It is not an external process manager. It reconciles persisted
+plugin desired state with process and protocol events supplied by the operating
+system and plugin gRPC sessions.
 
 All subcommands other than `run` are bounded client processes. Most communicate
 with the running node through its Admin UDS. `init` is a local initialization

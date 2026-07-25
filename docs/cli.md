@@ -137,8 +137,19 @@ plugin stage is implemented. Its arguments are shell-style UTF-8 argv strings;
 the client preserves their order, duplicates, empty strings, and leading `-`
 characters without parsing or inferring types.
 
-Plugin `stop` uses the same graceful `ShutdownRequest` semantics documented in
-`plugin-system.md`; it does not introduce a stronger kill operation.
+A newly installed plugin is initially stopped. `plugin start` persistently sets
+its desired state to running; `plugin stop` persistently sets it to stopped
+before beginning shutdown; `plugin restart` sets it to running and recycles the
+current process if one exists. These commands are reconciled by the daemon and
+do not spawn plugin processes in the CLI client. A call does not implicitly
+start a stopped plugin. `plugin list` and `plugin info` report desired and
+observed process state separately; a failed or restarting plugin remains
+desired-running unless explicitly stopped.
+
+Plugin `stop` uses the same graceful `ShutdownRequest` and signal-enforcement
+sequence documented in `plugin-system.md`; it does not introduce a stronger
+kill operation. Desired state is a separate concern from this common process
+termination sequence.
 
 ## Job commands
 
@@ -150,4 +161,6 @@ oll job stop <job-id>
 
 `job stop` uses the same graceful plugin-process shutdown path as plugin stop,
 kill, timeout, and `killjob`. It does not promise rollback of completed writes or
-external effects.
+external effects. It does not change the plugin's desired state, so a plugin
+whose desired state remains running is restarted after its current process
+exits.

@@ -74,8 +74,9 @@ chunk. Individual chunk events are `TRACE` only.
 
 `plugin.log` is added when the plugin system is implemented. It contains plugin
 `LogRecord` messages and plugin stdout/stderr wrapped in the host's structured
-schema. Host-owned lifecycle events such as spawn, timeout, shutdown request,
-and signal escalation remain in `oll.log`.
+schema. Host-owned lifecycle events such as desired-state changes, observed
+state transitions, spawn, readiness, exit, restart backoff, timeout, shutdown
+request, and signal escalation remain in `oll.log`.
 
 ## Aggregation model
 
@@ -132,6 +133,8 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 - `catalog_node_id`, `document_id`, and sanitized `path`;
 - `connection_id`, `transfer_id`, and `message_id`;
 - `plugin_instance_id`, `job_id`, `task_id`, and `task_group_id`;
+- `plugin_desired_state`, `plugin_process_state`, `exit_status`, `signal`,
+  `restart_reason`, and `restart_attempt`;
 - `parent_call_id`, `call_depth`, and `causal_depth`;
 - `operation_id`, `snapshot_id`, and `artifact_id`;
 - `error_code`, `retryable`, `attempt`, and `backoff_ms`;
@@ -150,6 +153,11 @@ Correlation IDs are mandatory, not an optional logging enhancement.
 - Every child call, task, log, and artifact transfer inherits the current
   `correlation_id`.
 - A genuinely independent operation receives a new ID.
+- A plugin exit, its restart-backoff decision, the replacement spawn, and the
+  replacement session's readiness share one lifecycle correlation ID. The
+  triggering Admin command, job operation, or timeout supplies the ID when it
+  caused the transition; an unsolicited process or protocol event starts a new
+  ID at the supervisor.
 - Nested plugin calls additionally set `parent_call_id` and increment
   `call_depth`.
 - Derived events and scheduled callbacks preserve the ID and increment or carry
@@ -231,3 +239,5 @@ Tests must verify:
 - correct sink routing and limited duplication;
 - rotation/reopen behavior;
 - useful structured context on network, import, and recovery failures.
+- plugin desired-state persistence, process-state transitions, exit detection,
+  restart decisions, backoff, and graceful-to-signal escalation.

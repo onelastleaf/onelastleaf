@@ -45,13 +45,68 @@ dynamic library.
 
 ## Process lifecycle
 
-oll starts every enabled plugin; there is no automatic discovery of externally
-started plugin processes. The plugin hosts `PluginRuntime.Connect`, and oll is
-the transport client.
+The plugin supervisor is an internal node-runtime component, not an external
+service. It owns one event-driven controller and at most one direct child
+process for each installed plugin. There is no automatic discovery or adoption
+of externally started plugin processes. The plugin hosts
+`PluginRuntime.Connect`, and oll is the transport client.
+
+Each installed plugin has two independent state axes:
+
+- desired state is persistently `running` or `stopped`; the existing term
+  `enabled` means desired `running`;
+- observed process state is transiently `starting`, `ready`, `stopping`,
+  `exited`, or `failed` and is reconstructed after every daemon start.
+
+A newly installed plugin starts with desired `stopped`. `plugin start` first
+persists desired `running`; plugin-level `stop` and `kill` first persist desired
+`stopped`; `plugin restart` persists desired `running` and requests one process
+recycle. If persisting the desired-state change fails, oll MUST NOT report
+success or perform the corresponding process transition. Start, stop, and kill
+are idempotent. Restart starts an absent process and never creates two
+instances.
+
+Only plugin lifecycle commands change desired state. A plugin crash, startup or
+session failure, heartbeat timeout, job timeout, `job stop`, or `killjob`
+terminates the current instance without disabling the plugin. After that
+instance exits, a desired-running plugin is restarted with bounded backoff; a
+desired-stopped plugin remains exited. An explicit plugin-level stop or kill
+cancels pending restart timers. Clean daemon shutdown terminates child processes
+without changing their desired states, so desired-running plugins start again
+on the next daemon start. Plugin calls do not implicitly start stopped plugins.
+
+The controller reconciles desired and observed state after every lifecycle
+command or runtime event:
+
+| Desired | Observed | Required action |
+| --- | --- | --- |
+| `running` | `exited` | Start immediately or after the active restart backoff. |
+| `running` | `failed` | Finish teardown, then restart after backoff. |
+| `running` | `stopping` | Wait for child exit, then restart without overlapping instances. |
+| `running` | `starting` or `ready` | Do not start another instance. |
+| `stopped` | `starting` or `ready` | Begin the graceful shutdown sequence. |
+| `stopped` | `stopping` or `failed` | Finish teardown and do not restart. |
+| `stopped` | `exited` | Do not restart. |
+
+The controller owns the spawned process handle and asynchronously waits for its
+exit through the operating system (`Child::wait` in the Tokio implementation).
+It also reacts to `SessionReady`, stream closure, lifecycle commands, and
+startup and heartbeat deadlines. It MUST NOT poll the process table, and the
+plugin does not provide a reverse liveness FD. A reverse FD would depend on
+plugin cooperation and could remain open in an inherited descendant even after
+the main plugin process exited.
+
+The executable named by a plugin installation MUST remain the foreground plugin
+host process. It MUST NOT daemonize, detach, or exit after delegating the gRPC
+service to an untracked process. This process contract is independent of the
+plugin's implementation language. oll can always observe and reap the direct
+child; protocol cooperation is required only for readiness, heartbeat, and
+graceful shutdown.
 
 At spawn time oll passes the configured endpoint and a parent-liveness file
 descriptor. oll keeps the descriptor open. If oll crashes, the kernel closes it
-and the plugin reads EOF and exits.
+and the plugin reads EOF and exits. This one-way pipe lets the plugin observe
+host death; it is not needed for oll to observe child exit.
 
 The protobuf session handshake is:
 
@@ -65,10 +120,24 @@ The protobuf session handshake is:
 Session and instance IDs prevent accidental cross-wiring; plugins are trusted,
 so these IDs are not authentication.
 
+The plugin reaches observed `ready` only after both `SessionReady` messages.
+Failure to become ready before the startup deadline, unexpected stream closure,
+or a missed heartbeat deadline changes observed state to `failed`, begins the
+same shutdown enforcement sequence when a process remains, and then reconciles
+against desired state. Restart attempts MUST use delayed, bounded backoff rather
+than a tight spawn loop; exact timing is local runtime policy, not protobuf.
+
 ## Multiplexed stream
 
 All runtime calls share one bidi stream. `PluginEnvelope.message_id` is non-zero
 and unique per sender in the session; direct responses set `reply_to`.
+
+After readiness, oll may send `Heartbeat` when it needs to test protocol
+responsiveness. The plugin replies with a `Heartbeat` carrying the same nonce
+and sets `reply_to` to the request message ID. A missing response before the
+host deadline detects a live-but-unresponsive process; it is not used to detect
+normal process exit. Stream closure and the operating-system child-exit event
+remain immediate event sources.
 
 The stream reader must keep dispatching while calls are outstanding. Waiting for
 a response in the reader task would prevent nested plugin -> host -> Lua ->
@@ -95,9 +164,12 @@ scheduler, and log fields use recursive `ConfigValue`; PDF, `.apkg`, and other
 large results use the chunked artifact protocol with declared size and SHA-256.
 
 An executing job is not cooperatively cancelled over RPC. `stop`, `kill`,
-`killjob`, and timeout all have exactly the same public semantics: oll sends one
-graceful `ShutdownRequest`. There is no separate force-kill request, command
-mode, or lifecycle state, and `kill` does not skip graceful shutdown.
+`killjob`, and timeout all begin process termination the same way: oll sends one
+graceful `ShutdownRequest`. There is no separate force-kill request or command
+mode, and `kill` does not skip graceful shutdown. This shared termination
+mechanism is separate from desired state: plugin-level `stop` and `kill` both
+persist desired `stopped`, while `job stop`, `killjob`, timeout, and failure
+leave desired state unchanged.
 
 If the plugin does not exit, oll enforces that same request with `SIGTERM`, waits
 through the configured OS-signal grace period, and finally uses `SIGKILL`. These

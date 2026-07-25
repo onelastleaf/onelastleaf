@@ -112,6 +112,7 @@ The final stage adds:
 - plugin installation from Git URLs;
 - source builds and optional release binaries;
 - process spawning and parent-liveness pipes;
+- persistent plugin desired state and event-driven child-process supervision;
 - `PluginRuntime.Connect` multiplexing;
 - asynchronous jobs, host document calls, Lua configuration callbacks,
   scheduling, artifact output, logs, and process termination;
@@ -122,6 +123,9 @@ Completion criteria:
 - a plugin can read the tree and atomically attempt a revision-guarded write;
 - stale plugin output is rejected without blocking;
 - nested calls do not stop the stream reader;
+- plugin stop survives daemon restart, stopped plugins are not respawned, and
+  unexpected exits of desired-running plugins trigger a bounded-backoff restart
+  without process-table polling or a plugin-supplied reverse liveness FD;
 - PDF/`.apkg`-sized outputs use verified artifact chunks;
 - `stop`, `kill`, `killjob`, and timeout all issue the same graceful
   `ShutdownRequest`; an unresponsive process is escalated through `SIGTERM` and
