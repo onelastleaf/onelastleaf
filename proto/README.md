@@ -12,6 +12,8 @@ which source files and compiler flags are canonical.
 
 ## Files
 
+- `oll/admin.proto`: the local typed gRPC administration service, request
+  context, node status, and graceful daemon shutdown.
 - `oll/common.proto`: identities, tracing/depth metadata, and shared errors.
 - `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
   configuration-function handles.
@@ -24,6 +26,28 @@ which source files and compiler flags are canonical.
 Package installation, Git forge adapters, source builds, release-asset
 selection, process spawning, and the plugin manifest are not wire protocols and
 are therefore outside this directory.
+
+## Local administration
+
+The daemon hosts `Admin` only on its Unix domain socket. It is not served on a
+replication TCP listener. CLI syntax is parsed in the client process and reduced
+to typed requests; argv and serialized Clap values never cross the socket.
+Output selection such as `status --json` is also client-side presentation.
+
+Every Admin request carries `AdminCallContext`, including the canonical schema
+fingerprint and correlation context. The daemon requires an exact fingerprint
+match. This catches a newly installed CLI connecting to an older still-running
+daemon; it does not introduce version negotiation or compatibility promises.
+
+The node stage initially implements `GetStatus` and `Shutdown`. Typed methods
+for replica, sync, and plugin management are added only in their respective
+implementation stages. Future CLI arguments must not be tunneled as generic
+strings to avoid extending this schema.
+
+gRPC Server Reflection is a debug-build facility registered only on the Admin
+UDS. It is compiled out of release builds. Production `TRACE` logs include
+redacted request metadata, never complete protobuf requests or prohibited
+content.
 
 ## Document invariants
 

@@ -30,8 +30,11 @@ Consequences:
 - Plugins, scheduler queues, jobs, logs, and Lua configuration all belong to the
   daemon's single replica.
 
-The executable may expose administrative CLI commands and a daemon run mode,
-but this does not make it a multi-instance manager.
+The executable exposes administrative CLI commands and one daemon entry point,
+`oll run`, but this does not make it a multi-instance manager. Process role is
+selected only by the parsed subcommand; there is no global daemon/client mode.
+Administrative clients use the typed gRPC-over-UDS boundary described in
+[admin-api.md](admin-api.md).
 
 ## Terminology
 
@@ -86,6 +89,11 @@ Clap CLI / daemon entry
 
 The node runtime owns lifecycle, configuration, the single replica, peer
 connections, plugin processes, structured logs, and shutdown ordering.
+
+All subcommands other than `run` are bounded client processes. Most communicate
+with the running node through its Admin UDS. `init` is a local initialization
+client and `start` is a local daemon launcher because neither operation can
+presuppose an already-running daemon.
 
 Structured logging is a cross-cutting runtime contract, not a final integration
 task. The node initializes correlation context and `/var/log/oll/` sinks before

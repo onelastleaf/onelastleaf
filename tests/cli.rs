@@ -27,6 +27,25 @@ fn help_exposes_the_complete_command_surface() {
 }
 
 #[test]
+fn pingback_is_internal_but_parseable_by_start() {
+    let help = oll().args(["run", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    assert!(!String::from_utf8(help.stdout).unwrap().contains("pingback"));
+
+    let parsed = oll()
+        .args(["run", "--pingback", "127.0.0.1:43210"])
+        .output()
+        .unwrap();
+    assert_eq!(parsed.status.code(), Some(EXIT_UNAVAILABLE));
+
+    let non_loopback = oll()
+        .args(["run", "--pingback", "0.0.0.0:43210"])
+        .output()
+        .unwrap();
+    assert_eq!(non_loopback.status.code(), Some(2));
+}
+
+#[test]
 fn clap_errors_use_exit_code_two() {
     for arguments in [
         vec!["init", "--profile", "authority"],
@@ -63,7 +82,7 @@ fn unavailable_commands_fail_without_side_effects() {
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("replica stage")
+            .contains("command is not implemented")
     );
 }
 
@@ -112,12 +131,12 @@ fn missing_home_is_a_configuration_error_when_default_is_needed() {
 }
 
 #[test]
-fn operational_command_reports_its_required_stage() {
+fn operational_command_is_unavailable_until_implemented() {
     let output = oll().args(["sync", "node-a", "-n", "3"]).output().unwrap();
     assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("sync stage")
+            .contains("command is not implemented")
     );
 }

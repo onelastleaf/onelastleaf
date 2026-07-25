@@ -1,16 +1,23 @@
 # Command-line interface
 
-## Scope and stage behavior
+## Scope and availability
 
 `oll` is the only executable. The CLI schema is defined before node, replica,
 sync, and plugin implementations so their public command surface can be tested
 without fake side effects.
 
-During the CLI-only implementation stage, operational commands parse and
-validate their arguments, then fail with exit code `69` (`EX_UNAVAILABLE`) and
-name the required implementation stage. They MUST NOT create files, start a
-daemon, connect to a peer, or mutate a replica. Clap syntax errors use exit code
-`2`.
+Until an operational command has a real handler, it parses and validates its
+arguments, then fails with exit code `69` (`EX_UNAVAILABLE`) and the generic
+message `command is not implemented`. It MUST NOT create files, start a daemon,
+connect to a peer, or mutate a replica. The implementation order is not a
+runtime concept and MUST NOT appear in errors or source-level domain types. Clap
+syntax errors use exit code `2`.
+
+`run` is the only daemon-side subcommand. Every other subcommand is a bounded
+client selected directly by the parsed subcommand, never by a global mode flag.
+`init` performs local bootstrap and `start` launches and verifies a detached
+`run` child; all other operational clients send typed requests to the Admin UDS.
+See `admin-api.md`.
 
 ## Paths and environment
 
@@ -60,8 +67,11 @@ profile may use `connect`, `listen`, both, or neither. `--connect` is repeatable
 
 `run` starts the same `oll` binary in the foreground. CLI `listen`/`connect`
 values are temporary runtime overrides and do not rewrite Lua configuration.
-`start` will launch the daemon in the background. `stop` will use the configured
-admin API to gracefully stop oll and all child processes.
+It also has a hidden internal `--pingback <loopback-address>` option used only by
+`start`; this is not a second public daemon mode. `start` launches the daemon in
+the background and verifies readiness with the nonce exchange specified in
+`admin-api.md`. `stop` uses the configured Admin API to gracefully stop oll and
+all child processes.
 
 `status` reports node state and configured connection targets. `--json` selects
 the machine-readable schema; human-readable output is the default.

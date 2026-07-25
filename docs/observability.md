@@ -178,6 +178,11 @@ Target-specific filtering can raise `oll::sync` to `DEBUG` or `TRACE` without
 restarting the daemon. `DEBUG` records protocol decisions and state summaries;
 `TRACE` may record individual frame/chunk metadata but never raw content.
 
+Admin RPC logging follows the same rule. `TRACE` records the method, correlation
+ID, duration, outcome, and an allowlisted, field-level-redacted request summary;
+it MUST NOT serialize a complete protobuf request. This remains true even though
+debug builds may expose gRPC Server Reflection on the local Admin UDS.
+
 `WARN` indicates a recovered or retrying condition. `ERROR` indicates an
 operation failure or state requiring intervention. Expected disconnects and
 revision conflicts are not automatically errors; their level depends on whether

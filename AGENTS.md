@@ -15,6 +15,10 @@ Do not implement a later stage before the earlier stage's documented completion
 criteria are satisfied. An earlier stage must not depend on a placeholder from a
 later stage.
 
+The implementation order is a development constraint only. Never represent it
+with runtime enums, modes, configuration, protocol fields, persisted state, or
+user-facing stage-specific errors.
+
 Read the other relevant files under [`docs/`](docs/README.md) before changing a
 component's behavior, storage model, protocol, or lifecycle.
 

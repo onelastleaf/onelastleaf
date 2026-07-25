@@ -9,6 +9,12 @@ CLI (Clap) -> node -> replica -> sync -> plugin system
 Later stages may depend on stable interfaces from earlier stages. An earlier
 stage must not depend on a placeholder implementation of a later stage.
 
+This order is a software-engineering constraint, not part of oll's runtime or
+domain model. Stage names and implementation progress MUST NOT appear in source
+enums, configuration, protobuf contracts, persisted state, or user-facing error
+messages. A command without a handler may temporarily return the generic
+`EX_UNAVAILABLE`; its handler replaces that branch directly when implemented.
+
 ## 1. CLI
 
 The only executable is `oll`; there is no `olld`.
@@ -17,7 +23,8 @@ The first stage establishes:
 
 - Clap command parsing and help output;
 - configuration and environment-variable loading;
-- selection of daemon operation versus administrative commands;
+- subcommand-only selection of the `run` daemon entry versus bounded clients;
+- parsing of the hidden `run --pingback` launcher handshake argument;
 - stable error reporting and process exit codes;
 - a single data-directory/configuration context.
 
@@ -38,6 +45,8 @@ replica behavior:
 
 - `NodeId` creation and durable loading;
 - process lifecycle and graceful shutdown;
+- the typed Admin gRPC service over UDS;
+- detached `start` launch, single-instance enforcement, and nonce pingback;
 - `connect`/`listen` deployment configuration;
 - one data directory and one replica slot;
 - Tokio runtime ownership;
@@ -48,6 +57,8 @@ replica behavior:
 Completion criteria:
 
 - a node starts, reports status, and shuts down deterministically;
+- release builds contain no gRPC reflection service; debug builds expose it only
+  on the Admin UDS;
 - `oll.log` and `sync.log` initialize with correct ownership and emit valid JSON
   events carrying correlation IDs;
 - a second replica cannot be attached to the same process;

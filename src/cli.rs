@@ -46,52 +46,42 @@ impl Cli {
         Ok(())
     }
 
-    pub fn execute_stage_gate(self, environment: &Environment) -> Result<(), CliError> {
-        let (command, stage) = match self.command {
+    pub fn validate_environment(&self, environment: &Environment) -> Result<(), CliError> {
+        match &self.command {
             Command::Init(args) => {
                 let _ = args.replica_root(environment)?;
                 let _ = environment.config_path()?;
-                ("oll init", ImplementationStage::Replica)
             }
             Command::Run(args) => {
                 let _ = args.config_path(environment)?;
-                ("oll run", ImplementationStage::Node)
             }
             Command::Start => {
                 let _ = environment.config_path()?;
-                ("oll start", ImplementationStage::Node)
             }
             Command::Stop => {
                 let _ = environment.config_path()?;
-                ("oll stop", ImplementationStage::Node)
             }
             Command::Status(_) => {
                 let _ = environment.config_path()?;
-                ("oll status", ImplementationStage::Node)
             }
             Command::Replica(_) => {
                 let _ = environment.replica_root()?;
-                ("oll replica", ImplementationStage::Replica)
             }
             Command::Sync(_) => {
                 let _ = environment.config_path()?;
-                ("oll sync", ImplementationStage::Sync)
             }
             Command::Ping(_) => {
                 let _ = environment.config_path()?;
-                ("oll ping", ImplementationStage::Sync)
             }
             Command::Plugin(_) => {
                 let _ = environment.config_path()?;
-                ("oll plugin", ImplementationStage::PluginSystem)
             }
             Command::Job(_) => {
                 let _ = environment.config_path()?;
-                ("oll job", ImplementationStage::PluginSystem)
             }
-        };
+        }
 
-        Err(CliError::StageUnavailable { command, stage })
+        Ok(())
     }
 }
 
@@ -194,6 +184,32 @@ pub struct RunArgs {
     /// Temporary peer URL to connect to. May be repeated.
     #[arg(long, value_name = "URL")]
     pub connect: Vec<ConnectUrl>,
+    /// Internal readiness callback used by `oll start`.
+    #[arg(long, value_name = "ADDRESS", hide = true)]
+    pub pingback: Option<LoopbackAddr>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct LoopbackAddr(SocketAddr);
+
+impl LoopbackAddr {
+    pub fn as_socket_addr(self) -> SocketAddr {
+        self.0
+    }
+}
+
+impl FromStr for LoopbackAddr {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let address = input
+            .parse::<SocketAddr>()
+            .map_err(|error| error.to_string())?;
+        if !address.ip().is_loopback() {
+            return Err("pingback address must use a loopback IP".to_owned());
+        }
+        Ok(Self(address))
+    }
 }
 
 impl RunArgs {
@@ -439,42 +455,15 @@ fn resolve_path(
         .ok_or(CliError::MissingHome { name })
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ImplementationStage {
-    Node,
-    Replica,
-    Sync,
-    PluginSystem,
-}
-
-impl fmt::Display for ImplementationStage {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let name = match self {
-            Self::Node => "node",
-            Self::Replica => "replica",
-            Self::Sync => "sync",
-            Self::PluginSystem => "plugin system",
-        };
-        formatter.write_str(name)
-    }
-}
-
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
-    MissingHome {
-        name: &'static str,
-    },
-    StageUnavailable {
-        command: &'static str,
-        stage: ImplementationStage,
-    },
+    MissingHome { name: &'static str },
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::MissingHome { .. } => ExitCode::from(EXIT_CONFIG),
-            Self::StageUnavailable { .. } => ExitCode::from(EXIT_UNAVAILABLE),
         }
     }
 }
@@ -485,10 +474,6 @@ impl fmt::Display for CliError {
             Self::MissingHome { name } => write!(
                 formatter,
                 "cannot determine {name}: pass an explicit path or set HOME"
-            ),
-            Self::StageUnavailable { command, stage } => write!(
-                formatter,
-                "command `{command}` is unavailable until the {stage} stage is implemented"
             ),
         }
     }
@@ -534,6 +519,7 @@ mod tests {
             config: Some("/cli/config.lua".into()),
             listen: None,
             connect: Vec::new(),
+            pingback: None,
         };
 
         assert_eq!(
