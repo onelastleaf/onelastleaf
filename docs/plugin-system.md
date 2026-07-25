@@ -91,9 +91,15 @@ Acceptance does not mean completion. Without an explicit deadline the host uses
 24 hours. Small structured results use `ConfigValue`; PDF, `.apkg`, and other
 large results use the chunked artifact protocol with declared size and SHA-256.
 
-An executing job is not cooperatively cancelled over RPC. Timeout or `killjob`
-terminates the plugin process: graceful shutdown request, `SIGTERM`, a grace
-period, then `SIGKILL`. Cancellation does not roll back CRDT writes or external
+An executing job is not cooperatively cancelled over RPC. `stop`, `kill`,
+`killjob`, and timeout all have exactly the same public semantics: oll sends one
+graceful `ShutdownRequest`. There is no separate force-kill request, command
+mode, or lifecycle state, and `kill` does not skip graceful shutdown.
+
+If the plugin does not exit, oll enforces that same request with `SIGTERM`, waits
+through the configured OS-signal grace period, and finally uses `SIGKILL`. These
+signals are escalation mechanics for an unresponsive process, not distinct
+management operations. Termination does not roll back CRDT writes or external
 side effects.
 
 ## Host document API

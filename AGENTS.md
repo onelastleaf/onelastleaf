@@ -64,6 +64,9 @@ decision that also updates the architecture documentation.
   to `docs/observability.md`.
 - Never drop correlation context across RPC, sync, plugin, scheduler, or Tokio
   task boundaries.
+- Do not introduce separate plugin stop and kill semantics. `stop`, `kill`,
+  `killjob`, and timeout all begin with the same graceful `ShutdownRequest`;
+  signals only enforce that request when the process does not exit.
 
 ## Required validation
 

@@ -112,8 +112,9 @@ Completion criteria:
 - stale plugin output is rejected without blocking;
 - nested calls do not stop the stream reader;
 - PDF/`.apkg`-sized outputs use verified artifact chunks;
-- timeout/`killjob` terminates the plugin process using graceful shutdown,
-  `SIGTERM`, then `SIGKILL`;
+- `stop`, `kill`, `killjob`, and timeout all issue the same graceful
+  `ShutdownRequest`; an unresponsive process is escalated through `SIGTERM` and
+  `SIGKILL` without creating another public termination semantic;
 - plugin logs are normalized into `plugin.log` while lifecycle summaries remain
   correlated in `oll.log`.
 

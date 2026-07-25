@@ -74,8 +74,8 @@ chunk. Individual chunk events are `TRACE` only.
 
 `plugin.log` is added when the plugin system is implemented. It contains plugin
 `LogRecord` messages and plugin stdout/stderr wrapped in the host's structured
-schema. Host-owned lifecycle events such as spawn, timeout, and process kill
-remain in `oll.log`.
+schema. Host-owned lifecycle events such as spawn, timeout, shutdown request,
+and signal escalation remain in `oll.log`.
 
 ## Aggregation model
 

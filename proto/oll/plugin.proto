@@ -208,7 +208,10 @@ message Heartbeat { uint64 nonce = 1; }
 
 message ShutdownRequest {
   string reason = 1;
-  google.protobuf.Timestamp force_kill_after = 2;
+  // The plugin should acknowledge and exit before this deadline. Host signal
+  // escalation after the deadline is enforcement of this same graceful request,
+  // not a separate kill operation.
+  google.protobuf.Timestamp grace_period_deadline = 2;
 }
 
 message ShutdownAcknowledged {}

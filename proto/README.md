@@ -140,9 +140,10 @@ correlation, parent-call, causal, task, and task-group fields used by log
 aggregation.
 
 Cancellation does not imply rollback. A queued scheduler task can be removed,
-but an executing job is not cooperatively cancelled over RPC. Job timeout or
-`killjob` terminates the plugin process: oll requests graceful shutdown, sends
-`SIGTERM`, waits until the grace deadline, and then sends `SIGKILL`. The
+but an executing job is not cooperatively cancelled over RPC. `stop`, `kill`,
+`killjob`, and timeout all send the same graceful `ShutdownRequest`; there is no
+force-kill RPC or distinct public kill semantic. An unresponsive process is
+escalated through `SIGTERM` and `SIGKILL` as enforcement of that request. The
 parent-liveness FD is a spawn-time OS contract: oll keeps it open and the plugin
 exits after EOF if oll dies. Neither signal delivery nor inherited FDs belong in
 protobuf.
