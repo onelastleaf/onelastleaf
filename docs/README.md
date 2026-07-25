@@ -10,6 +10,8 @@ documents describe the larger runtime and storage model around those messages.
   one-binary/one-node/one-replica invariant.
 - [Implementation order](implementation-order.md): the required CLI -> node ->
   replica -> sync -> plugin-system sequence.
+- [Command-line interface](cli.md): commands, arguments, defaults, conflicts,
+  environment precedence, and stage-gated behavior.
 - [Replica model](replica.md): the document tree, catalog, per-document
   `LoroDoc`, revisions, and local commit semantics.
 - [Snapshot format](snapshot-format.md): the `.ollsnap` tar+zstd container and

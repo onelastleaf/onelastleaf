@@ -21,7 +21,7 @@ The first stage establishes:
 - stable error reporting and process exit codes;
 - a single data-directory/configuration context.
 
-Exact command names are not fixed by this document. The CLI must preserve the
+The command contract is fixed in `cli.md`. The CLI must preserve the
 one-daemon/one-node/one-replica invariant and must not grow a multi-replica
 selector.
 
