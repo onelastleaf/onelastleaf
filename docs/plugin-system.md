@@ -88,7 +88,10 @@ StartJobRequest -> JobAccepted -> JobUpdate... -> terminal JobUpdate
 ```
 
 Acceptance does not mean completion. Without an explicit deadline the host uses
-24 hours. Small structured results use `ConfigValue`; PDF, `.apkg`, and other
+24 hours. A generic action invocation carries an action name and shell-style
+UTF-8 argv strings; oll preserves order, duplicates, empty strings, and leading
+`-` values without type inference. Small structured results and configuration,
+scheduler, and log fields use recursive `ConfigValue`; PDF, `.apkg`, and other
 large results use the chunked artifact protocol with declared size and SHA-256.
 
 An executing job is not cooperatively cancelled over RPC. `stop`, `kill`,

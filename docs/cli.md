@@ -90,6 +90,16 @@ oll replica snapshot verify <snapshot>
 `--limit` must be greater than zero. The CLI does not enforce a snapshot file
 extension; the format itself is defined in `snapshot-format.md`.
 
+Replica document and snapshot path arguments are OS paths represented by
+`PathBuf`. Before an Admin request is constructed, the client captures its
+startup working directory and joins it to each relative path. Absolute paths
+are passed through unchanged; the client does not check existence or call
+`canonicalize`, and the daemon working directory is never used to reinterpret
+them. Replica handlers later verify root containment and convert document paths
+to the normalized replica namespace. Snapshot import, export, inspect, and
+verify apply the same client-working-directory rule, with their operation
+specific output or input checks performed by the handler.
+
 ## Sync commands
 
 ```text
@@ -118,12 +128,14 @@ oll plugin restart <plugin-id>
 oll plugin update <plugin-id>
 oll plugin remove <plugin-id>
 oll plugin --log [<plugin-id>]
-oll plugin call <plugin-id> <method> [arguments...]
+oll plugin call <plugin-id> <action> [arguments...]
 ```
 
 Source installation is the default. `--release` and `--source` conflict;
 `--rev` and `--branch` conflict. A generic plugin call returns a job ID after the
-plugin stage is implemented.
+plugin stage is implemented. Its arguments are shell-style UTF-8 argv strings;
+the client preserves their order, duplicates, empty strings, and leading `-`
+characters without parsing or inferring types.
 
 Plugin `stop` uses the same graceful `ShutdownRequest` semantics documented in
 `plugin-system.md`; it does not introduce a stronger kill operation.

@@ -133,7 +133,11 @@ job ID. Completion is a later terminal `JobUpdate`; the host does not hold a
 synchronous call stack open for the duration of a job. If no deadline is
 provided, oll applies the default 24-hour deadline.
 
-Small structured job results use `ConfigValue`. Large binary results such as PDF
+Generic action invocations carry an action name plus ordered shell-style UTF-8
+argv strings. Empty arguments, duplicate arguments, and values beginning with
+`-` are preserved verbatim; oll does not infer argument types. `ConfigValue`
+continues to carry recursive structured data for Lua configuration, scheduler
+inputs, structured job results, and log fields. Large binary results such as PDF
 and `.apkg` files use the artifact sub-protocol. The plugin announces the size,
 hash, and chunk count; waits for `ArtifactTransferAccepted`; sends zero-based
 chunks within the host's advertised size; and finishes with

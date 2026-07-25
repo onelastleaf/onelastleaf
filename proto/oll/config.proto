@@ -17,8 +17,10 @@ message ConfigList { repeated ConfigValue values = 1; }
 
 message ConfigMap { map<string, ConfigValue> entries = 1; }
 
-// The only value format crossing the plugin/config boundary. Lua adapters must
-// reject cyclic tables and values that cannot be represented here.
+// The structured value format crossing the configuration boundary and used by
+// Lua, scheduler, structured results, and log fields. Generic plugin actions
+// use shell-style string argv instead. Lua adapters must reject cyclic tables
+// and values that cannot be represented here.
 message ConfigValue {
   oneof kind {
     google.protobuf.NullValue null_value = 1;

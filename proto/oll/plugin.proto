@@ -54,7 +54,9 @@ message SessionReady {}
 
 message ActionInvocation {
   string action = 1;
-  ConfigValue input = 2;
+  // Generic action calls use shell-style UTF-8 argv semantics. oll preserves
+  // order, duplicates, empty strings, and values beginning with '-'.
+  repeated string arguments = 2;
 }
 
 message DocumentChangedEvent {

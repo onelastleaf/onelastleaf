@@ -140,3 +140,29 @@ fn operational_command_is_unavailable_until_implemented() {
             .contains("command is not implemented")
     );
 }
+
+#[test]
+fn plugin_call_help_and_argv_use_action_language() {
+    let help = oll().args(["plugin", "call", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    let stdout = String::from_utf8(help.stdout).unwrap();
+    assert!(
+        stdout.contains("<ACTION>"),
+        "missing action help:\n{stdout}"
+    );
+    assert!(!stdout.contains("<METHOD>"), "stale method help:\n{stdout}");
+
+    let output = oll()
+        .args([
+            "plugin",
+            "call",
+            "oll.example",
+            "publish",
+            "",
+            "--flag",
+            "--flag",
+        ])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
+}

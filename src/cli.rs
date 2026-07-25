@@ -4,7 +4,7 @@ use std::{
     fmt,
     net::SocketAddr,
     num::{NonZeroU32, NonZeroUsize},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::ExitCode,
     str::FromStr,
 };
@@ -81,6 +81,25 @@ impl Cli {
             }
         }
 
+        Ok(())
+    }
+
+    /// Resolve OS paths that will cross the Admin API using the client's
+    /// launch directory. This deliberately joins without checking the
+    /// filesystem or calling `canonicalize`; replica handlers apply namespace
+    /// validation after receiving the absolute path.
+    pub fn resolve_client_paths(&mut self, cwd: &Path) {
+        if let Command::Replica(args) = &mut self.command {
+            args.resolve_paths(cwd);
+        }
+    }
+
+    /// Resolve client paths using the process working directory captured at
+    /// startup.
+    pub fn resolve_client_paths_from_process(&mut self) -> Result<(), CliError> {
+        let cwd =
+            env::current_dir().map_err(|error| CliError::CurrentDirectory(error.to_string()))?;
+        self.resolve_client_paths(&cwd);
         Ok(())
     }
 }
@@ -237,6 +256,28 @@ pub struct ReplicaArgs {
     pub command: ReplicaCommand,
 }
 
+impl ReplicaArgs {
+    fn resolve_paths(&mut self, cwd: &Path) {
+        match &mut self.command {
+            ReplicaCommand::Inspect { document } | ReplicaCommand::Ops { document, .. } => {
+                *document = resolve_client_path(document, cwd);
+            }
+            ReplicaCommand::Export { output } => {
+                *output = resolve_client_path(output, cwd);
+            }
+            ReplicaCommand::Import { snapshot } => {
+                *snapshot = resolve_client_path(snapshot, cwd);
+            }
+            ReplicaCommand::Snapshot(snapshot) => match &mut snapshot.command {
+                SnapshotCommand::Inspect { snapshot, .. }
+                | SnapshotCommand::Verify { snapshot } => {
+                    *snapshot = resolve_client_path(snapshot, cwd);
+                }
+            },
+        }
+    }
+}
+
 #[derive(Debug, Subcommand)]
 pub enum ReplicaCommand {
     /// Inspect one document's current state.
@@ -368,14 +409,14 @@ pub enum PluginCommand {
     Update { plugin_id: String },
     /// Remove an installed plugin.
     Remove { plugin_id: String },
-    /// Invoke a plugin method and return a job ID.
+    /// Invoke a plugin action and return a job ID.
     #[command(trailing_var_arg = true)]
     Call {
         /// Plugin to invoke.
         plugin_id: String,
-        /// Plugin-defined method name.
-        method: String,
-        /// Opaque arguments forwarded to the plugin method.
+        /// Plugin-defined action name.
+        action: String,
+        /// Shell-style UTF-8 arguments forwarded in order to the plugin action.
         #[arg(allow_hyphen_values = true)]
         arguments: Vec<String>,
     },
@@ -458,12 +499,14 @@ fn resolve_path(
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
     MissingHome { name: &'static str },
+    CurrentDirectory(String),
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::MissingHome { .. } => ExitCode::from(EXIT_CONFIG),
+            Self::CurrentDirectory(_) => ExitCode::from(EXIT_CONFIG),
         }
     }
 }
@@ -475,7 +518,23 @@ impl fmt::Display for CliError {
                 formatter,
                 "cannot determine {name}: pass an explicit path or set HOME"
             ),
+            Self::CurrentDirectory(error) => {
+                write!(
+                    formatter,
+                    "cannot determine client working directory: {error}"
+                )
+            }
         }
+    }
+}
+
+/// Resolve a client-provided OS path against the client's launch directory.
+/// Absolute paths are returned unchanged, including `.` and `..` segments.
+pub fn resolve_client_path(path: &Path, cwd: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_owned()
+    } else {
+        cwd.join(path)
     }
 }
 
@@ -649,6 +708,86 @@ mod tests {
     }
 
     #[test]
+    fn resolves_replica_paths_against_client_cwd_without_canonicalizing() {
+        let mut cli = parse(&[
+            "oll",
+            "replica",
+            "snapshot",
+            "inspect",
+            "nested/../backup.ollsnap",
+            "--json",
+        ]);
+        cli.resolve_client_paths(Path::new("/client/work"));
+        let Command::Replica(args) = cli.command else {
+            panic!()
+        };
+        let ReplicaCommand::Snapshot(snapshot) = args.command else {
+            panic!()
+        };
+        let SnapshotCommand::Inspect { snapshot, .. } = snapshot.command else {
+            panic!()
+        };
+        assert_eq!(
+            snapshot,
+            PathBuf::from("/client/work/nested/../backup.ollsnap")
+        );
+
+        let mut cli = parse(&["oll", "replica", "inspect", "/replica/../note.md"]);
+        cli.resolve_client_paths(Path::new("/different/client"));
+        let Command::Replica(args) = cli.command else {
+            panic!()
+        };
+        let ReplicaCommand::Inspect { document } = args.command else {
+            panic!()
+        };
+        assert_eq!(document, PathBuf::from("/replica/../note.md"));
+    }
+
+    #[test]
+    fn resolves_every_snapshot_and_document_path_kind() {
+        for (arguments, expected) in [
+            (
+                vec!["oll", "replica", "inspect", "note.md"],
+                PathBuf::from("/client/note.md"),
+            ),
+            (
+                vec!["oll", "replica", "ops", "history.md"],
+                PathBuf::from("/client/history.md"),
+            ),
+            (
+                vec!["oll", "replica", "export", "-o", "out.ollsnap"],
+                PathBuf::from("/client/out.ollsnap"),
+            ),
+            (
+                vec!["oll", "replica", "import", "in.ollsnap"],
+                PathBuf::from("/client/in.ollsnap"),
+            ),
+            (
+                vec!["oll", "replica", "snapshot", "verify", "verify.ollsnap"],
+                PathBuf::from("/client/verify.ollsnap"),
+            ),
+        ] {
+            let mut cli = parse(&arguments);
+            cli.resolve_client_paths(Path::new("/client"));
+            let Command::Replica(args) = cli.command else {
+                panic!()
+            };
+            let path = match args.command {
+                ReplicaCommand::Inspect { document } | ReplicaCommand::Ops { document, .. } => {
+                    document
+                }
+                ReplicaCommand::Export { output } => output,
+                ReplicaCommand::Import { snapshot } => snapshot,
+                ReplicaCommand::Snapshot(snapshot) => match snapshot.command {
+                    SnapshotCommand::Inspect { snapshot, .. }
+                    | SnapshotCommand::Verify { snapshot } => snapshot,
+                },
+            };
+            assert_eq!(path, expected);
+        }
+    }
+
+    #[test]
     fn parses_sync_commands() {
         for arguments in [
             vec!["oll", "sync"],
@@ -720,6 +859,46 @@ mod tests {
         ] {
             parse(&arguments);
         }
+    }
+
+    #[test]
+    fn preserves_plugin_action_argv_verbatim() {
+        let cli = parse(&[
+            "oll",
+            "plugin",
+            "call",
+            "oll.example",
+            "publish",
+            "",
+            "--flag",
+            "--flag",
+            "value",
+        ]);
+        let Command::Plugin(PluginArgs {
+            command:
+                Some(PluginCommand::Call {
+                    plugin_id,
+                    action,
+                    arguments,
+                }),
+            ..
+        }) = cli.command
+        else {
+            panic!()
+        };
+        assert_eq!(plugin_id, "oll.example");
+        assert_eq!(action, "publish");
+        assert_eq!(arguments, vec!["", "--flag", "--flag", "value"]);
+
+        let cli = parse(&["oll", "plugin", "call", "oll.example", "health"]);
+        let Command::Plugin(PluginArgs {
+            command: Some(PluginCommand::Call { arguments, .. }),
+            ..
+        }) = cli.command
+        else {
+            panic!()
+        };
+        assert!(arguments.is_empty());
     }
 
     #[test]
