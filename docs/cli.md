@@ -26,14 +26,23 @@ Default paths are:
 
 ```text
 replica root: $HOME/.local/share/oll
-Lua config:   $HOME/.config/oll/config.lua
+config root:  $HOME/.config/oll
+log dir:      $XDG_STATE_HOME/oll
+              or $HOME/.local/state/oll when XDG_STATE_HOME is unset
 ```
 
 `--replica` overrides `OLL_REPLICA`, which overrides the default replica root.
-`oll run --config` overrides `OLL_CONFIG`, which overrides the default config
-path. Other commands that need the config/admin API use `OLL_CONFIG` and then
-the default. An unavailable home directory is a configuration error when a
-default is needed.
+`--config` overrides `OLL_CONFIG`, which overrides the default config root; the
+Lua configuration file is always `<config-root>/config.lua`. `--log-dir`
+overrides `OLL_LOG_DIR`, which overrides `XDG_STATE_HOME/oll` and then the HOME
+fallback. Other commands that need the config/Admin API or a log file use the
+same environment/default resolution without command-line root overrides. A
+missing environment value is a configuration error only when the concrete
+intent needs that root and no fallback can be determined.
+
+oll is a user-level daemon. Each root and every file beneath it belongs to the
+user who initialized and runs that deployment; oll does not require a system
+`oll` account, membership in a log group, root privileges, or a service manager.
 
 Paths are accepted as OS paths and are not required to exist during argument
 parsing.
@@ -57,9 +66,15 @@ oll init home-server --profile server
 oll init home-laptop --profile client --connect https://oll.example.com
 oll init home-server --profile server --listen 127.0.0.1:7443
 oll init home-laptop --replica /path/to/replica/root
+oll init home-laptop --config /path/to/config/root
+oll init home-laptop --log-dir /path/to/log/dir
+oll init home-laptop --listen 127.0.0.1:7443 \
+  --connect https://oll.example.com
 
 oll run
-oll run --config ~/.config/oll/config.lua
+oll run --replica /path/to/replica/root
+oll run --config /path/to/config/root
+oll run --log-dir /path/to/log/dir
 oll run --listen 127.0.0.1:7443
 oll run --connect https://oll.example.com
 oll run --listen 127.0.0.1:7443 \
@@ -77,15 +92,22 @@ initialization profile, not a replication role or authority level. Either
 profile may use `connect`, `listen`, both, or neither. `--connect` is repeatable;
 `--listen` accepts one socket address.
 
+`init` and `run` each define their own root and topology flags. They are not one
+shared argument group: `--profile` belongs only to initialization, and future
+command-specific options need not be added to both commands. `init` creates the
+selected directories and persists the replica root, log directory, and topology
+in `<config-root>/config.lua`. `run` locates that file through its selected
+config root; its `--replica`, `--log-dir`, `--listen`, and `--connect` values are
+temporary runtime overrides and do not rewrite configuration.
+
 `node-name` is required when initializing a deployment. It is the durable,
 globally presented human name paired one-to-one with the generated `NodeId`, not
 a receiver-local name for a connection. It uses the lowercase DNS-label syntax
 defined in `architecture.md`. The first implementation does not rename a node
 or reuse its name for another `NodeId`.
 
-`run` starts the same `oll` binary in the foreground. CLI `listen`/`connect`
-values are temporary runtime overrides and do not rewrite Lua configuration.
-It also has a hidden internal `--pingback <loopback-address>` option used only by
+`run` starts the same `oll` binary in the foreground. It also has a hidden
+internal `--pingback <loopback-address>` option used only by
 `start`; this is not a second public daemon mode. `start` launches the daemon in
 the background and verifies readiness with the nonce exchange specified in
 `admin-api.md`. `stop` uses the configured Admin API to gracefully stop oll and
@@ -148,10 +170,13 @@ oll ping <node-name>
 label. The daemon maps a learned remote `NodeIdentity` back to its configured
 connection target. A URL-only target cannot be selected by name until one
 successful handshake has established and persisted that identity binding.
-`-n`/`--retries` must be greater than zero. `sync --log` views
-`/var/log/oll/sync.log`; it is a log-view mode and conflicts with `node-name`
-and `--retries`. It reads that fixed file locally and does not require node
-configuration or an Admin connection.
+`-n`/`--retries` is the maximum total number of synchronization attempts and
+must be greater than zero. The initial attempt counts toward this limit, so
+`--retries 3` means at most three attempts in total, not one initial attempt
+plus three additional retries. `sync --log` views
+`<log-dir>/sync.log`; it is a log-view mode and conflicts with `node-name` and
+`--retries`. It reads that file locally and does not require node configuration
+or an Admin connection.
 
 ## Plugin commands
 
@@ -176,7 +201,7 @@ plugin stage is implemented. Its arguments are shell-style UTF-8 argv strings;
 the client preserves their order, duplicates, empty strings, and leading `-`
 characters without parsing or inferring types.
 
-`plugin --log` reads `/var/log/oll/plugin.log` locally, optionally filtering for
+`plugin --log` reads `<log-dir>/plugin.log` locally, optionally filtering for
 one plugin ID. It does not require node configuration or an Admin connection.
 
 A newly installed plugin is initially stopped. `plugin start` persistently sets

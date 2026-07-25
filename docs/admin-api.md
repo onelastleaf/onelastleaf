@@ -11,7 +11,8 @@ or infer the role from configuration:
 | `oll run` | daemon | Enters the one long-running node runtime and does not exit after startup. |
 | `oll init` | bootstrap client | Initializes local configuration and the one replica without starting services. |
 | `oll start` | launcher client | Starts a detached `oll run` child, verifies readiness, and exits. |
-| every other subcommand | admin client | Opens the configured Admin API, makes a bounded request, renders the result, and exits. |
+| snapshot inspect/verify and log viewing | local file client | Reads one user-selected snapshot or a file under the user log directory and exits. |
+| remaining operational subcommands | admin client | Opens the configured Admin API, makes a bounded request, renders the result, and exits. |
 
 `init` cannot use an already-running daemon: its purpose includes creating the
 state required before the first daemon can start. `start` is also necessarily a
@@ -23,9 +24,10 @@ processes and MUST NOT initialize node services in their own process.
 
 The Admin API uses gRPC over a Unix domain socket (UDS). It has no TCP port and
 MUST NOT listen on a network interface. The socket pathname comes from the same
-validated configuration used by the daemon and administrative clients. The
-default pathname and ownership are deferred until the system-daemon versus
-per-user deployment policy is fixed.
+validated configuration used by the daemon and administrative clients. oll is a
+user-level daemon; the default socket is `<config-root>/run/admin.sock`, inside a
+`0700` directory owned by the deployment user. It is never shared through a
+system `oll` account or group.
 
 The wire contract is typed protobuf in `proto/oll/admin.proto`. The CLI parses
 syntax once and converts it to a normalized domain request before opening the

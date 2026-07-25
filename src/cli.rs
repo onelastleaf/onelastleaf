@@ -15,8 +15,11 @@ use url::Url;
 pub const EXIT_UNAVAILABLE: u8 = 69;
 pub const EXIT_CONFIG: u8 = 78;
 
-const DEFAULT_CONFIG_SUFFIX: &str = ".config/oll/config.lua";
+const DEFAULT_CONFIG_SUFFIX: &str = ".config/oll";
+const CONFIG_FILENAME: &str = "config.lua";
 const DEFAULT_REPLICA_SUFFIX: &str = ".local/share/oll";
+const DEFAULT_LOG_SUFFIX: &str = ".local/state/oll";
+const XDG_LOG_SUFFIX: &str = "oll";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -52,10 +55,14 @@ impl Cli {
                 profile: args.profile,
                 connect: args.connect,
                 listen: args.listen,
-                replica: args.replica,
+                replica_root: args.replica,
+                config_root: args.config,
+                log_dir: args.log_dir,
             })),
             Command::Run(args) => Ok(CliIntent::Run(RunIntent {
-                config: args.config,
+                replica_root: args.replica,
+                config_root: args.config,
+                log_dir: args.log_dir,
                 listen: args.listen,
                 connect: args.connect,
                 pingback: args.pingback,
@@ -68,7 +75,7 @@ impl Cli {
                 (true, None, None) => Ok(CliIntent::Sync(SyncIntent::ViewLog)),
                 (false, node_name, retries) => Ok(CliIntent::Sync(SyncIntent::Synchronize {
                     node_name,
-                    retries,
+                    max_attempts: retries,
                 })),
                 _ => Err(intent_error(
                     ErrorKind::ArgumentConflict,
@@ -209,25 +216,25 @@ pub struct InitArgs {
     /// Replica root. Overrides OLL_REPLICA and the default path.
     #[arg(long, value_name = "PATH")]
     pub replica: Option<PathBuf>,
-}
-
-impl InitArgs {
-    pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.replica.as_ref(),
-            environment.replica.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_REPLICA_SUFFIX,
-            "replica root",
-        )
-    }
+    /// Configuration root containing config.lua. Overrides OLL_CONFIG.
+    #[arg(long, value_name = "PATH")]
+    pub config: Option<PathBuf>,
+    /// Log directory. Overrides OLL_LOG_DIR and the user-state default.
+    #[arg(long, value_name = "PATH")]
+    pub log_dir: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
-    /// Lua configuration file. Overrides OLL_CONFIG and the default path.
+    /// Temporary replica root override. Takes precedence over OLL_REPLICA.
+    #[arg(long, value_name = "PATH")]
+    pub replica: Option<PathBuf>,
+    /// Configuration root containing config.lua. Overrides OLL_CONFIG.
     #[arg(long, value_name = "PATH")]
     pub config: Option<PathBuf>,
+    /// Temporary log directory override. Takes precedence over OLL_LOG_DIR.
+    #[arg(long, value_name = "PATH")]
+    pub log_dir: Option<PathBuf>,
     /// Temporary socket address to listen on.
     #[arg(long, value_name = "ADDRESS")]
     pub listen: Option<SocketAddr>,
@@ -259,18 +266,6 @@ impl FromStr for LoopbackAddr {
             return Err("pingback address must use a loopback IP".to_owned());
         }
         Ok(Self(address))
-    }
-}
-
-impl RunArgs {
-    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.config.as_ref(),
-            environment.config.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_CONFIG_SUFFIX,
-            "config path",
-        )
     }
 }
 
@@ -339,10 +334,10 @@ pub struct SyncArgs {
     /// Synchronize only with this protocol-named node.
     #[arg(value_name = "NODE_NAME", conflicts_with = "log")]
     pub node_name: Option<NodeName>,
-    /// Maximum synchronization attempts.
+    /// Maximum total attempts, including the initial synchronization attempt.
     #[arg(short = 'n', long, conflicts_with = "log")]
     pub retries: Option<NonZeroU32>,
-    /// View /var/log/oll/sync.log instead of synchronizing.
+    /// View sync.log from the user log directory instead of synchronizing.
     #[arg(long)]
     pub log: bool,
 }
@@ -450,38 +445,80 @@ pub struct InitIntent {
     pub profile: Option<Profile>,
     pub connect: Vec<ConnectUrl>,
     pub listen: Option<SocketAddr>,
-    pub replica: Option<PathBuf>,
+    pub replica_root: Option<PathBuf>,
+    pub config_root: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
 }
 
 impl InitIntent {
     pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_path(
-            self.replica.as_ref(),
+            self.replica_root.as_ref(),
             environment.replica.as_ref(),
             environment.home.as_ref(),
             DEFAULT_REPLICA_SUFFIX,
             "replica root",
         )
     }
+
+    pub fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_path(
+            self.config_root.as_ref(),
+            environment.config.as_ref(),
+            environment.home.as_ref(),
+            DEFAULT_CONFIG_SUFFIX,
+            "config root",
+        )
+    }
+
+    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        self.config_root(environment)
+            .map(|root| root.join(CONFIG_FILENAME))
+    }
+
+    pub fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_log_dir(self.log_dir.as_ref(), environment)
+    }
 }
 
 #[derive(Debug, PartialEq)]
 pub struct RunIntent {
-    pub config: Option<PathBuf>,
+    pub replica_root: Option<PathBuf>,
+    pub config_root: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
     pub listen: Option<SocketAddr>,
     pub connect: Vec<ConnectUrl>,
     pub pingback: Option<LoopbackAddr>,
 }
 
 impl RunIntent {
-    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+    pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_path(
-            self.config.as_ref(),
+            self.replica_root.as_ref(),
+            environment.replica.as_ref(),
+            environment.home.as_ref(),
+            DEFAULT_REPLICA_SUFFIX,
+            "replica root",
+        )
+    }
+
+    pub fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_path(
+            self.config_root.as_ref(),
             environment.config.as_ref(),
             environment.home.as_ref(),
             DEFAULT_CONFIG_SUFFIX,
-            "config path",
+            "config root",
         )
+    }
+
+    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        self.config_root(environment)
+            .map(|root| root.join(CONFIG_FILENAME))
+    }
+
+    pub fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+        resolve_log_dir(self.log_dir.as_ref(), environment)
     }
 }
 
@@ -539,7 +576,7 @@ impl From<ReplicaCommand> for ReplicaIntent {
 pub enum SyncIntent {
     Synchronize {
         node_name: Option<NodeName>,
-        retries: Option<NonZeroU32>,
+        max_attempts: Option<NonZeroU32>,
     },
     ViewLog,
 }
@@ -732,10 +769,13 @@ impl CliIntent {
         match self {
             Self::Init(args) => {
                 let _ = args.replica_root(environment)?;
-                let _ = environment.config_path()?;
+                let _ = args.config_path(environment)?;
+                let _ = args.log_dir(environment)?;
             }
             Self::Run(args) => {
+                let _ = args.replica_root(environment)?;
                 let _ = args.config_path(environment)?;
+                let _ = args.log_dir(environment)?;
             }
             Self::Start | Self::Stop | Self::Status { .. } | Self::Ping { .. } | Self::Job(_) => {
                 let _ = environment.config_path()?;
@@ -751,9 +791,10 @@ impl CliIntent {
             }
             Self::Replica(
                 ReplicaIntent::SnapshotInspect { .. } | ReplicaIntent::SnapshotVerify { .. },
-            )
-            | Self::Sync(SyncIntent::ViewLog)
-            | Self::Plugin(PluginIntent::ViewLog { .. }) => {}
+            ) => {}
+            Self::Sync(SyncIntent::ViewLog) | Self::Plugin(PluginIntent::ViewLog { .. }) => {
+                let _ = environment.log_dir()?;
+            }
             Self::Plugin(_) => {
                 let _ = environment.config_path()?;
             }
@@ -783,8 +824,10 @@ impl From<JobCommand> for JobIntent {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Environment {
     pub home: Option<PathBuf>,
+    pub state_home: Option<PathBuf>,
     pub config: Option<PathBuf>,
     pub replica: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
 }
 
 impl Environment {
@@ -793,23 +836,33 @@ impl Environment {
             home: env::var_os("HOME")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            state_home: env::var_os("XDG_STATE_HOME")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
             config: env::var_os("OLL_CONFIG")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
             replica: env::var_os("OLL_REPLICA")
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from),
+            log_dir: env::var_os("OLL_LOG_DIR")
+                .filter(|value| !value.is_empty())
+                .map(PathBuf::from),
         }
     }
 
-    pub fn config_path(&self) -> Result<PathBuf, CliError> {
+    pub fn config_root(&self) -> Result<PathBuf, CliError> {
         resolve_path(
             None,
             self.config.as_ref(),
             self.home.as_ref(),
             DEFAULT_CONFIG_SUFFIX,
-            "config path",
+            "config root",
         )
+    }
+
+    pub fn config_path(&self) -> Result<PathBuf, CliError> {
+        self.config_root().map(|root| root.join(CONFIG_FILENAME))
     }
 
     pub fn replica_root(&self) -> Result<PathBuf, CliError> {
@@ -821,6 +874,27 @@ impl Environment {
             "replica root",
         )
     }
+
+    pub fn log_dir(&self) -> Result<PathBuf, CliError> {
+        resolve_log_dir(None, self)
+    }
+}
+
+fn resolve_log_dir(cli: Option<&PathBuf>, environment: &Environment) -> Result<PathBuf, CliError> {
+    if let Some(path) = cli.or(environment.log_dir.as_ref()) {
+        return Ok(path.clone());
+    }
+    if let Some(state_home) = &environment.state_home {
+        return Ok(state_home.join(XDG_LOG_SUFFIX));
+    }
+
+    environment
+        .home
+        .as_ref()
+        .map(|home| home.join(DEFAULT_LOG_SUFFIX))
+        .ok_or(CliError::MissingHome {
+            name: "log directory",
+        })
 }
 
 fn resolve_path(
@@ -911,47 +985,76 @@ mod tests {
     fn resolves_path_precedence() {
         let environment = Environment {
             home: Some("/home/test".into()),
-            config: Some("/env/config.lua".into()),
+            state_home: Some("/state/test".into()),
+            config: Some("/env/config".into()),
             replica: Some("/env/replica".into()),
+            log_dir: Some("/env/log".into()),
         };
-        let init = InitArgs {
-            node_name: "test-node".parse().unwrap(),
-            profile: None,
-            connect: Vec::new(),
-            listen: None,
-            replica: Some("/cli/replica".into()),
-        };
-        let run = RunArgs {
-            config: Some("/cli/config.lua".into()),
-            listen: None,
-            connect: Vec::new(),
-            pingback: None,
+        let CliIntent::Init(init) = intent(&[
+            "oll",
+            "init",
+            "test-node",
+            "--replica",
+            "/cli/replica",
+            "--config",
+            "/cli/config",
+            "--log-dir",
+            "/cli/log",
+        ]) else {
+            panic!()
         };
 
         assert_eq!(
             init.replica_root(&environment).unwrap(),
-            PathBuf::from("/cli/replica")
+            Path::new("/cli/replica")
         );
         assert_eq!(
-            run.config_path(&environment).unwrap(),
-            PathBuf::from("/cli/config.lua")
+            init.config_root(&environment).unwrap(),
+            Path::new("/cli/config")
         );
+        assert_eq!(
+            init.config_path(&environment).unwrap(),
+            Path::new("/cli/config/config.lua")
+        );
+        assert_eq!(init.log_dir(&environment).unwrap(), Path::new("/cli/log"));
 
-        let init = InitArgs {
-            replica: None,
-            ..init
-        };
-        let run = RunArgs {
-            config: None,
-            ..run
+        let CliIntent::Run(run) = intent(&["oll", "run"]) else {
+            panic!()
         };
         assert_eq!(
-            init.replica_root(&environment).unwrap(),
-            PathBuf::from("/env/replica")
+            run.replica_root(&environment).unwrap(),
+            Path::new("/env/replica")
+        );
+        assert_eq!(
+            run.config_root(&environment).unwrap(),
+            Path::new("/env/config")
         );
         assert_eq!(
             run.config_path(&environment).unwrap(),
-            PathBuf::from("/env/config.lua")
+            Path::new("/env/config/config.lua")
+        );
+        assert_eq!(run.log_dir(&environment).unwrap(), Path::new("/env/log"));
+
+        let environment = Environment {
+            home: Some("/home/test".into()),
+            state_home: Some("/state/test".into()),
+            ..Environment::default()
+        };
+        assert_eq!(
+            run.replica_root(&environment).unwrap(),
+            Path::new("/home/test/.local/share/oll")
+        );
+        assert_eq!(
+            run.config_root(&environment).unwrap(),
+            Path::new("/home/test/.config/oll")
+        );
+        assert_eq!(
+            run.config_path(&environment).unwrap(),
+            Path::new("/home/test/.config/oll/config.lua")
+        );
+        assert_eq!(
+            run.log_dir(&environment).unwrap(),
+            Path::new("/state/test/oll")
         );
 
         let environment = Environment {
@@ -959,12 +1062,8 @@ mod tests {
             ..Environment::default()
         };
         assert_eq!(
-            init.replica_root(&environment).unwrap(),
-            PathBuf::from("/home/test/.local/share/oll")
-        );
-        assert_eq!(
-            run.config_path(&environment).unwrap(),
-            PathBuf::from("/home/test/.config/oll/config.lua")
+            run.log_dir(&environment).unwrap(),
+            Path::new("/home/test/.local/state/oll")
         );
     }
 
@@ -989,15 +1088,37 @@ mod tests {
                 "--replica",
                 "/path/to/replica/root",
             ],
+            vec![
+                "oll",
+                "init",
+                "test-node",
+                "--config",
+                "/path/to/config/root",
+            ],
+            vec!["oll", "init", "test-node", "--log-dir", "/path/to/log/dir"],
+            vec![
+                "oll",
+                "init",
+                "test-node",
+                "--listen",
+                "127.0.0.1:7443",
+                "--connect",
+                "https://oll.example.com",
+            ],
             vec!["oll", "run"],
+            vec!["oll", "run", "--replica", "/path/to/replica/root"],
+            vec!["oll", "run", "--config", "/path/to/config/root"],
+            vec!["oll", "run", "--log-dir", "/path/to/log/dir"],
+            vec!["oll", "run", "--listen", "127.0.0.1:7443"],
+            vec!["oll", "run", "--connect", "https://oll.example.com"],
             vec![
                 "oll",
                 "run",
-                "--config",
-                "/home/test/.config/oll/config.lua",
+                "--listen",
+                "127.0.0.1:7443",
+                "--connect",
+                "https://oll.example.com",
             ],
-            vec!["oll", "run", "--listen", "127.0.0.1:7443"],
-            vec!["oll", "run", "--connect", "https://oll.example.com"],
             vec!["oll", "start"],
             vec!["oll", "stop"],
             vec!["oll", "status"],
@@ -1039,6 +1160,7 @@ mod tests {
             panic!()
         };
         assert_eq!(args.connect.len(), 2);
+        assert!(parse_from(["oll", "run", "--profile", "server"]).is_err());
     }
 
     #[test]
@@ -1194,13 +1316,15 @@ mod tests {
             CliIntent::Sync(SyncIntent::ViewLog)
         );
 
-        let CliIntent::Sync(SyncIntent::Synchronize { node_name, retries }) =
-            intent(&["oll", "sync", "node-a", "--retries", "3"])
+        let CliIntent::Sync(SyncIntent::Synchronize {
+            node_name,
+            max_attempts,
+        }) = intent(&["oll", "sync", "node-a", "--retries", "3"])
         else {
             panic!()
         };
         assert_eq!(node_name.unwrap().as_str(), "node-a");
-        assert_eq!(retries.unwrap().get(), 3);
+        assert_eq!(max_attempts.unwrap().get(), 3);
     }
 
     #[test]
@@ -1373,10 +1497,18 @@ mod tests {
         for arguments in [
             vec!["oll", "replica", "snapshot", "inspect", "file.ollsnap"],
             vec!["oll", "replica", "snapshot", "verify", "file.ollsnap"],
-            vec!["oll", "sync", "--log"],
-            vec!["oll", "plugin", "--log"],
         ] {
             intent(&arguments).validate_environment(&empty).unwrap();
+        }
+
+        let log_environment = Environment {
+            log_dir: Some("/logs".into()),
+            ..Environment::default()
+        };
+        for arguments in [vec!["oll", "sync", "--log"], vec!["oll", "plugin", "--log"]] {
+            intent(&arguments)
+                .validate_environment(&log_environment)
+                .unwrap();
         }
 
         for arguments in [
@@ -1384,7 +1516,9 @@ mod tests {
             vec!["oll", "replica", "export", "--output", "file.ollsnap"],
             vec!["oll", "replica", "import", "file.ollsnap"],
             vec!["oll", "sync", "node-a"],
+            vec!["oll", "sync", "--log"],
             vec!["oll", "plugin", "list"],
+            vec!["oll", "plugin", "--log"],
         ] {
             assert!(intent(&arguments).validate_environment(&empty).is_err());
         }

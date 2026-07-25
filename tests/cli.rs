@@ -45,6 +45,49 @@ fn node_name_is_the_human_facing_identity_selector() {
 }
 
 #[test]
+fn init_and_run_expose_independent_directory_and_topology_flags() {
+    let init = oll().args(["init", "--help"]).output().unwrap();
+    let run = oll().args(["run", "--help"]).output().unwrap();
+    assert!(init.status.success());
+    assert!(run.status.success());
+
+    let init_help = String::from_utf8(init.stdout).unwrap();
+    let run_help = String::from_utf8(run.stdout).unwrap();
+    for option in [
+        "--replica",
+        "--config",
+        "--log-dir",
+        "--listen",
+        "--connect",
+    ] {
+        assert!(
+            init_help.contains(option),
+            "missing {option} in init help:\n{init_help}"
+        );
+        assert!(
+            run_help.contains(option),
+            "missing {option} in run help:\n{run_help}"
+        );
+    }
+    assert!(init_help.contains("--profile"));
+    assert!(!run_help.contains("--profile"));
+    assert!(!init_help.contains("--log-root"));
+    assert!(!run_help.contains("--log-root"));
+}
+
+#[test]
+fn sync_retry_help_defines_a_total_attempt_limit() {
+    let output = oll().args(["sync", "--help"]).output().unwrap();
+    assert!(output.status.success());
+
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(
+        stdout.contains("Maximum total attempts, including the initial synchronization attempt"),
+        "ambiguous retry help:\n{stdout}"
+    );
+}
+
+#[test]
 fn pingback_is_internal_but_parseable_by_start() {
     let help = oll().args(["run", "--help"]).output().unwrap();
     assert!(help.status.success());
@@ -111,15 +154,29 @@ fn unavailable_commands_fail_without_side_effects() {
 fn explicit_and_environment_paths_do_not_require_home() {
     let explicit = oll()
         .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
         .env_remove("OLL_CONFIG")
-        .args(["run", "--config", "/tmp/oll-config.lua"])
+        .env_remove("OLL_REPLICA")
+        .env_remove("OLL_LOG_DIR")
+        .args([
+            "run",
+            "--config",
+            "/tmp/oll-config",
+            "--replica",
+            "/tmp/oll-replica",
+            "--log-dir",
+            "/tmp/oll-log",
+        ])
         .output()
         .unwrap();
     assert_eq!(explicit.status.code(), Some(EXIT_UNAVAILABLE));
 
     let from_environment = oll()
         .env_remove("HOME")
-        .env("OLL_CONFIG", "/tmp/oll-env-config.lua")
+        .env_remove("XDG_STATE_HOME")
+        .env("OLL_CONFIG", "/tmp/oll-env-config")
+        .env("OLL_REPLICA", "/tmp/oll-env-replica")
+        .env("OLL_LOG_DIR", "/tmp/oll-env-log")
         .arg("run")
         .output()
         .unwrap();
@@ -127,8 +184,16 @@ fn explicit_and_environment_paths_do_not_require_home() {
 
     let init = oll()
         .env_remove("HOME")
-        .env("OLL_CONFIG", "/tmp/oll-env-config.lua")
-        .args(["init", "test-node", "--replica", "/tmp/oll-replica"])
+        .env_remove("XDG_STATE_HOME")
+        .env("OLL_CONFIG", "/tmp/oll-env-config")
+        .args([
+            "init",
+            "test-node",
+            "--replica",
+            "/tmp/oll-replica",
+            "--log-dir",
+            "/tmp/oll-log",
+        ])
         .output()
         .unwrap();
     assert_eq!(init.status.code(), Some(EXIT_UNAVAILABLE));
@@ -138,7 +203,10 @@ fn explicit_and_environment_paths_do_not_require_home() {
 fn missing_home_is_a_configuration_error_when_default_is_needed() {
     let output = oll()
         .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
         .env_remove("OLL_CONFIG")
+        .env_remove("OLL_REPLICA")
+        .env_remove("OLL_LOG_DIR")
         .arg("run")
         .output()
         .unwrap();
@@ -152,18 +220,17 @@ fn missing_home_is_a_configuration_error_when_default_is_needed() {
 }
 
 #[test]
-fn local_file_and_log_intents_do_not_require_home_or_config() {
+fn local_snapshot_intents_do_not_require_directory_configuration() {
     for arguments in [
         vec!["replica", "snapshot", "inspect", "file.ollsnap"],
         vec!["replica", "snapshot", "verify", "file.ollsnap"],
-        vec!["sync", "--log"],
-        vec!["plugin", "--log"],
-        vec!["plugin", "--log", "__all__"],
     ] {
         let output = oll()
             .env_remove("HOME")
+            .env_remove("XDG_STATE_HOME")
             .env_remove("OLL_CONFIG")
             .env_remove("OLL_REPLICA")
+            .env_remove("OLL_LOG_DIR")
             .args(&arguments)
             .output()
             .unwrap();
@@ -178,6 +245,37 @@ fn local_file_and_log_intents_do_not_require_home_or_config() {
 }
 
 #[test]
+fn log_intents_require_only_the_user_log_directory() {
+    for arguments in [
+        vec!["sync", "--log"],
+        vec!["plugin", "--log"],
+        vec!["plugin", "--log", "__all__"],
+    ] {
+        let missing = oll()
+            .env_remove("HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("OLL_CONFIG")
+            .env_remove("OLL_REPLICA")
+            .env_remove("OLL_LOG_DIR")
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(missing.status.code(), Some(EXIT_CONFIG));
+
+        let configured = oll()
+            .env_remove("HOME")
+            .env_remove("XDG_STATE_HOME")
+            .env_remove("OLL_CONFIG")
+            .env_remove("OLL_REPLICA")
+            .env("OLL_LOG_DIR", "/tmp/oll-log")
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(configured.status.code(), Some(EXIT_UNAVAILABLE));
+    }
+}
+
+#[test]
 fn admin_intents_require_config_but_not_a_client_replica_root() {
     for arguments in [
         vec!["replica", "inspect", "/note.md"],
@@ -186,8 +284,10 @@ fn admin_intents_require_config_but_not_a_client_replica_root() {
     ] {
         let missing_config = oll()
             .env_remove("HOME")
+            .env_remove("XDG_STATE_HOME")
             .env_remove("OLL_CONFIG")
             .env_remove("OLL_REPLICA")
+            .env_remove("OLL_LOG_DIR")
             .args(&arguments)
             .output()
             .unwrap();
@@ -195,8 +295,10 @@ fn admin_intents_require_config_but_not_a_client_replica_root() {
 
         let configured = oll()
             .env_remove("HOME")
-            .env("OLL_CONFIG", "/tmp/oll-config.lua")
+            .env_remove("XDG_STATE_HOME")
+            .env("OLL_CONFIG", "/tmp/oll-config")
             .env_remove("OLL_REPLICA")
+            .env_remove("OLL_LOG_DIR")
             .args(&arguments)
             .output()
             .unwrap();

@@ -118,7 +118,7 @@ client and `start` is a local daemon launcher because neither operation can
 presuppose an already-running daemon.
 
 Structured logging is a cross-cutting runtime contract, not a final integration
-task. The node initializes correlation context and `/var/log/oll/` sinks before
+task. The node initializes correlation context and user-owned log-directory sinks before
 starting replica, sync, or plugin work. See
 [observability.md](observability.md).
 

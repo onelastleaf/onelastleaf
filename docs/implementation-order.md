@@ -50,7 +50,7 @@ replica behavior:
 - `connect`/`listen` deployment configuration;
 - one data directory and one replica slot;
 - Tokio runtime ownership;
-- structured JSON logging, `/var/log/oll/` sinks, aggregation, dynamic filters,
+- structured JSON logging, user-owned log-directory sinks, aggregation, dynamic filters,
   and correlation context as specified in `observability.md`;
 - child-process liveness-pipe support needed later by plugins.
 

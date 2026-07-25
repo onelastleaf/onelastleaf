@@ -13,23 +13,29 @@ than emitting only free-form error strings.
 
 ## Location and ownership
 
-Daemon logs live under:
+oll is a user-level daemon. Daemon logs live under the deployment's log
+directory, whose default is:
 
 ```text
-/var/log/oll/
+$XDG_STATE_HOME/oll/
 ```
 
-The path follows the executable and service name `oll`; the project does not use
-`/var/log/onelastleaf/`.
+When `XDG_STATE_HOME` is unset, the default is
+`$HOME/.local/state/oll/`. `oll init --log-dir`, `oll run --log-dir`, and
+`OLL_LOG_DIR` select another directory according to `cli.md`.
 
-The package/service setup creates the directory and files:
+oll creates the directory and files as the user running the deployment:
 
 ```text
-/var/log/oll/       0750 oll:oll
-├── oll.log         0640 oll:oll
-├── sync.log        0640 oll:oll
-└── plugin.log      0640 oll:oll  # created with the plugin system
+<log-dir>/           0700 <user>:<primary-group>
+├── oll.log          0600 <user>:<primary-group>
+├── sync.log         0600 <user>:<primary-group>
+└── plugin.log       0600 <user>:<primary-group>  # plugin stage
 ```
+
+oll does not require a system `oll` account, a shared log group, root
+privileges, or pre-created `/var/log` state. Existing roots and files with unsafe
+ownership, type, or permissions are rejected rather than silently relaxed.
 
 Early startup failures that occur before file logging is ready are emitted to
 stderr. In daemon mode, failure to initialize the required log files is a startup
@@ -213,8 +219,10 @@ text filter.
 
 ## Rotation and retention
 
-Rotation is managed by the operating system's `logrotate` integration. oll MUST
-reopen log files after the configured rotation signal.
+Rotation is managed by oll inside the user-owned log directory. Rotation and
+reopen must preserve the directory and file permissions above and use atomic
+renames; it must not require a system `logrotate` installation or privileged
+signal.
 
 Initial policy:
 
