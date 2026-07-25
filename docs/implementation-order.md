@@ -41,12 +41,15 @@ replica behavior:
 - `connect`/`listen` deployment configuration;
 - one data directory and one replica slot;
 - Tokio runtime ownership;
-- structured logging and correlation context;
+- structured JSON logging, `/var/log/oll/` sinks, aggregation, dynamic filters,
+  and correlation context as specified in `observability.md`;
 - child-process liveness-pipe support needed later by plugins.
 
 Completion criteria:
 
 - a node starts, reports status, and shuts down deterministically;
+- `oll.log` and `sync.log` initialize with correct ownership and emit valid JSON
+  events carrying correlation IDs;
 - a second replica cannot be attached to the same process;
 - configuration distinguishes connection topology from node authority.
 
@@ -87,7 +90,9 @@ Completion criteria:
 - independently edited nodes converge for catalog and document changes;
 - a missing document object is requested after its catalog entry arrives;
 - interrupted transfers resume by re-advertising state, not by trusting partial
-  files.
+  files;
+- one correlation ID links a delta request, transfer, import, and acknowledgement
+  across both peers.
 
 ## 5. Plugin system
 
@@ -108,7 +113,9 @@ Completion criteria:
 - nested calls do not stop the stream reader;
 - PDF/`.apkg`-sized outputs use verified artifact chunks;
 - timeout/`killjob` terminates the plugin process using graceful shutdown,
-  `SIGTERM`, then `SIGKILL`.
+  `SIGTERM`, then `SIGKILL`;
+- plugin logs are normalized into `plugin.log` while lifecycle summaries remain
+  correlated in `oll.log`.
 
 ## Deferred work
 

@@ -59,6 +59,11 @@ decision that also updates the architecture documentation.
   documented host-level commit and recovery boundary.
 - Do not treat oll replica snapshots (`.ollsnap`) as Loro object snapshots; they
   have different formats and purposes.
+- Treat observability as part of correctness. New operations need structured
+  start/success/failure events, redaction, and correlation propagation according
+  to `docs/observability.md`.
+- Never drop correlation context across RPC, sync, plugin, scheduler, or Tokio
+  task boundaries.
 
 ## Required validation
 

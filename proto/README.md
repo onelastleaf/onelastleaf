@@ -77,6 +77,10 @@ it is not an authoritative state replacement. It is distinct from the tar+zstd
 oll replica snapshot documented in `docs/snapshot-format.md`. Importing
 concurrent updates still follows Loro merge semantics.
 
+Every `SyncEnvelope` carries a non-empty `correlation_id`. A delta request and
+its transfer, import result, and acknowledgement reuse one ID across both peers
+so their structured logs can be aggregated into one distributed operation.
+
 Only the replication protocol carries Loro version vectors, frontiers, and
 encoded update/snapshot bytes. Applications and plugins use document revisions.
 The Loro encoding fingerprint is a build artifact covering the Loro export

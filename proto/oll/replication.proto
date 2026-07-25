@@ -126,6 +126,9 @@ message SyncPong { uint64 nonce = 1; }
 message SyncEnvelope {
   uint64 message_id = 1;
   optional uint64 reply_to = 2;
+  // Propagated across peers for distributed log aggregation. All messages that
+  // belong to one delta/transfer/import operation use the same value.
+  string correlation_id = 3;
 
   oneof payload {
     SyncHello hello = 10;

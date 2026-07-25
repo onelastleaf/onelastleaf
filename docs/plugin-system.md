@@ -134,8 +134,9 @@ the current logical task group unless oll assigns another. The first version
 does not promise fairness, quotas, queue bounds, or CFS-like behavior.
 
 Plugins emit structured `LogRecord` messages. oll aggregates them using the
-envelope's correlation, call, causal, task, and group identifiers. Additional
-metrics or tracing systems are not required for the first version.
+envelope's correlation, call, causal, task, and group identifiers. Plugin output
+is normalized and routed according to [observability.md](observability.md).
+Additional metrics or tracing systems are not required for the first version.
 
 ## External side effects
 

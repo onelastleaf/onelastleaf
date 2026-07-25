@@ -87,6 +87,11 @@ Clap CLI / daemon entry
 The node runtime owns lifecycle, configuration, the single replica, peer
 connections, plugin processes, structured logs, and shutdown ordering.
 
+Structured logging is a cross-cutting runtime contract, not a final integration
+task. The node initializes correlation context and `/var/log/oll/` sinks before
+starting replica, sync, or plugin work. See
+[observability.md](observability.md).
+
 ## Trust and consistency boundaries
 
 - Plugins are fully trusted and may read or modify any document.

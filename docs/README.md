@@ -16,6 +16,8 @@ documents describe the larger runtime and storage model around those messages.
   export/import behavior.
 - [Synchronization](synchronization.md): peer-to-peer CRDT replication and its
   object-level protocol.
+- [Observability](observability.md): structured JSON logs, aggregation,
+  correlation propagation, file routing, and retention.
 - [Plugin system](plugin-system.md): process lifecycle, bidi gRPC, jobs,
   configuration callbacks, scheduling, logs, and package installation.
 
