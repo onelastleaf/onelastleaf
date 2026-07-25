@@ -1,0 +1,27 @@
+# onelastleaf design documentation
+
+`docs/` records implementation decisions that must be understood before code is
+written. Protobuf wire details remain in [`proto/`](../proto/README.md); these
+documents describe the larger runtime and storage model around those messages.
+
+## Documents
+
+- [Architecture](architecture.md): system boundaries, terminology, and the
+  one-binary/one-node/one-replica invariant.
+- [Implementation order](implementation-order.md): the required CLI -> node ->
+  replica -> sync -> plugin-system sequence.
+- [Replica model](replica.md): the document tree, catalog, per-document
+  `LoroDoc`, revisions, and local commit semantics.
+- [Snapshot format](snapshot-format.md): the `.ollsnap` tar+zstd container and
+  export/import behavior.
+- [Synchronization](synchronization.md): peer-to-peer CRDT replication and its
+  object-level protocol.
+- [Plugin system](plugin-system.md): process lifecycle, bidi gRPC, jobs,
+  configuration callbacks, scheduling, logs, and package installation.
+
+## Normative language
+
+`MUST`, `MUST NOT`, `SHOULD`, and `MAY` are normative. A section explicitly
+marked `Open` is not an implementation decision. Everything else is the current
+design contract and should be changed in documentation and protocol definitions
+before incompatible code is written.

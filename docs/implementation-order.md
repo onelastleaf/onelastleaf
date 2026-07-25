@@ -1,0 +1,121 @@
+# Implementation order
+
+Implementation MUST proceed in this order:
+
+```text
+CLI (Clap) -> node -> replica -> sync -> plugin system
+```
+
+Later stages may depend on stable interfaces from earlier stages. An earlier
+stage must not depend on a placeholder implementation of a later stage.
+
+## 1. CLI
+
+The only executable is `oll`; there is no `olld`.
+
+The first stage establishes:
+
+- Clap command parsing and help output;
+- configuration and environment-variable loading;
+- selection of daemon operation versus administrative commands;
+- stable error reporting and process exit codes;
+- a single data-directory/configuration context.
+
+Exact command names are not fixed by this document. The CLI must preserve the
+one-daemon/one-node/one-replica invariant and must not grow a multi-replica
+selector.
+
+Completion criteria:
+
+- invalid configuration fails before runtime initialization;
+- CLI tests cover parsing, environment precedence, and exit behavior;
+- daemon startup can be invoked through the same `oll` binary.
+
+## 2. Node
+
+The node stage establishes the long-running daemon shell without implementing
+replica behavior:
+
+- `NodeId` creation and durable loading;
+- process lifecycle and graceful shutdown;
+- `connect`/`listen` deployment configuration;
+- one data directory and one replica slot;
+- Tokio runtime ownership;
+- structured logging and correlation context;
+- child-process liveness-pipe support needed later by plugins.
+
+Completion criteria:
+
+- a node starts, reports status, and shuts down deterministically;
+- a second replica cannot be attached to the same process;
+- configuration distinguishes connection topology from node authority.
+
+## 3. Replica
+
+The replica stage implements:
+
+- persistent `ReplicaId`;
+- the catalog `LoroDoc`;
+- stable `DocumentId` values and one `LoroDoc` per document;
+- path lookup and directory-tree traversal;
+- content and abstract CRDT read/write APIs;
+- opaque document `Revision` tokens and optimistic preconditions;
+- local commit coordination and crash recovery;
+- `.ollsnap` export and import.
+
+Completion criteria:
+
+- create/read/update/move/delete operations survive restart;
+- stale revisions reject the complete host-level commit before mutation;
+- snapshot round trips preserve catalog and every retained document CRDT;
+- malformed archives cannot escape the import staging directory.
+
+## 4. Sync
+
+Sync is implemented only after the replica object model is stable. It adds:
+
+- symmetric bidi gRPC sessions;
+- exact protocol/Loro encoding fingerprint checks;
+- catalog and document object advertisements;
+- per-object delta or snapshot transfer;
+- chunk validation, flow control, import acknowledgement, and reconnection;
+- offline edits and concurrent multi-writer convergence tests.
+
+Completion criteria:
+
+- neither transport endpoint has replication authority;
+- independently edited nodes converge for catalog and document changes;
+- a missing document object is requested after its catalog entry arrives;
+- interrupted transfers resume by re-advertising state, not by trusting partial
+  files.
+
+## 5. Plugin system
+
+The final stage adds:
+
+- plugin installation from Git URLs;
+- source builds and optional release binaries;
+- process spawning and parent-liveness pipes;
+- `PluginRuntime.Connect` multiplexing;
+- asynchronous jobs, host document calls, Lua configuration callbacks,
+  scheduling, artifact output, logs, and process termination;
+- recursion-depth and causal-depth enforcement.
+
+Completion criteria:
+
+- a plugin can read the tree and atomically attempt a revision-guarded write;
+- stale plugin output is rejected without blocking;
+- nested calls do not stop the stream reader;
+- PDF/`.apkg`-sized outputs use verified artifact chunks;
+- timeout/`killjob` terminates the plugin process using graceful shutdown,
+  `SIGTERM`, then `SIGKILL`.
+
+## Deferred work
+
+The first implementation does not include:
+
+- multi-replica process management;
+- a plugin marketplace, signatures, or permission sandbox;
+- backward-compatible protobuf negotiation;
+- fair scheduling, quotas, or a CFS-like scheduler;
+- distributed transactions with external services.
