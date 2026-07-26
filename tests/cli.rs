@@ -18,7 +18,7 @@ struct TestDeployment {
 }
 
 impl TestDeployment {
-    fn new() -> Self {
+    fn empty() -> Self {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -28,6 +28,12 @@ impl TestDeployment {
             std::process::id()
         ));
         let config = root.join("config");
+        Self { root, config }
+    }
+
+    fn new() -> Self {
+        let deployment = Self::empty();
+        let config = deployment.config.clone();
         fs::create_dir_all(&config).unwrap();
         fs::write(
             config.join("config.lua"),
@@ -44,17 +50,31 @@ impl TestDeployment {
             "#,
         )
         .unwrap();
-        Self { root, config }
+        deployment
     }
 
     fn config(&self) -> &Path {
         &self.config
     }
+
+    fn root(&self) -> &Path {
+        &self.root
+    }
+
+    fn write_identity(&self) {
+        fs::write(
+            self.config.join("node.json"),
+            r#"{"format_version":1,"node_id":"9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3","node_name":"test-node"}"#,
+        )
+        .unwrap();
+    }
 }
 
 impl Drop for TestDeployment {
     fn drop(&mut self) {
-        fs::remove_dir_all(&self.root).unwrap();
+        if self.root.exists() {
+            fs::remove_dir_all(&self.root).unwrap();
+        }
     }
 }
 
@@ -136,7 +156,7 @@ fn sync_retry_help_defines_a_total_attempt_limit() {
 }
 
 #[test]
-fn pingback_is_internal_but_parseable_by_start() {
+fn pingback_is_hidden_but_reaches_node_validation() {
     let deployment = TestDeployment::new();
     let help = oll().args(["run", "--help"]).output().unwrap();
     assert!(help.status.success());
@@ -147,7 +167,7 @@ fn pingback_is_internal_but_parseable_by_start() {
         .args(["run", "--pingback", "127.0.0.1:43210"])
         .output()
         .unwrap();
-    assert_eq!(parsed.status.code(), Some(EXIT_UNAVAILABLE));
+    assert_eq!(parsed.status.code(), Some(EXIT_CONFIG));
 
     let non_loopback = oll()
         .args(["run", "--pingback", "0.0.0.0:43210"])
@@ -185,16 +205,15 @@ fn unavailable_commands_fail_without_side_effects() {
         .as_nanos();
     let temporary =
         std::env::temp_dir().join(format!("oll-cli-test-{}-{nonce}", std::process::id()));
-    let replica = temporary.join("replica");
+    let config = temporary.join("config");
 
     let output = oll()
-        .args(["init", "test-node", "--replica"])
-        .arg(&replica)
+        .env("OLL_CONFIG", &config)
+        .args(["plugin", "validate"])
         .output()
         .unwrap();
 
     assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
-    assert!(!replica.exists());
     assert!(!temporary.exists());
     assert!(
         String::from_utf8(output.stderr)
@@ -205,47 +224,38 @@ fn unavailable_commands_fail_without_side_effects() {
 
 #[test]
 fn explicit_and_environment_paths_do_not_require_home() {
-    let deployment = TestDeployment::new();
+    let explicit_deployment = TestDeployment::empty();
+    let explicit_replica = explicit_deployment.root().join("replica");
+    let explicit_log = explicit_deployment.root().join("log");
     let explicit = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
         .env_remove("OLL_CONFIG")
         .env_remove("OLL_REPLICA")
         .env_remove("OLL_LOG_DIR")
-        .arg("run")
-        .arg("--config")
-        .arg(deployment.config())
-        .args(["--replica", "/tmp/oll-replica", "--log-dir", "/tmp/oll-log"])
+        .args(["init", "explicit-node", "--config"])
+        .arg(explicit_deployment.config())
+        .arg("--replica")
+        .arg(&explicit_replica)
+        .arg("--log-dir")
+        .arg(&explicit_log)
         .output()
         .unwrap();
-    assert_eq!(explicit.status.code(), Some(EXIT_UNAVAILABLE));
+    assert!(explicit.status.success());
 
+    let environment_deployment = TestDeployment::empty();
+    let environment_replica = environment_deployment.root().join("replica");
+    let environment_log = environment_deployment.root().join("log");
     let from_environment = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
-        .env("OLL_CONFIG", deployment.config())
-        .env("OLL_REPLICA", "/tmp/oll-env-replica")
-        .env("OLL_LOG_DIR", "/tmp/oll-env-log")
-        .arg("run")
+        .env("OLL_CONFIG", environment_deployment.config())
+        .env("OLL_REPLICA", &environment_replica)
+        .env("OLL_LOG_DIR", &environment_log)
+        .args(["init", "environment-node"])
         .output()
         .unwrap();
-    assert_eq!(from_environment.status.code(), Some(EXIT_UNAVAILABLE));
-
-    let init = oll()
-        .env_remove("HOME")
-        .env_remove("XDG_STATE_HOME")
-        .env("OLL_CONFIG", "/tmp/oll-env-config")
-        .args([
-            "init",
-            "test-node",
-            "--replica",
-            "/tmp/oll-replica",
-            "--log-dir",
-            "/tmp/oll-log",
-        ])
-        .output()
-        .unwrap();
-    assert_eq!(init.status.code(), Some(EXIT_UNAVAILABLE));
+    assert!(from_environment.status.success());
 }
 
 #[test]
@@ -263,10 +273,13 @@ fn run_preparation_requires_only_the_config_root() {
 
     assert_eq!(
         output.status.code(),
-        Some(EXIT_UNAVAILABLE),
+        Some(EXIT_CONFIG),
         "unexpected stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("node identity"));
+    assert!(!stderr.contains("HOME"));
 }
 
 #[test]
@@ -277,6 +290,7 @@ fn run_defers_lua_evaluation_until_the_node_handler() {
         "error('DO_NOT_PRINT_THIS_SECRET')",
     )
     .unwrap();
+    deployment.write_identity();
 
     let output = oll()
         .env_remove("HOME")
@@ -284,10 +298,50 @@ fn run_defers_lua_evaluation_until_the_node_handler() {
         .arg("run")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("command is not implemented"));
+    assert!(stderr.contains("cannot evaluate"));
     assert!(!stderr.contains("DO_NOT_PRINT_THIS_SECRET"));
+}
+
+#[test]
+fn init_creates_and_refuses_to_replace_a_deployment_without_confirmation() {
+    let deployment = TestDeployment::empty();
+    let replica = deployment.root().join("replica");
+    let log = deployment.root().join("log");
+    let first = oll()
+        .args(["init", "home-node", "--config"])
+        .arg(deployment.config())
+        .arg("--replica")
+        .arg(&replica)
+        .arg("--log-dir")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(first.status.success());
+    let node_before = fs::read(deployment.config().join("node.json")).unwrap();
+    assert!(replica.is_dir());
+    assert!(log.is_dir());
+
+    let second = oll()
+        .args(["init", "other-node", "--config"])
+        .arg(deployment.config())
+        .arg("--replica")
+        .arg(&replica)
+        .arg("--log-dir")
+        .arg(&log)
+        .output()
+        .unwrap();
+    assert!(second.status.success());
+    assert_eq!(
+        fs::read(deployment.config().join("node.json")).unwrap(),
+        node_before
+    );
+    assert!(
+        String::from_utf8(second.stderr)
+            .unwrap()
+            .contains("will be replaced")
+    );
 }
 
 #[test]

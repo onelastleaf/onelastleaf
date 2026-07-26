@@ -1,7 +1,10 @@
 use std::process::ExitCode;
 
 use clap::Parser;
-use onelastleaf::cli::{Cli, EXIT_CONFIG, EXIT_UNAVAILABLE, Environment};
+use onelastleaf::{
+    cli::{Cli, EXIT_CONFIG, Environment},
+    node,
+};
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
@@ -21,7 +24,7 @@ fn main() -> ExitCode {
             return ExitCode::from(EXIT_CONFIG);
         }
     };
-    let _prepared = match intent.prepare(&Environment::from_process(), &cwd) {
+    let prepared = match intent.prepare(&Environment::from_process(), &cwd) {
         Ok(prepared) => prepared,
         Err(error) => {
             eprintln!("oll: {error}");
@@ -29,6 +32,11 @@ fn main() -> ExitCode {
         }
     };
 
-    eprintln!("oll: command is not implemented");
-    ExitCode::from(EXIT_UNAVAILABLE)
+    match node::execute(prepared) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(error) => {
+            eprintln!("oll: {error}");
+            ExitCode::from(error.exit_code())
+        }
+    }
 }
