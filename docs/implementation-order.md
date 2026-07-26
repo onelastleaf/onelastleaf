@@ -22,7 +22,9 @@ The only executable is `oll`; there is no `olld`.
 The first stage establishes:
 
 - Clap command parsing and help output;
-- configuration and environment-variable loading;
+- statically embedded LuaJIT through `mlua`/`luajit-src`;
+- `config.lua` evaluation, typed schema conversion, path resolution, and
+  environment/CLI precedence;
 - subcommand-only selection of the `run` daemon entry versus bounded clients;
 - parsing of the hidden `run --pingback` launcher handshake argument;
 - stable error reporting and process exit codes;
@@ -34,8 +36,9 @@ selector.
 
 Completion criteria:
 
-- invalid configuration fails before runtime initialization;
-- CLI tests cover parsing, environment precedence, and exit behavior;
+- invalid or non-terminating configuration fails before runtime initialization;
+- CLI tests cover parsing, configuration returns, environment/CLI precedence,
+  path bases, and exit behavior;
 - daemon startup can be invoked through the same `oll` binary.
 
 ## 2. Node
@@ -114,8 +117,8 @@ The final stage adds:
 
 - plugin installation from typed Git remotes and data-only `plugins.lua`;
 - `oll.toml` source recipes and direct-URL `oll.json` release artifacts;
-- statically embedded LuaJIT through `mlua`/`luajit-src` and local
-  plugin-config validation;
+- literal-only `plugins.lua` validation and reuse of the established LuaJIT
+  configuration runtime for plugin values and closures;
 - process spawning and parent-liveness pipes;
 - persistent plugin desired state and event-driven child-process supervision;
 - `PluginRuntime.Connect` multiplexing;

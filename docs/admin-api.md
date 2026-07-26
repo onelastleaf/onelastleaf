@@ -73,9 +73,11 @@ API:
 2. It binds a loopback-only TCP listener to port `0`, allowing the kernel to
    choose an ephemeral port, and generates a 32-byte nonce with the operating
    system CSPRNG.
-3. It spawns the same executable as `oll run --pingback <loopback-address>` in a
-   detached process session with a piped stdin. `--pingback` is an internal,
-   hidden `run` option. The nonce MUST NOT appear in argv or the environment.
+3. It resolves the deployment's config root against the launcher's startup
+   working directory, then spawns the same executable as `oll run --config
+   <absolute-config-root> --pingback <loopback-address>` in a detached process
+   session with a piped stdin. `--pingback` is an internal, hidden `run` option.
+   The nonce MUST NOT appear in argv or the environment.
 4. The launcher writes exactly 32 nonce bytes to the child's stdin and closes
    the pipe.
 5. The child acquires the single-instance lock and initializes validated

@@ -31,21 +31,28 @@ log dir:      $XDG_STATE_HOME/oll
               or $HOME/.local/state/oll when XDG_STATE_HOME is unset
 ```
 
-`--replica` overrides `OLL_REPLICA`, which overrides the default replica root.
-`--config` overrides `OLL_CONFIG`, which overrides the default config root; the
-Lua configuration file is always `<config-root>/config.lua`. `--log-dir`
-overrides `OLL_LOG_DIR`, which overrides `XDG_STATE_HOME/oll` and then the HOME
-fallback. Other commands that need the config/Admin API or a log file use the
-same environment/default resolution without command-line root overrides. A
-missing environment value is a configuration error only when the concrete
-intent needs that root and no fallback can be determined.
+For `init`, command-line root options override their corresponding `OLL_*`
+variables, which override the defaults above. `run` first resolves only the
+config root using `--config`, `OLL_CONFIG`, or its HOME default. It then executes
+`<config-root>/config.lua` and applies command-line values over environment
+values over the persisted replica and log roots. It MUST NOT require HOME to
+derive replica or log defaults before reading a configuration selected by an
+absolute config root. Other commands that need the config/Admin API or a log
+file use the same intent-specific resolution without command-line root
+overrides. The complete returned-table schema and precedence rules are defined
+in `configuration.md`.
 
 oll is a user-level daemon. Each root and every file beneath it belongs to the
 user who initialized and runs that deployment; oll does not require a system
 `oll` account, membership in a log group, root privileges, or a service manager.
 
 Paths are accepted as OS paths and are not required to exist during argument
-parsing.
+parsing. Relative CLI and environment root paths are joined to the process
+startup working directory without `canonicalize`; relative roots returned by
+`config.lua` are joined to the config root. `init` persists resolved absolute
+roots, which must be representable as UTF-8 Lua strings, and `start` passes an
+absolute config root to its detached `run` child. Document and snapshot paths
+remain native `PathBuf` values and do not acquire this persistence restriction.
 
 Clap types are raw syntax only. After parsing, oll converts them into a
 validated `CliIntent` whose enums enumerate every supported operation and mode.
@@ -98,7 +105,9 @@ command-specific options need not be added to both commands. `init` creates the
 selected directories and persists the replica root, log directory, and topology
 in `<config-root>/config.lua`. `run` locates that file through its selected
 config root; its `--replica`, `--log-dir`, `--listen`, and `--connect` values are
-temporary runtime overrides and do not rewrite configuration.
+temporary runtime overrides and do not rewrite configuration. `config.lua` is
+an executable LuaJIT module that must return the versioned table defined in
+`configuration.md`; oll reads the returned table rather than named Lua globals.
 
 `node-name` is required when initializing a deployment. It is the durable,
 globally presented human name paired one-to-one with the generated `NodeId`, not

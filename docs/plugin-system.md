@@ -38,8 +38,10 @@ platform APIs are not part of that contract.
 
 Plugins may use any implementation language that can implement the protobuf
 gRPC service. oll does not load a plugin ABI, inject an SDK, or require a Rust
-dynamic library. The configuration runtime is LuaJIT through `mlua`; other Lua
-implementations are not supported by the first version.
+dynamic library. Plugin configuration reuses the embedded LuaJIT runtime
+established by [configuration.md](configuration.md); other Lua implementations
+are not supported by the first version. The executable `config.lua` contract
+does not relax the literal-only, safely rewritable `plugins.lua` contract.
 
 ## Process lifecycle
 
