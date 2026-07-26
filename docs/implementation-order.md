@@ -36,7 +36,9 @@ selector.
 
 Completion criteria:
 
-- invalid or non-terminating configuration fails before runtime initialization;
+- invalid configuration fails before runtime initialization; configuration that
+  does not terminate remains in user-owned Lua execution and cannot reach
+  runtime initialization;
 - CLI tests cover parsing, configuration returns, environment/CLI precedence,
   path bases, and exit behavior;
 - daemon startup can be invoked through the same `oll` binary.

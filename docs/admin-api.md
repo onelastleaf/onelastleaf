@@ -91,6 +91,8 @@ API:
 7. On success the launcher closes its listener and exits. The detached daemon
    continues and is reparented by the operating system. On child exit, timeout,
    or handshake failure, `start` fails and MUST NOT report an uncertain success.
+   On timeout or handshake failure, the launcher terminates and reaps the child
+   it spawned before returning; it MUST NOT leave an unready daemon behind.
 
 The loopback endpoint is not a reusable control port and closes after this one
 startup. Randomness authenticates readiness without putting a secret in process

@@ -82,12 +82,20 @@ containment checked before execution. A read-only oll helper may expose
 environment lookup without exposing mutation of the process environment.
 
 Configuration is trusted user code, not a security sandbox. These restrictions
-still protect daemon integrity and make startup behavior diagnosable. Evaluation
-uses a memory ceiling and an instruction hook or equivalent bounded-execution
-mechanism. Exceeding either bound is a configuration error. No node service,
-Tokio task, log sink, Admin socket, replica, or network listener starts until
-evaluation and schema conversion succeed. Failures before file logging is
-available are written to stderr.
+still protect daemon integrity and make startup behavior diagnosable; they do
+not make arbitrary user code safe or terminating. oll does not install an
+instruction hook, impose an instruction-count or wall-clock deadline, or apply
+a configuration-specific memory ceiling. LuaJIT's JIT compiler remains enabled.
+An infinite loop, unbounded recursion, or unbounded allocation in `config.lua`
+or a required module can therefore occupy the process indefinitely or exhaust
+its resources. This is an accepted consequence of treating the configuration
+author as trusted.
+
+No node service, Tokio task, log sink, Admin socket, replica, or network
+listener starts until evaluation and schema conversion succeed. Ordinary Lua
+and schema failures before file logging is available are written to stderr.
+Code that never returns does not produce an execution-limit error because no
+such limit exists.
 
 ## Path resolution and precedence
 
@@ -135,17 +143,50 @@ dependencies defined in [cli.md](cli.md).
 
 ## Errors and tests
 
-Missing or unreadable files, Lua syntax failures, evaluation failures, execution
-limit failures, a non-table or multiple return values, unsupported format
-versions, unknown fields, invalid field types, invalid URLs or socket addresses,
-and invalid paths are configuration errors and exit with `EX_CONFIG` (`78`).
-Diagnostics identify the config file and field path without printing Lua values
-that may contain secrets.
+Missing or unreadable files, Lua syntax failures, evaluation failures, a
+non-table or multiple return values, unsupported format versions, unknown
+fields, invalid field types, invalid URLs or socket addresses, and invalid paths
+are configuration errors and exit with `EX_CONFIG` (`78`). Diagnostics identify
+the config file and field path without printing Lua values that may contain
+secrets.
 
 Tests cover successful computed returns, wrong return arity and type, schema
-errors, execution and memory bounds, controlled module containment, CLI and
-environment precedence, relative-path bases, and a HOME-less deployment whose
-absolute config root supplies its persisted replica and log paths.
+errors, controlled module containment, CLI and environment precedence,
+relative-path bases, and a HOME-less deployment whose absolute config root
+supplies its persisted replica and log paths. Tests do not execute intentionally
+non-terminating Lua in-process.
+
+## Troubleshooting a startup that never becomes ready
+
+If `oll run` does not become ready, creates no Admin socket, emits no node log,
+and neither exits with `EX_CONFIG` nor prints a configuration diagnostic, it may
+still be evaluating `config.lua`. A compute loop commonly keeps one CPU core
+busy; a loop that grows a table or string also causes the process's memory use
+to keep increasing. For example, this configuration never reaches its return:
+
+```lua
+local result = {}
+
+while true do
+    table.insert(result, "x")
+end
+
+return result
+```
+
+`oll start` has the same underlying symptom: the child never completes its
+readiness handshake, so the launcher reaches its startup deadline, terminates
+that unready child, and reports startup failure. This deadline protects the
+launcher contract; it is not a Lua execution limit. A foreground `oll run`
+must instead be terminated by the user or the process manager.
+
+To confirm the cause, run the same deployment in the foreground with `oll run
+--config <config-root>`. Inspect `config.lua` and every module it requires for
+loops, recursion, or computations whose input can grow without a bound. Then
+temporarily reduce the file to a literal table conforming to the schema above.
+If that version reaches readiness, restore the computation incrementally until
+the non-terminating expression or required module is isolated. The correction
+belongs in the Lua program; oll deliberately does not interrupt it with a hook.
 
 ## Embedded LuaJIT build
 
