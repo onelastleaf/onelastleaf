@@ -4,8 +4,8 @@ package oll.protocol;
 
 import "google/protobuf/any.proto";
 
-// Identifiers are opaque UTF-8 strings. Implementations should use UUIDs or an
-// equally collision-resistant representation, but peers must not parse them.
+// Node IDs are canonical UUID v4 strings. They identify a node but do not carry
+// routing, authority, or other application semantics.
 message NodeId { string value = 1; }
 
 // A durable human-facing node name. Implementations validate the lowercase
@@ -18,6 +18,16 @@ message NodeName { string value = 1; }
 message NodeIdentity {
   NodeId node_id = 1;
   NodeName node_name = 2;
+}
+
+// Shared structured-log severity used by host and plugin records.
+enum LogLevel {
+  LOG_LEVEL_UNSPECIFIED = 0;
+  LOG_LEVEL_TRACE = 1;
+  LOG_LEVEL_DEBUG = 2;
+  LOG_LEVEL_INFO = 3;
+  LOG_LEVEL_WARN = 4;
+  LOG_LEVEL_ERROR = 5;
 }
 
 message ReplicaId { string value = 1; }

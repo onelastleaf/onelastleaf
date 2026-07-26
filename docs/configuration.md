@@ -2,12 +2,14 @@
 
 ## Boundaries
 
-oll has two Lua files with deliberately different source contracts:
+oll has two Lua files with deliberately different source contracts, plus one
+strict JSON identity record:
 
 | File | Contract | Mutation owner |
 | --- | --- | --- |
 | `<config-root>/config.lua` | trusted executable LuaJIT module returning the effective daemon configuration | user; `oll init` creates the initial file |
 | `<config-root>/plugins.lua` | literal-only data module returning desired plugin installations | user and oll plugin installer |
+| `<config-root>/node.json` | strict versioned `NodeId`/`NodeName` record | user; `oll init` creates the initial file |
 
 `config.lua` is a program. oll evaluates it and validates only its returned
 value; local variables, functions, conditionals, and allowed module composition
@@ -18,6 +20,12 @@ configuration assignments and does not read named Lua globals as configuration.
 restricted syntax, stable serialization, locking, and atomic replacement rules
 in [plugin-packaging.md](plugin-packaging.md). Executing `config.lua` does not
 weaken those rules.
+
+`node.json` is not executable Lua configuration, but it remains user-owned
+deployment configuration. Its schema, UUID-v4 validation, initialization, and
+recovery rules are in [node.md](node.md). It is intentionally separate from
+`config.lua` so the daemon can validate its stable identity without executing
+user code.
 
 ## Module result
 
@@ -53,11 +61,9 @@ required table with these fields:
 
 Unknown top-level and `node` fields are errors so misspelled configuration does
 not silently select another behavior. Later stages may extend the versioned
-schema only after documenting their ownership. The initialization `profile` is
-not a runtime authority field and is not persisted as part of this returned
-schema. `NodeIdentity` is also not Lua configuration: oll stores its immutable
-`NodeId`/`NodeName` pair in a separate host-owned identity record so executing
-user code cannot rename or regenerate the node.
+schema only after documenting their ownership. `NodeIdentity` is also not Lua
+configuration: it resides in the separate, user-editable `node.json` record
+rather than being inferred from Lua globals or a returned table.
 
 oll converts the validated node table into a Rust-owned `ResolvedNodeConfig`
 before starting the node runtime. Node, replica, and sync code consume this
@@ -100,10 +106,11 @@ its resources. This is an accepted consequence of treating the configuration
 author as trusted.
 
 No node service, Tokio task, log sink, Admin socket, replica, or network
-listener starts until evaluation and schema conversion succeed. Ordinary Lua
-and schema failures before file logging is available are written to stderr.
-Code that never returns does not produce an execution-limit error because no
-such limit exists.
+listener starts until evaluation and schema conversion succeed. The
+single-instance lock is intentionally acquired before evaluation; it is a
+process-ownership guard, not a node service. Ordinary Lua and schema failures
+before file logging is available are written to stderr. Code that never returns
+does not produce an execution-limit error because no such limit exists.
 
 ## Path resolution and precedence
 
@@ -128,8 +135,9 @@ root that cannot be represented as UTF-8 is rejected as a configuration error.
 Document and snapshot arguments remain native `PathBuf` values and are not
 subject to this persisted-config restriction.
 
-`oll run` first resolves only the config root, evaluates `config.lua`, and then
-applies runtime overrides:
+`oll run` first resolves only the config root. The node runtime then takes the
+deployment lock, validates `node.json`, evaluates `config.lua`, and applies
+runtime overrides:
 
 ```text
 replica root: --replica > OLL_REPLICA > config.lua node.replica_root
@@ -144,10 +152,12 @@ future explicit CLI operation; an empty string is never a clearing sentinel.
 
 `oll start` resolves its config root to an absolute path before detaching and
 passes that path to the `oll run` child. The child must not reinterpret a
-relative deployment path from the launcher's working directory. Administrative
-clients resolve only the config root needed to locate the Admin UDS and do not
-execute `config.lua`. Local snapshot and log clients retain the intent-specific
-dependencies defined in [cli.md](cli.md).
+relative deployment path from the launcher's working directory. It can precheck
+the deployment lock without executing `config.lua`; the spawned child owns the
+real lock before evaluating it. Administrative clients resolve only the config
+root needed to locate the Admin UDS and do not execute `config.lua`. Local
+snapshot and log clients retain the intent-specific dependencies defined in
+[cli.md](cli.md).
 
 ## Errors and tests
 
@@ -221,9 +231,10 @@ The build environment still provides the host C compiler and the target C
 compiler, linker, archiver, C runtime, sysroot or platform SDK, and `make` where
 required. These are release-build inputs, not oll configuration fields.
 
-Release CI SHOULD build Windows artifacts on Windows with the Visual Studio
-toolchain and Darwin artifacts on Darwin with the matching Apple SDK. Linux GNU
-and musl artifacts may use target-specific containers or a tested cross
-toolchain. Every supported target MUST compile and test the Rust executable and
-the embedded LuaJIT together; compiling only the Rust portion does not establish
-support for that target.
+The first node runtime supports Linux and Darwin only. LuaJIT's ability to build
+for Windows does not make Windows an oll deployment target until its named-pipe,
+process, and lifecycle contract is designed. Linux GNU and musl artifacts may
+use target-specific containers or a tested cross toolchain; Darwin artifacts
+should build on Darwin with the matching Apple SDK. Every supported target MUST
+compile and test the Rust executable and the embedded LuaJIT together; compiling
+only the Rust portion does not establish support for that target.

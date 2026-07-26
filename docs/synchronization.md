@@ -19,7 +19,7 @@ ReplicaId
 Each object has its own Loro version vector and frontier. Deltas and snapshots
 are requested and imported per object.
 
-Every endpoint also has one durable `NodeIdentity`: an opaque `NodeId` paired
+Every endpoint also has one durable `NodeIdentity`: a UUID-v4 `NodeId` paired
 one-to-one with its human-readable `NodeName`. The node declares this same pair
 to every peer. Names are not chosen by receivers and are never derived from a
 connect URL.

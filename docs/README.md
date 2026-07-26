@@ -14,6 +14,8 @@ documents describe the larger runtime and storage model around those messages.
   environment precedence, and exit behavior.
 - [Configuration runtime](configuration.md): the executable `config.lua`
   contract, typed result schema, path precedence, and embedded LuaJIT build.
+- [Node runtime](node.md): user-owned node identity, deployment layout,
+  single-instance locking, startup, shutdown, and Unix platform boundary.
 - [Local administration API](admin-api.md): subcommand-selected process roles,
   the typed gRPC-over-UDS boundary, background startup, and local debugging.
 - [Replica model](replica.md): the document tree, catalog, per-document

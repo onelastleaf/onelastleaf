@@ -1,0 +1,220 @@
+# Node runtime
+
+## Scope and platform
+
+The node stage supplies the one long-running daemon shell. It owns the
+deployment lock, `NodeIdentity`, Tokio runtime, logs, local Admin UDS, launch
+handshake, and graceful shutdown. It does not create a `ReplicaId`, a catalog,
+or any document store. Those belong to the replica stage.
+
+The first node implementation is Unix-only. It supports Linux and Darwin and
+uses Unix domain sockets, `flock`, `setsid`, inherited file descriptors, and
+Unix signals. Windows is not a supported node deployment in this version; it
+does not receive an incomplete named-pipe or process-lifecycle substitute.
+
+One deployment has one config root, one running daemon, and one logical empty
+replica slot. A second deployment uses a different config root and is a
+separate process; the daemon never hosts multiple slots.
+
+## Deployment layout
+
+All paths below are user-owned. `node.json` is deliberately inside the config
+root: it is durable user configuration, not an immutable host-owned secret.
+The daemon validates it on every start but does not prevent the deployment user
+from editing it.
+
+```text
+<config-root>/
+  config.lua                 trusted executable configuration
+  node.json                  durable NodeIdentity record
+  run/                       0700 runtime directory when used locally
+    admin.sock               transient Admin UDS
+
+<replica-root>/              one empty replica slot at node-stage completion
+<log-dir>/                   user-owned JSON log files
+```
+
+The node-stage slot is only the configured `replica_root` directory. `oll init`
+creates it when absent but does not assign a `ReplicaId`, write a catalog, or
+create a replica store. Existing directory contents are never deleted or
+interpreted by the node stage.
+
+`node.json` is strict JSON with this initial schema:
+
+```json
+{
+  "format_version": 1,
+  "node_id": "9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3",
+  "node_name": "home-server"
+}
+```
+
+`format_version` is the integer `1`. `node_id` must parse as a UUID version 4;
+`oll init` writes its canonical lower-case hyphenated spelling, and the daemon
+normalizes a valid user spelling before presenting it on the wire. `node_name`
+uses the DNS-label syntax in [architecture.md](architecture.md). Unknown fields,
+missing fields, non-string values, malformed JSON, and unsupported versions are
+configuration errors.
+
+`node_id` and `node_name` form one identity pair. The daemon does not rewrite
+either member. A user who edits either one has deliberately created a different
+pair for the next daemon start; this is not an automatic identity migration.
+Remote nodes that already learned the old binding will reject a contradictory
+pair during the later sync handshake. Editing a file while a daemon is running
+has no effect until its next start.
+
+## Single-instance lock
+
+The single-instance lock is acquired before `node.json` or `config.lua` is
+loaded. This prevents an attempted second foreground `oll run` from executing
+trusted Lua or creating runtime resources for a deployment already owned by a
+daemon.
+
+For a config root that exists, oll derives a deployment key from the SHA-256 of
+the canonical Unix path bytes of that root. Canonicalization is used only to
+make aliases of the same existing root select one lock; it does not rewrite the
+configured root, persisted paths, or CLI path semantics. The lock file is
+selected in this order:
+
+1. `$XDG_RUNTIME_DIR/oll/<deployment-key>.lock` when `XDG_RUNTIME_DIR` names
+   an existing usable directory;
+2. `/run/user/<effective-uid>/oll/<deployment-key>.lock` when that directory
+   already exists and is usable; oll never creates `/run/user/<uid>` itself;
+3. `<config-root>/run/node.lock`.
+
+For the first two choices oll may create only its own `oll` subdirectory. If an
+`oll init` bootstrap must use the third choice for a not-yet-existing config
+root, it creates the minimum `config-root/run` directory needed to take the
+lock before writing configuration files.
+
+oll opens its own lock file, takes a non-blocking exclusive Unix `flock`, and
+keeps that file descriptor open until process exit. The filename may remain
+after a crash; an existing file is not evidence of a running daemon, while a
+held lock is. A held lock makes `run`, `start`, and `init` fail with
+`EX_UNAVAILABLE` without evaluating Lua or changing deployment files.
+
+Only after it owns the lock may a daemon create `<config-root>/run`, recover a
+stale `admin.sock`, or bind the Admin UDS. It removes a stale path only after a
+failed connection probe and only when that path is a Unix socket. A regular
+file, directory, or other unexpected entry at the socket path is an error, not
+something to overwrite. The runtime directory is owner-only (`0700`) so a
+different local user cannot attach an Admin endpoint to the deployment.
+
+## Initialization and recovery
+
+`oll init <node-name>` is a local bootstrap operation. It first resolves its
+three roots and takes the same deployment lock. It checks for existing
+initialization material and obtains any required confirmation before creating
+ordinary prerequisite directories. It then writes the initial `config.lua` and,
+only after that succeeds, writes a newly generated UUID-v4 `node.json`. Each
+replacement is written to a new sibling temporary file and atomically renamed
+into its final path. oll does not follow a target file when replacing it. The
+minimal lock-directory creation required by the third lock fallback is the one
+bootstrap exception described above.
+
+There is intentionally no transaction spanning `config.lua`, `node.json`, and
+the configured directories. If a machine or process fails between the two file
+writes, the deployment is incomplete rather than ambiguously initialized:
+
+- `oll run` rejects a missing or invalid `node.json` with `EX_CONFIG` before
+  starting node services;
+- a valid `config.lua` alone does not prove initialization completed;
+- rerunning `oll init` detects the existing initialization material and offers
+  repair through the normal replacement confirmation.
+
+If either `<config-root>/config.lua` or `<config-root>/node.json` already
+exists, `init` warns that it will replace both files and generate a new identity
+pair. It asks for `y`/`yes` or `n`/`no`; the default, EOF, and unavailable input
+are negative and leave the configuration and identity files unchanged. No
+bypass flag exists in the first implementation. A running daemon or concurrent
+`init` holds the lock and causes an immediate failure instead of a prompt.
+
+This initialization sequence does not claim a replica has been created. It
+establishes only its configured empty slot; replica initialization begins in
+the replica stage.
+
+## Startup
+
+The foreground `oll run` sequence is:
+
+1. capture the startup working directory and resolve only the config root;
+2. derive and acquire the single-instance lock;
+3. load and validate `node.json`;
+4. evaluate and validate `config.lua`, then apply environment and CLI runtime
+   overrides;
+5. initialize the required log directory and sinks;
+6. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
+   the node ready;
+7. when invoked by `oll start`, complete the one-use nonce pingback only after
+   the Admin service can answer requests.
+
+Configuration evaluation remains before every node service, but it is no
+longer part of generic CLI preparation for `run`: the node runtime owns it so
+the lock can precede trusted Lua execution. A Lua configuration that does not
+return therefore holds its acquired lock but cannot create logs, an Admin
+socket, a replica, or a network listener.
+
+Each successful startup step is owned by a resource guard. A later synchronous
+failure drops already acquired file descriptors, listeners, and temporary
+runtime paths before returning an error. `Drop` is the right mechanism for
+these local resources; it is not a substitute for explicitly awaiting and
+cancelling asynchronous tasks during normal shutdown.
+
+`oll start` performs a non-owning lock preflight before spawning. It releases
+that temporary preflight lock before the child starts; the child acquiring the
+real lock remains the authority. Two simultaneous launchers can therefore both
+preflight, but exactly one child can become ready.
+
+The launcher has a 10-second total readiness deadline, including lock
+acquisition, identity validation, Lua evaluation, log setup, UDS binding, and
+the nonce exchange. These are local operations and normally complete far below
+that limit. A timeout or invalid pingback makes the launcher send `SIGTERM` to
+its child, wait two seconds, then send `SIGKILL` if needed and reap the child.
+It never reports an uncertain successful start or leaves its unready child
+behind.
+
+## Shutdown and signals
+
+The node lifecycle is `starting`, `running`, then `stopping`. The first
+accepted Admin `Shutdown` request atomically enters `stopping`; a later request
+that reaches the service is idempotently accepted and does not begin a second
+shutdown sequence.
+
+The accepted response is written before shutdown begins. The ordered sequence
+then is:
+
+1. stop accepting new Admin connections and new node work;
+2. close node listeners and notify owned tasks to stop;
+3. wait for in-flight node work through the 10-second graceful-shutdown
+   deadline, then abort remaining local tasks;
+4. write and flush the final structured lifecycle events;
+5. remove the Admin socket and release the lock by dropping its descriptor;
+6. exit the process.
+
+The node stage has no replica, sync, or plugin work to drain yet. Later stages
+extend the owned-work set but must preserve this externally visible ordering.
+The daemon does not use an Admin "kill" method. If `oll stop` reaches its
+deadline, it reports failure and does not escalate to an operating-system signal
+on a daemon it did not spawn.
+
+`oll stop` captures the deployment status, sends `Shutdown`, and treats
+`accepted = true` as acknowledgement only. It waits up to 10 seconds for the
+deployment lock to become acquirable and for the Admin socket to disappear or
+the originally reported process to exit. Normal orderly shutdown removes the
+socket before releasing the lock. A crash can leave a stale socket, but a free
+lock and an exited original process still prove that the requested daemon is no
+longer running; the next lock owner performs stale-socket recovery.
+
+On Unix, the first `SIGINT` or `SIGTERM` follows the same ordered shutdown path
+without an Admin acknowledgement. A second such signal terminates immediately;
+`SIGKILL` is uncatchable and relies on kernel release of the lock descriptor.
+
+`GetStatus` reports the complete `NodeIdentity`, lifecycle, start time, process
+ID, configured listen address when present, and configured peer status. The
+configured listen value is not a claim that the later sync listener is already
+bound during the node-only stage.
+
+Dynamic log filtering is part of node lifecycle: `oll log set
+<target>=<level>` changes the live daemon through the typed Admin API and is
+defined in [observability.md](observability.md). It is not persisted in
+`config.lua` or `node.json`.

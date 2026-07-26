@@ -117,7 +117,7 @@ fn init_and_run_expose_independent_directory_and_topology_flags() {
             "missing {option} in run help:\n{run_help}"
         );
     }
-    assert!(init_help.contains("--profile"));
+    assert!(!init_help.contains("--profile"));
     assert!(!run_help.contains("--profile"));
     assert!(!init_help.contains("--log-root"));
     assert!(!run_help.contains("--log-root"));
@@ -159,7 +159,7 @@ fn pingback_is_internal_but_parseable_by_start() {
 #[test]
 fn clap_errors_use_exit_code_two() {
     for arguments in [
-        vec!["init", "--profile", "authority"],
+        vec!["init", "test-node", "--profile", "server"],
         vec!["run", "--listen", "not-an-address"],
         vec!["run", "--connect", "ftp://example.com"],
         vec!["init"],

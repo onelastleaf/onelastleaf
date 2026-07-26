@@ -11,6 +11,7 @@ import "oll/common.proto";
 service Admin {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
   rpc Shutdown(AdminShutdownRequest) returns (AdminShutdownResponse);
+  rpc SetLogFilter(SetLogFilterRequest) returns (SetLogFilterResponse);
 }
 
 // Every unary Admin request carries this context. Exact fingerprint equality is
@@ -50,6 +51,9 @@ message GetStatusResponse {
   google.protobuf.Timestamp started_at = 3;
   uint32 process_id = 4;
   repeated PeerStatus peers = 5;
+  // The effective deployment configuration, not a claim that a later sync
+  // listener has already bound the address.
+  optional string configured_listen_address = 6;
 }
 
 message AdminShutdownRequest {
@@ -60,3 +64,16 @@ message AdminShutdownRequest {
 // Acceptance is returned before the daemon begins ordered shutdown so the
 // response is not lost when the Admin UDS closes.
 message AdminShutdownResponse { bool accepted = 1; }
+
+// The CLI parses a directive such as "oll::sync=trace" before constructing this
+// typed request. The setting is live-only and resets when the daemon exits.
+message SetLogFilterRequest {
+  AdminCallContext context = 1;
+  string target = 2;
+  LogLevel level = 3;
+}
+
+message SetLogFilterResponse {
+  string target = 1;
+  LogLevel level = 2;
+}

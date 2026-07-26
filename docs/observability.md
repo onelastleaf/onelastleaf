@@ -192,6 +192,21 @@ Target-specific filtering can raise `oll::sync` to `DEBUG` or `TRACE` without
 restarting the daemon. `DEBUG` records protocol decisions and state summaries;
 `TRACE` may record individual frame/chunk metadata but never raw content.
 
+The control path is `oll log set <target>=<level>`, for example:
+
+```text
+oll log set oll::sync=trace
+```
+
+The CLI accepts one directive, validates an `oll` tracing target made of
+ASCII identifier segments separated by `::`, parses the lower-case level
+(`error`, `warn`, `info`, `debug`, or `trace`), and sends a typed
+`SetLogFilter` Admin request. The daemon applies that target filter to live
+events while preserving normal sink routing. It is intentionally not persisted
+to `config.lua` or `node.json`: a restart restores the production defaults
+above. Invalid target syntax is a CLI error; an invalid typed request is an
+Admin `INVALID_ARGUMENT` error.
+
 Admin RPC logging follows the same rule. `TRACE` records the method, correlation
 ID, duration, outcome, and an allowlisted, field-level-redacted request summary;
 it MUST NOT serialize a complete protobuf request. This remains true even though

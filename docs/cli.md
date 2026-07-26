@@ -33,8 +33,9 @@ log dir:      $XDG_STATE_HOME/oll
 
 For `init`, command-line root options override their corresponding `OLL_*`
 variables, which override the defaults above. `run` first resolves only the
-config root using `--config`, `OLL_CONFIG`, or its HOME default. It then executes
-`<config-root>/config.lua` and applies command-line values over environment
+config root using `--config`, `OLL_CONFIG`, or its HOME default. The node then
+takes its single-instance lock before it validates `node.json`, executes
+`<config-root>/config.lua`, and applies command-line values over environment
 values over the persisted replica and log roots. It MUST NOT require HOME to
 derive replica or log defaults before reading a configuration selected by an
 absolute config root. Other commands that need the config/Admin API or a log
@@ -57,12 +58,13 @@ remain native `PathBuf` values and do not acquire this persistence restriction.
 Clap types are raw syntax only. After parsing, oll converts them into a
 validated `CliIntent` whose enums enumerate every supported operation and mode.
 Intent-specific preparation then captures the startup working directory,
-resolves only the required environment and OS paths, and evaluates `config.lua`
-only for `run`, producing a `PreparedCliIntent`. Runtime handlers accept this
-prepared form, never the raw Clap structs or an environment-dependent
-`CliIntent`. Clap conflicts provide early diagnostics, while the conversion
-independently rejects every field combination that is not on the
-supported-intent whitelist.
+resolves only the required environment and OS paths, and produces a
+`PreparedCliIntent`. For `run`, that form contains the resolved config root and
+runtime overrides; the node handler acquires the lock before it evaluates
+`config.lua`. Runtime handlers accept this prepared form, never the raw Clap
+structs or an environment-dependent `CliIntent`. Clap conflicts provide early
+diagnostics, while the conversion independently rejects every field combination
+that is not on the supported-intent whitelist.
 
 Environment and runtime dependencies are selected from the concrete intent,
 not from its top-level command. In particular, local snapshot inspection,
@@ -73,9 +75,6 @@ Admin connection, or replica root.
 
 ```text
 oll init <node-name>
-oll init home-server --profile server
-oll init home-laptop --profile client --connect https://oll.example.com
-oll init home-server --profile server --listen 127.0.0.1:7443
 oll init home-laptop --replica /path/to/replica/root
 oll init home-laptop --config /path/to/config/root
 oll init home-laptop --log-dir /path/to/log/dir
@@ -96,41 +95,51 @@ oll start
 oll stop
 oll status
 oll status --json
+oll log set oll::sync=trace
 ```
 
-`profile` is optional and has values `client` and `server`. It is an
-initialization profile, not a replication role or authority level. Either
-profile may use `connect`, `listen`, both, or neither. `--connect` is repeatable;
-`--listen` accepts one socket address.
+`--connect` is repeatable; `--listen` accepts one socket address. Together they
+fully express deployment topology. There is no `client`/`server` profile wrapper
+and no topology-derived authority level.
 
 `init` and `run` each define their own root and topology flags. They are not one
-shared argument group: `--profile` belongs only to initialization, and future
-command-specific options need not be added to both commands. `init` creates the
-selected directories and persists the replica root, log directory, and topology
-in `<config-root>/config.lua`. `run` locates that file through its selected
-config root; its `--replica`, `--log-dir`, `--listen`, and `--connect` values are
-temporary runtime overrides and do not rewrite configuration. `config.lua` is
-an executable LuaJIT module that must return the versioned table defined in
-`configuration.md`; oll reads the returned table rather than named Lua globals.
+shared argument group: future command-specific options need not be added to both
+commands. `init` creates the selected directories, persists the replica root,
+log directory, and topology in `<config-root>/config.lua`, and writes
+`<config-root>/node.json`. It establishes only an empty replica slot; `ReplicaId`
+and replica data are created later. When either initialization file already
+exists, it warns and asks for an interactive `y`/`n` replacement confirmation.
+`run` locates those files through its selected config root; its `--replica`,
+`--log-dir`, `--listen`, and `--connect` values are temporary runtime overrides
+and do not rewrite configuration. `config.lua` is an executable LuaJIT module
+that must return the versioned table defined in `configuration.md`; oll reads
+the returned table rather than named Lua globals. Full layout, recovery, and
+lock behavior are in `node.md`.
 
 `node-name` is required when initializing a deployment. It is the durable,
 globally presented human name paired one-to-one with the generated `NodeId`, not
 a receiver-local name for a connection. It uses the lowercase DNS-label syntax
-defined in `architecture.md`. The first implementation does not rename a node
-or reuse its name for another `NodeId`.
+defined in `architecture.md`. `init` writes the initial UUID-v4 pair to
+`node.json`; a deployment user may later edit that strict record, with the
+identity-binding consequences described in `node.md`.
 
 `run` starts the same `oll` binary in the foreground. It also has a hidden
 internal `--pingback <loopback-address>` option used only by
 `start`; this is not a second public daemon mode. `start` launches the daemon in
 the background and verifies readiness with the nonce exchange specified in
 `admin-api.md`. `stop` uses the configured Admin API to gracefully stop oll and
-all child processes.
+all child processes, then waits for actual daemon termination rather than
+treating the initial `accepted` response as completion.
 
 `status` reports the local `NodeName` prominently, its `NodeId`, and configured
-connection targets. A target learned through `SyncHello` is displayed with the
-remote node's protocol-declared `NodeName` and `NodeId`; a target whose first
-handshake has not completed is displayed by URL as pending. `--json` selects the
-machine-readable schema; human-readable output is the default.
+listen and connection targets. A target learned through `SyncHello` is displayed
+with the remote node's protocol-declared `NodeName` and `NodeId`; a target whose
+first handshake has not completed is displayed by URL as pending. `--json`
+selects the machine-readable schema; human-readable output is the default.
+
+`oll log set <target>=<level>` is an Admin client command. It changes only the
+live target filter and does not rewrite `config.lua` or `node.json`. Its accepted
+syntax and runtime behavior are defined in `observability.md`.
 
 ## Replica commands
 

@@ -6,15 +6,30 @@ an exact `protocol_schema_sha256` match during both replication and plugin
 handshakes. A schema change is a coordinated upgrade; this protocol does not
 promise backward compatibility.
 
-The schema hash is a build artifact computed from the canonical, published
-descriptor set. SDKs should embed the hash rather than independently guessing
-which source files and compiler flags are canonical.
+The schema hash is a build artifact computed from the canonical descriptor set.
+The descriptor is not a hand-maintained repository artifact. Builds generate it
+from every `proto/oll/*.proto` file in bytewise-sorted pathname order, include
+imports, and hash the resulting descriptor-set bytes with SHA-256:
+
+```sh
+protoc --fatal_warnings -I proto \
+  --include_imports \
+  --descriptor_set_out="$OUT_DIR/oll-protocol.pb" \
+  $(find proto/oll -name '*.proto' -print | sort)
+# The build script computes SHA-256 over $OUT_DIR/oll-protocol.pb.
+```
+
+The build embeds that exact hash in the CLI and daemon. SDKs should receive the
+published build hash rather than guessing a source-file set or compiler flags.
+Changing a proto changes the descriptor and therefore requires coordinated
+binary replacement, as intended.
 
 ## Files
 
 - `oll/admin.proto`: the local typed gRPC administration service, request
   context, node status, and graceful daemon shutdown.
-- `oll/common.proto`: identities, tracing/depth metadata, and shared errors.
+- `oll/common.proto`: identities, shared log severity, tracing/depth metadata,
+  and shared errors.
 - `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
   configuration-function handles.
 - `oll/document.proto`: stable document identities, paths, directory access,
@@ -39,17 +54,24 @@ fingerprint and correlation context. The daemon requires an exact fingerprint
 match. This catches a newly installed CLI connecting to an older still-running
 daemon; it does not introduce version negotiation or compatibility promises.
 
-The node stage initially implements `GetStatus` and `Shutdown`. Typed methods
-for replica, sync, and plugin management are added only in their respective
-implementation stages. Future CLI arguments must not be tunneled as generic
-strings to avoid extending this schema.
+The node stage initially implements `GetStatus`, `Shutdown`, and
+`SetLogFilter`. Typed methods for replica, sync, and plugin management are added
+only in their respective implementation stages. Future CLI arguments must not
+be tunneled as generic strings to avoid extending this schema.
 
-`GetStatus` returns `NodeIdentity`, the durable one-to-one pairing of opaque
-`NodeId` and human-readable `NodeName`. The name is node-declared and globally
-consistent, not a receiver-local label or a value inferred from a connect URL.
-Its peer entries associate each configured connect URL with connection state
-and, after `SyncHello`, the optional remote `NodeIdentity` learned from that
-endpoint.
+`GetStatus` returns `NodeIdentity`, the durable one-to-one pairing of UUID-v4
+`NodeId` and human-readable `NodeName`, plus the configured listen address when
+present. The name is node-declared and globally consistent, not a receiver-local
+label or a value inferred from a connect URL. Its peer entries associate each
+configured connect URL with connection state and, after `SyncHello`, the
+optional remote `NodeIdentity` learned from that endpoint.
+
+Admin failures are direct gRPC statuses. In particular, a request whose
+descriptor fingerprint differs returns `FAILED_PRECONDITION` with a message
+telling the user to restart the still-running daemon. It does not return a
+`ProtocolError` payload or negotiate a compatible schema. `SetLogFilter` takes
+a parsed target and `LogLevel`; `oll log set` is the only shell-style directive
+parser and the resulting filter resets at daemon restart.
 
 gRPC Server Reflection is a debug-build facility registered only on the Admin
 UDS. It is compiled out of release builds. Production `TRACE` logs include

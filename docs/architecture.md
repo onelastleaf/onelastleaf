@@ -21,7 +21,9 @@ one running oll daemon = one node = one replica
 Consequences:
 
 - `oll` MUST NOT host, mount, switch between, or supervise multiple replicas.
-- A node configuration has exactly one data directory and one `ReplicaId`.
+- A completed deployment has exactly one data directory and one `ReplicaId`.
+  The node stage reserves that one slot; the replica stage creates its
+  `ReplicaId` and store.
 - A path is unambiguous inside the daemon; document and plugin APIs do not need
   a `ReplicaId` routing field.
 - Importing a snapshot never adds a second replica to a running daemon.
@@ -41,18 +43,24 @@ Administrative clients use the typed gRPC-over-UDS boundary described in
 ### Node
 
 A running `oll` daemon participating in replication. Its durable
-`NodeIdentity` is the one-to-one pair of an opaque `NodeId` and a human-readable
-`NodeName`. The name is declared by the node itself and is identical for every
-peer; it is not a receiver-local connection label, a URL label, or an authority
-role.
+`NodeIdentity` is the one-to-one pair of a UUID-v4 `NodeId` and a human-readable
+`NodeName`. The ID carries no routing or authority semantics. The name is
+declared by the node itself and is identical for every peer; it is not a
+receiver-local connection label, a URL label, or an authority role.
 
 `NodeName` is a lowercase ASCII DNS label: 1 to 63 bytes, starting and ending
-with an ASCII letter or digit, with hyphens allowed internally. The complete
-`NodeIdentity` is created atomically by `oll init`. Neither member may be changed
-or rebound independently in the first implementation: one `NodeId` has exactly
-one `NodeName`, and one `NodeName` identifies exactly one `NodeId`. Reusing a
-name for a replacement `NodeId` or renaming an existing `NodeId` requires an
-explicit future identity-migration design.
+with an ASCII letter or digit, with hyphens allowed internally. `NodeId` is a
+UUID v4. `oll init` generates the initial pair in the user-owned
+`<config-root>/node.json` record described in [node.md](node.md). The record is
+validated, not treated as an immutable host-owned secret: its deployment user
+may edit it, and a valid edit takes effect at the next daemon start.
+
+At every protocol boundary one `NodeId` has exactly one `NodeName`, and one
+`NodeName` identifies exactly one `NodeId`. Replacing either field in
+`node.json` deliberately creates a new local pairing; oll does not provide a
+separate rename or migration workflow. A user who does this is responsible for
+the consequences when that new pair meets peers that already recorded the old
+binding.
 
 There is no central name allocator. Two isolated nodes can therefore choose the
 same name before they meet. Nodes persist the identity bindings they learn and
@@ -81,7 +89,7 @@ A stable `DocumentId`, one `LoroDoc`, and its catalog entry. A document path is
 derived from its catalog position and is not its identity. Moving or renaming a
 document does not replace its `DocumentId`.
 
-### Deployment profile
+### Connection topology
 
 `connect` and `listen` describe transport topology, not replication authority:
 
@@ -89,7 +97,7 @@ document does not replace its `DocumentId`.
 - a publicly reachable node commonly configures `listen`;
 - a relay-like node may configure both.
 
-All profiles have the same replica read/write rights.
+Every topology has the same replica read/write rights.
 
 ## Major components
 

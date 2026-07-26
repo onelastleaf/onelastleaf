@@ -54,7 +54,6 @@ impl Cli {
         match self.command {
             Command::Init(args) => Ok(CliIntent::Init(InitIntent {
                 node_name: args.node_name,
-                profile: args.profile,
                 connect: args.connect,
                 listen: args.listen,
                 replica_root: args.replica,
@@ -99,7 +98,7 @@ fn intent_error(kind: ErrorKind, message: impl fmt::Display) -> clap::Error {
 
 #[derive(Debug, Subcommand)]
 pub enum Command {
-    /// Initialize the Lua configuration and the node's replica.
+    /// Initialize Lua configuration, node identity, and the replica slot.
     Init(InitArgs),
     /// Run oll in the foreground.
     Run(RunArgs),
@@ -119,12 +118,6 @@ pub enum Command {
     Plugin(PluginArgs),
     /// Inspect and stop plugin jobs.
     Job(JobArgs),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum Profile {
-    Client,
-    Server,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -239,9 +232,6 @@ pub struct InitArgs {
     /// Durable human-readable name paired with this node's generated NodeId.
     #[arg(value_name = "NODE_NAME")]
     pub node_name: NodeName,
-    /// Optional initialization profile; it does not grant node authority.
-    #[arg(long, value_enum)]
-    pub profile: Option<Profile>,
     /// Peer URL to connect to. May be repeated.
     #[arg(long, value_name = "URL")]
     pub connect: Vec<ConnectUrl>,
@@ -480,7 +470,6 @@ pub enum CliIntent {
 #[derive(Debug, PartialEq)]
 pub struct InitIntent {
     pub node_name: NodeName,
-    pub profile: Option<Profile>,
     pub connect: Vec<ConnectUrl>,
     pub listen: Option<SocketAddr>,
     pub replica_root: Option<PathBuf>,
@@ -546,7 +535,6 @@ pub enum PreparedCliIntent {
 #[derive(Debug)]
 pub struct PreparedInitIntent {
     pub node_name: NodeName,
-    pub profile: Option<Profile>,
     pub connect: Vec<ConnectUrl>,
     pub listen: Option<SocketAddr>,
     pub replica_root: PathBuf,
@@ -802,7 +790,6 @@ impl CliIntent {
                 ensure_persistable_path(&log_dir, "log directory")?;
                 Ok(PreparedCliIntent::Init(PreparedInitIntent {
                     node_name: args.node_name,
-                    profile: args.profile,
                     connect: args.connect,
                     listen: args.listen,
                     replica_root,
@@ -1151,16 +1138,6 @@ mod tests {
     fn parses_init_and_run_topologies() {
         for arguments in [
             vec!["oll", "init", "test-node"],
-            vec!["oll", "init", "test-node", "--profile", "server"],
-            vec![
-                "oll",
-                "init",
-                "test-node",
-                "--profile",
-                "server",
-                "--listen",
-                "127.0.0.1:7443",
-            ],
             vec![
                 "oll",
                 "init",
@@ -1211,8 +1188,6 @@ mod tests {
             "oll",
             "init",
             "test-node",
-            "--profile",
-            "client",
             "--connect",
             "https://oll.example.com",
             "--listen",
@@ -1221,7 +1196,6 @@ mod tests {
         let Command::Init(args) = cli.command else {
             panic!()
         };
-        assert_eq!(args.profile, Some(Profile::Client));
         assert_eq!(args.node_name.as_str(), "test-node");
         assert_eq!(args.connect.len(), 1);
         assert_eq!(args.listen, Some("127.0.0.1:7443".parse().unwrap()));
@@ -1240,7 +1214,7 @@ mod tests {
             panic!()
         };
         assert_eq!(args.connect.len(), 2);
-        assert!(parse_from(["oll", "run", "--profile", "server"]).is_err());
+        assert!(parse_from(["oll", "init", "test-node", "--profile", "client"]).is_err());
     }
 
     #[test]

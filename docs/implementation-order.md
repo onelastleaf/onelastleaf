@@ -48,7 +48,8 @@ Completion criteria:
 The node stage establishes the long-running daemon shell without implementing
 replica behavior:
 
-- atomic `NodeId`/`NodeName` identity creation and durable loading;
+- atomic creation and durable loading of the user-owned `node.json`
+  `NodeIdentity` record;
 - process lifecycle and graceful shutdown;
 - the typed Admin gRPC service over UDS;
 - detached `start` launch, single-instance enforcement, and nonce pingback;
@@ -59,6 +60,10 @@ replica behavior:
   and correlation context as specified in `observability.md`;
 - child-process liveness-pipe support needed later by plugins.
 
+The first node runtime is Unix-only. It establishes one empty replica slot but
+does not create a `ReplicaId`, catalog, document store, sync listener, or plugin
+runtime; those remain owned by their later stages.
+
 Completion criteria:
 
 - a node starts, reports status, and shuts down deterministically;
@@ -67,6 +72,8 @@ Completion criteria:
   on the Admin UDS;
 - `oll.log` and `sync.log` initialize with correct ownership and emit valid JSON
   events carrying correlation IDs;
+- `oll log set <target>=<level>` changes the live typed filter through the
+  Admin UDS without restarting the daemon;
 - a second replica cannot be attached to the same process;
 - configuration distinguishes connection topology from node authority.
 

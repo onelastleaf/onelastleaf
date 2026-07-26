@@ -9,7 +9,7 @@ or infer the role from configuration:
 | Subcommand | Process role | Behavior |
 | --- | --- | --- |
 | `oll run` | daemon | Enters the one long-running node runtime and does not exit after startup. |
-| `oll init` | bootstrap client | Initializes local configuration and the one replica without starting services. |
+| `oll init` | bootstrap client | Initializes local configuration, `NodeIdentity`, and the one empty replica slot without starting services. |
 | `oll start` | launcher client | Starts a detached `oll run` child, verifies readiness, and exits. |
 | snapshot inspect/verify, log viewing, and `plugin validate` | local file client | Validates or reads one local file and exits. |
 | remaining operational subcommands | admin client | Opens the configured Admin API, makes a bounded request, renders the result, and exits. |
@@ -23,11 +23,13 @@ processes and MUST NOT initialize node services in their own process.
 ## Transport and contract
 
 The Admin API uses gRPC over a Unix domain socket (UDS). It has no TCP port and
-MUST NOT listen on a network interface. The socket pathname comes from the same
-validated configuration used by the daemon and administrative clients. oll is a
-user-level daemon; the default socket is `<config-root>/run/admin.sock`, inside a
-`0700` directory owned by the deployment user. It is never shared through a
-system `oll` account or group.
+MUST NOT listen on a network interface. The first node implementation supports
+this Unix transport on Linux and Darwin only. The socket pathname comes from the
+same validated configuration root used by the daemon and administrative clients.
+oll is a user-level daemon; the default socket is
+`<config-root>/run/admin.sock`, inside a `0700` directory owned by the deployment
+user. It is never shared through a system `oll` account or group. Lock selection,
+stale-socket recovery, and directory creation are defined in [node.md](node.md).
 
 The wire contract is typed protobuf in `proto/oll/admin.proto`. The CLI parses
 syntax once and converts it to a normalized domain request before opening the
@@ -54,14 +56,38 @@ still-running daemon receives a protocol-mismatch error with an instruction to
 restart it. Schema changes are coordinated binary upgrades.
 
 The service grows with the required implementation order. The node stage owns
-status and graceful shutdown. Replica, sync, and plugin RPCs are added only when
-their domain models have met the preceding stage's completion criteria; the
-Admin API MUST NOT use stringly typed placeholders for those future methods.
+status, graceful shutdown, and typed live log-filter changes. Replica, sync, and
+plugin RPCs are added only when their domain models have met the preceding
+stage's completion criteria; the Admin API MUST NOT use stringly typed
+placeholders for those future methods.
 
-`GetStatus` returns the local node's complete `NodeIdentity`, not only its opaque
-`NodeId`, plus each configured connect URL's state and optional remote identity
-learned through `SyncHello`. Future sync and ping Admin requests use `NodeName`
-as their typed human-facing selector after the daemon has learned that identity.
+`GetStatus` returns the local node's complete `NodeIdentity`, not only its UUID-v4
+`NodeId`, its configured listen address when present, plus each configured
+connect URL's state and optional remote identity learned through `SyncHello`.
+Future sync and ping Admin requests use `NodeName` as their typed human-facing
+selector after the daemon has learned that identity.
+
+`SetLogFilter` receives a parsed target and typed level rather than a shell
+directive. The CLI command `oll log set oll::sync=trace` owns that presentation
+syntax, validates it, and sends the two typed fields. The change applies to the
+running daemon only and resets at restart.
+
+## Errors
+
+Admin method failures use gRPC status codes directly. They do not wrap every
+response in `ProtocolError` or add a second error message to successful response
+types. The request context is validated before method-specific work:
+
+| Condition | gRPC status | Client-facing meaning |
+| --- | --- | --- |
+| exact schema fingerprint differs | `FAILED_PRECONDITION` | Restart the still-running daemon so it matches the CLI binary. |
+| normalized request is malformed | `INVALID_ARGUMENT` | The client or caller constructed an invalid typed request. |
+| daemon is stopping or the UDS cannot serve a request | `UNAVAILABLE` | Retry only after the daemon is ready again. |
+| unexpected daemon failure | `INTERNAL` | Inspect the correlated daemon log event. |
+
+The protocol-mismatch status message explicitly tells the user to restart the
+running daemon. It is not a compatibility negotiation and carries no protobuf
+error detail contract.
 
 ## Background startup
 
@@ -80,19 +106,20 @@ API:
    The nonce MUST NOT appear in argv or the environment.
 4. The launcher writes exactly 32 nonce bytes to the child's stdin and closes
    the pipe.
-5. The child acquires the single-instance lock and initializes validated
-   configuration, required log sinks, the node runtime, and the Admin UDS. Only
-   when the daemon can serve administration requests does it read exactly 32
-   bytes from stdin, connect to the loopback pingback address, and write them
-   back.
-6. The launcher accepts connections until a bounded startup deadline, compares
+5. The child acquires the single-instance lock, validates `node.json`, evaluates
+   and validates configuration, initializes required log sinks, the node runtime,
+   and the Admin UDS. Only when the daemon can serve administration requests
+   does it read exactly 32 bytes from stdin, connect to the loopback pingback
+   address, and write them back.
+6. The launcher accepts connections for the 10-second startup deadline, compares
    the reply with the nonce in constant time, and reports success only on an
    exact match. Invalid or truncated replies do not consume the whole deadline.
 7. On success the launcher closes its listener and exits. The detached daemon
    continues and is reparented by the operating system. On child exit, timeout,
    or handshake failure, `start` fails and MUST NOT report an uncertain success.
    On timeout or handshake failure, the launcher terminates and reaps the child
-   it spawned before returning; it MUST NOT leave an unready daemon behind.
+   it spawned before returning; it MUST NOT leave an unready daemon behind. Its
+   Unix `SIGTERM`/two-second/`SIGKILL` escalation is defined in [node.md](node.md).
 
 The loopback endpoint is not a reusable control port and closes after this one
 startup. Randomness authenticates readiness without putting a secret in process
@@ -109,8 +136,10 @@ daemonization boundary.
 
 `oll stop` sends the typed Admin `Shutdown` request. The daemon acknowledges the
 accepted request before beginning ordered graceful shutdown of listeners,
-in-flight node work, and child processes. There is no second public daemon kill
-RPC. Process supervisors may enforce termination outside the Admin API.
+in-flight node work, and child processes. `accepted` is only acknowledgement,
+not completion: the client waits for the shutdown condition and deadline in
+[node.md](node.md). There is no second public daemon kill RPC. Process
+supervisors may enforce termination outside the Admin API.
 
 ## Debugging
 
