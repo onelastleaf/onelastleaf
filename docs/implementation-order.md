@@ -114,7 +114,8 @@ The final stage adds:
 
 - plugin installation from typed Git remotes and data-only `plugins.lua`;
 - `oll.toml` source recipes and direct-URL `oll.json` release artifacts;
-- LuaJIT configuration through `mlua` and local plugin-config validation;
+- statically embedded LuaJIT through `mlua`/`luajit-src` and local
+  plugin-config validation;
 - process spawning and parent-liveness pipes;
 - persistent plugin desired state and event-driven child-process supervision;
 - `PluginRuntime.Connect` multiplexing;

@@ -176,6 +176,55 @@ The configuration runtime is LuaJIT only. The Rust implementation uses the
 `mlua` crate with its LuaJIT backend for Lua/Rust value conversion. Other Lua
 implementations are not supported by the first version.
 
+## Embedded LuaJIT build
+
+LuaJIT is a build-time native dependency of `oll`, not a separately installed
+runtime program. The Rust dependency enables the `luajit` and `vendored`
+features of `mlua`. Through `mlua-sys`, the `luajit-src` crate supplies the
+upstream LuaJIT sources and builds a static library, which is linked into the
+platform-specific `oll` executable. A released `oll` binary MUST NOT require a
+system `lua` or `luajit` executable or a separately installed LuaJIT shared
+library.
+
+The oll repository does not maintain a second LuaJIT source mirror and does not
+need `cargo vendor` merely to embed the runtime. `Cargo.lock` and the crate
+checksum select the dependency source used by normal builds. A complete Cargo
+vendor directory remains an optional release-engineering choice for offline or
+audited builds, not part of the Lua embedding architecture. A local
+`[patch.crates-io]` override is justified only when oll must carry a LuaJIT or
+`luajit-src` patch that is unavailable upstream.
+
+`luajit-src` bridges Cargo's native-build environment to LuaJIT's build system.
+It reads Cargo's host and target triples, builds LuaJIT's generator programs for
+the build host, builds the VM and C API for the target, and emits a static
+`libluajit.a` or `lua51.lib`. On Unix-like targets it selects the target C
+compiler through the `cc` crate, supplies LuaJIT's target compiler, linker,
+archiver, strip, platform, and static-build settings, and invokes `make`. On
+MSVC targets it locates the target Visual C++ tools and invokes LuaJIT's static
+MSVC build.
+
+This integration does not provide a C cross-toolchain, target sysroot, platform
+SDK, or `make`. The release build environment MUST provide both sides required
+by LuaJIT's build:
+
+- a host C compiler capable of producing and running LuaJIT's build-time
+  generators;
+- a target C compiler, linker, archiver, target C runtime, and SDK compatible
+  with the Rust target.
+
+Cargo target linker configuration and the target-specific environment accepted
+by the `cc` crate select the Rust and C toolchains consistently. Nonstandard
+tool layouts may additionally set LuaJIT build variables such as `HOST_CC`,
+`STATIC_CC`, `TARGET_LD`, `TARGET_AR`, and `TARGET_STRIP`. These are build and CI
+inputs; they are not oll runtime configuration or plugin manifest fields.
+
+Release CI SHOULD build Windows artifacts on Windows with the Visual Studio
+toolchain and Darwin artifacts on Darwin with the matching Apple SDK. Linux GNU
+and musl artifacts may use target-specific containers or a tested cross
+toolchain. Every supported target MUST compile and test the Rust executable and
+the embedded LuaJIT together; successfully cross-compiling the Rust-only portion
+does not establish support for that target.
+
 Because oll rewrites this file, it accepts only one return statement containing
 a recursively literal table of strings, booleans, integers, lists, and maps.
 Calls, operators, local bindings, loops, conditions, functions, `require`,
