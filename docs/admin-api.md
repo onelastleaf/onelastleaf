@@ -34,10 +34,10 @@ syntax once and converts it to a normalized domain request before opening the
 channel:
 
 ```text
-argv -> Clap types -> validated domain request -> protobuf Admin RPC
-                                                |
-                                                v
-                                      typed domain response -> rendering
+argv -> Clap types -> CliIntent -> prepared domain request -> protobuf Admin RPC
+                                                          |
+                                                          v
+                                                typed response -> rendering
 ```
 
 The client MUST NOT forward argv, option names, positional string arrays, or a

@@ -78,8 +78,16 @@ The runtime exposes normal Lua computation but is not an unrestricted native
 extension host. It MUST NOT load the LuaJIT FFI or debug library, native Lua
 modules, arbitrary-path loaders, or shell-execution APIs. A controlled `require`
 may load UTF-8 Lua source modules contained beneath the config root, with path
-containment checked before execution. A read-only oll helper may expose
-environment lookup without exposing mutation of the process environment.
+containment checked before execution. A module name such as `foo.bar` maps to
+`<config-root>/foo/bar.lua`; each dot-separated segment may contain only ASCII
+letters, digits, `_`, or `-`. Modules are cached by their declared name and a
+cyclic dependency is a configuration error. Symlinks are resolved for the
+containment check and cannot load a file outside the config root.
+
+The read-only `oll.getenv(name)` helper exposes environment lookup without
+exposing mutation of the process environment. A missing variable returns
+`nil`, a UTF-8 value returns a Lua string, and a present non-UTF-8 value is a
+configuration evaluation error.
 
 Configuration is trusted user code, not a security sandbox. These restrictions
 still protect daemon integrity and make startup behavior diagnosable; they do

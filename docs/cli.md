@@ -56,9 +56,13 @@ remain native `PathBuf` values and do not acquire this persistence restriction.
 
 Clap types are raw syntax only. After parsing, oll converts them into a
 validated `CliIntent` whose enums enumerate every supported operation and mode.
-Runtime handlers accept `CliIntent`, never the raw Clap structs. Clap conflicts
-provide early diagnostics, while the conversion independently rejects every
-field combination that is not on the supported-intent whitelist.
+Intent-specific preparation then captures the startup working directory,
+resolves only the required environment and OS paths, and evaluates `config.lua`
+only for `run`, producing a `PreparedCliIntent`. Runtime handlers accept this
+prepared form, never the raw Clap structs or an environment-dependent
+`CliIntent`. Clap conflicts provide early diagnostics, while the conversion
+independently rejects every field combination that is not on the
+supported-intent whitelist.
 
 Environment and runtime dependencies are selected from the concrete intent,
 not from its top-level command. In particular, local snapshot inspection,

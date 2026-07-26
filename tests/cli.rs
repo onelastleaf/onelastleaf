@@ -1,4 +1,6 @@
 use std::{
+    fs,
+    path::{Path, PathBuf},
     process::Command,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -8,6 +10,52 @@ const EXIT_CONFIG: i32 = 78;
 
 fn oll() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oll"))
+}
+
+struct TestDeployment {
+    root: PathBuf,
+    config: PathBuf,
+}
+
+impl TestDeployment {
+    fn new() -> Self {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "oll-cli-integration-test-{}-{nonce}",
+            std::process::id()
+        ));
+        let config = root.join("config");
+        fs::create_dir_all(&config).unwrap();
+        fs::write(
+            config.join("config.lua"),
+            r#"
+            return {
+                format_version = 1,
+                node = {
+                    replica_root = "replica",
+                    log_dir = "log",
+                    listen = nil,
+                    connect = {},
+                },
+            }
+            "#,
+        )
+        .unwrap();
+        Self { root, config }
+    }
+
+    fn config(&self) -> &Path {
+        &self.config
+    }
+}
+
+impl Drop for TestDeployment {
+    fn drop(&mut self) {
+        fs::remove_dir_all(&self.root).unwrap();
+    }
 }
 
 #[test]
@@ -89,11 +137,13 @@ fn sync_retry_help_defines_a_total_attempt_limit() {
 
 #[test]
 fn pingback_is_internal_but_parseable_by_start() {
+    let deployment = TestDeployment::new();
     let help = oll().args(["run", "--help"]).output().unwrap();
     assert!(help.status.success());
     assert!(!String::from_utf8(help.stdout).unwrap().contains("pingback"));
 
     let parsed = oll()
+        .env("OLL_CONFIG", deployment.config())
         .args(["run", "--pingback", "127.0.0.1:43210"])
         .output()
         .unwrap();
@@ -154,21 +204,17 @@ fn unavailable_commands_fail_without_side_effects() {
 
 #[test]
 fn explicit_and_environment_paths_do_not_require_home() {
+    let deployment = TestDeployment::new();
     let explicit = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
         .env_remove("OLL_CONFIG")
         .env_remove("OLL_REPLICA")
         .env_remove("OLL_LOG_DIR")
-        .args([
-            "run",
-            "--config",
-            "/tmp/oll-config",
-            "--replica",
-            "/tmp/oll-replica",
-            "--log-dir",
-            "/tmp/oll-log",
-        ])
+        .arg("run")
+        .arg("--config")
+        .arg(deployment.config())
+        .args(["--replica", "/tmp/oll-replica", "--log-dir", "/tmp/oll-log"])
         .output()
         .unwrap();
     assert_eq!(explicit.status.code(), Some(EXIT_UNAVAILABLE));
@@ -176,7 +222,7 @@ fn explicit_and_environment_paths_do_not_require_home() {
     let from_environment = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
-        .env("OLL_CONFIG", "/tmp/oll-env-config")
+        .env("OLL_CONFIG", deployment.config())
         .env("OLL_REPLICA", "/tmp/oll-env-replica")
         .env("OLL_LOG_DIR", "/tmp/oll-env-log")
         .arg("run")
@@ -199,6 +245,48 @@ fn explicit_and_environment_paths_do_not_require_home() {
         .output()
         .unwrap();
     assert_eq!(init.status.code(), Some(EXIT_UNAVAILABLE));
+}
+
+#[test]
+fn run_loads_self_contained_config_before_deriving_other_roots() {
+    let deployment = TestDeployment::new();
+    let output = oll()
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("OLL_REPLICA")
+        .env_remove("OLL_LOG_DIR")
+        .env("OLL_CONFIG", deployment.config())
+        .arg("run")
+        .output()
+        .unwrap();
+
+    assert_eq!(
+        output.status.code(),
+        Some(EXIT_UNAVAILABLE),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[test]
+fn lua_evaluation_errors_are_configuration_errors_and_redact_values() {
+    let deployment = TestDeployment::new();
+    fs::write(
+        deployment.config().join("config.lua"),
+        "error('DO_NOT_PRINT_THIS_SECRET')",
+    )
+    .unwrap();
+
+    let output = oll()
+        .env_remove("HOME")
+        .env("OLL_CONFIG", deployment.config())
+        .arg("run")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("cannot evaluate"));
+    assert!(!stderr.contains("DO_NOT_PRINT_THIS_SECRET"));
 }
 
 #[test]

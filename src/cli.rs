@@ -10,13 +10,15 @@ use std::{
 };
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
-use url::Url;
+
+use crate::configuration::{ConfigError, ConfigRuntime, ResolvedNodeConfig};
+
+pub use crate::configuration::ConnectUrl;
 
 pub const EXIT_UNAVAILABLE: u8 = 69;
 pub const EXIT_CONFIG: u8 = 78;
 
 const DEFAULT_CONFIG_SUFFIX: &str = ".config/oll";
-const CONFIG_FILENAME: &str = "config.lua";
 const DEFAULT_REPLICA_SUFFIX: &str = ".local/share/oll";
 const DEFAULT_LOG_SUFFIX: &str = ".local/state/oll";
 const XDG_LOG_SUFFIX: &str = "oll";
@@ -166,36 +168,6 @@ impl FromStr for NodeName {
         }
 
         Ok(Self(input.to_owned()))
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConnectUrl(Url);
-
-impl ConnectUrl {
-    pub fn as_url(&self) -> &Url {
-        &self.0
-    }
-}
-
-impl fmt::Display for ConnectUrl {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.fmt(formatter)
-    }
-}
-
-impl FromStr for ConnectUrl {
-    type Err = String;
-
-    fn from_str(input: &str) -> Result<Self, Self::Err> {
-        let url = Url::parse(input).map_err(|error| error.to_string())?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err("connect URL scheme must be http or https".to_owned());
-        }
-        if url.host().is_none() {
-            return Err("connect URL must include a host".to_owned());
-        }
-        Ok(Self(url))
     }
 }
 
@@ -517,7 +489,7 @@ pub struct InitIntent {
 }
 
 impl InitIntent {
-    pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+    fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_path(
             self.replica_root.as_ref(),
             environment.replica.as_ref(),
@@ -527,7 +499,7 @@ impl InitIntent {
         )
     }
 
-    pub fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+    fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_path(
             self.config_root.as_ref(),
             environment.config.as_ref(),
@@ -537,12 +509,7 @@ impl InitIntent {
         )
     }
 
-    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        self.config_root(environment)
-            .map(|root| root.join(CONFIG_FILENAME))
-    }
-
-    pub fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+    fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_log_dir(self.log_dir.as_ref(), environment)
     }
 }
@@ -558,17 +525,7 @@ pub struct RunIntent {
 }
 
 impl RunIntent {
-    pub fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.replica_root.as_ref(),
-            environment.replica.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_REPLICA_SUFFIX,
-            "replica root",
-        )
-    }
-
-    pub fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
+    fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
         resolve_path(
             self.config_root.as_ref(),
             environment.config.as_ref(),
@@ -577,15 +534,45 @@ impl RunIntent {
             "config root",
         )
     }
+}
 
-    pub fn config_path(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        self.config_root(environment)
-            .map(|root| root.join(CONFIG_FILENAME))
-    }
+#[derive(Debug)]
+pub enum PreparedCliIntent {
+    Init(PreparedInitIntent),
+    Run(PreparedRunIntent),
+    Client(PreparedClientIntent),
+}
 
-    pub fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_log_dir(self.log_dir.as_ref(), environment)
-    }
+#[derive(Debug)]
+pub struct PreparedInitIntent {
+    pub node_name: NodeName,
+    pub profile: Option<Profile>,
+    pub connect: Vec<ConnectUrl>,
+    pub listen: Option<SocketAddr>,
+    pub replica_root: PathBuf,
+    pub config_root: PathBuf,
+    pub log_dir: PathBuf,
+}
+
+#[derive(Debug)]
+pub struct PreparedRunIntent {
+    pub config_root: PathBuf,
+    pub config: ResolvedNodeConfig,
+    pub runtime: ConfigRuntime,
+    pub pingback: Option<LoopbackAddr>,
+}
+
+#[derive(Debug, PartialEq)]
+pub struct PreparedClientIntent {
+    pub intent: CliIntent,
+    pub dependency: ClientDependency,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub enum ClientDependency {
+    None,
+    ConfigRoot(PathBuf),
+    LogDir(PathBuf),
 }
 
 #[derive(Debug, PartialEq)]
@@ -801,6 +788,79 @@ impl ConfirmationRequirement {
 }
 
 impl CliIntent {
+    pub fn prepare(
+        self,
+        environment: &Environment,
+        cwd: &Path,
+    ) -> Result<PreparedCliIntent, CliError> {
+        match self {
+            Self::Init(args) => {
+                let replica_root = resolve_client_path(&args.replica_root(environment)?, cwd);
+                let config_root = resolve_client_path(&args.config_root(environment)?, cwd);
+                let log_dir = resolve_client_path(&args.log_dir(environment)?, cwd);
+                ensure_persistable_path(&replica_root, "replica root")?;
+                ensure_persistable_path(&log_dir, "log directory")?;
+                Ok(PreparedCliIntent::Init(PreparedInitIntent {
+                    node_name: args.node_name,
+                    profile: args.profile,
+                    connect: args.connect,
+                    listen: args.listen,
+                    replica_root,
+                    config_root,
+                    log_dir,
+                }))
+            }
+            Self::Run(args) => {
+                let config_root = resolve_client_path(&args.config_root(environment)?, cwd);
+                let (runtime, mut config) = ConfigRuntime::load(&config_root)?;
+
+                if let Some(replica_root) =
+                    args.replica_root.as_ref().or(environment.replica.as_ref())
+                {
+                    config.replica_root = resolve_client_path(replica_root, cwd);
+                }
+                if let Some(log_dir) = args.log_dir.as_ref().or(environment.log_dir.as_ref()) {
+                    config.log_dir = resolve_client_path(log_dir, cwd);
+                }
+                if let Some(listen) = args.listen {
+                    config.listen = Some(listen);
+                }
+                if !args.connect.is_empty() {
+                    config.connect = args.connect;
+                }
+
+                Ok(PreparedCliIntent::Run(PreparedRunIntent {
+                    config_root,
+                    config,
+                    runtime,
+                    pingback: args.pingback,
+                }))
+            }
+            mut client => {
+                client.resolve_client_paths(cwd);
+                let dependency = match &client {
+                    Self::Replica(
+                        ReplicaIntent::SnapshotInspect { .. }
+                        | ReplicaIntent::SnapshotVerify { .. },
+                    ) => ClientDependency::None,
+                    Self::Sync(SyncIntent::ViewLog)
+                    | Self::Plugin(PluginIntent::ViewLog { .. }) => {
+                        ClientDependency::LogDir(resolve_client_path(&environment.log_dir()?, cwd))
+                    }
+                    Self::Init(_) | Self::Run(_) => unreachable!(),
+                    _ => ClientDependency::ConfigRoot(resolve_client_path(
+                        &environment.config_root()?,
+                        cwd,
+                    )),
+                };
+                Ok(PreparedCliIntent::Client(PreparedClientIntent {
+                    intent: client,
+                    dependency,
+                }))
+            }
+        }
+    }
+
     pub fn confirmation_requirements(&self) -> &'static [ConfirmationRequirement] {
         match self {
             Self::Replica(ReplicaIntent::Import { .. }) => &[
@@ -811,20 +871,9 @@ impl CliIntent {
         }
     }
 
-    pub fn resolve_client_paths_from_process(&mut self) -> Result<(), CliError> {
-        if !matches!(self, Self::Replica(_)) {
-            return Ok(());
-        }
-
-        let cwd =
-            env::current_dir().map_err(|error| CliError::CurrentDirectory(error.to_string()))?;
-        self.resolve_client_paths(&cwd);
-        Ok(())
-    }
-
     /// Resolve client OS paths without checking the filesystem or normalizing
     /// `.` and `..` segments. Operation handlers apply their own validation.
-    pub fn resolve_client_paths(&mut self, cwd: &Path) {
+    fn resolve_client_paths(&mut self, cwd: &Path) {
         let Self::Replica(intent) = self else {
             return;
         };
@@ -837,44 +886,6 @@ impl CliIntent {
             | ReplicaIntent::SnapshotVerify { snapshot } => snapshot,
         };
         *path = resolve_client_path(path, cwd);
-    }
-
-    pub fn validate_environment(&self, environment: &Environment) -> Result<(), CliError> {
-        match self {
-            Self::Init(args) => {
-                let _ = args.replica_root(environment)?;
-                let _ = args.config_path(environment)?;
-                let _ = args.log_dir(environment)?;
-            }
-            Self::Run(args) => {
-                let _ = args.replica_root(environment)?;
-                let _ = args.config_path(environment)?;
-                let _ = args.log_dir(environment)?;
-            }
-            Self::Start | Self::Stop | Self::Status { .. } | Self::Ping { .. } | Self::Job(_) => {
-                let _ = environment.config_path()?;
-            }
-            Self::Replica(
-                ReplicaIntent::Inspect { .. }
-                | ReplicaIntent::Ops { .. }
-                | ReplicaIntent::Export { .. }
-                | ReplicaIntent::Import { .. },
-            )
-            | Self::Sync(SyncIntent::Synchronize { .. }) => {
-                let _ = environment.config_path()?;
-            }
-            Self::Replica(
-                ReplicaIntent::SnapshotInspect { .. } | ReplicaIntent::SnapshotVerify { .. },
-            ) => {}
-            Self::Sync(SyncIntent::ViewLog) | Self::Plugin(PluginIntent::ViewLog { .. }) => {
-                let _ = environment.log_dir()?;
-            }
-            Self::Plugin(_) => {
-                let _ = environment.config_path()?;
-            }
-        }
-
-        Ok(())
     }
 }
 
@@ -925,7 +936,7 @@ impl Environment {
         }
     }
 
-    pub fn config_root(&self) -> Result<PathBuf, CliError> {
+    fn config_root(&self) -> Result<PathBuf, CliError> {
         resolve_path(
             None,
             self.config.as_ref(),
@@ -935,21 +946,7 @@ impl Environment {
         )
     }
 
-    pub fn config_path(&self) -> Result<PathBuf, CliError> {
-        self.config_root().map(|root| root.join(CONFIG_FILENAME))
-    }
-
-    pub fn replica_root(&self) -> Result<PathBuf, CliError> {
-        resolve_path(
-            None,
-            self.replica.as_ref(),
-            self.home.as_ref(),
-            DEFAULT_REPLICA_SUFFIX,
-            "replica root",
-        )
-    }
-
-    pub fn log_dir(&self) -> Result<PathBuf, CliError> {
+    fn log_dir(&self) -> Result<PathBuf, CliError> {
         resolve_log_dir(None, self)
     }
 }
@@ -986,17 +983,32 @@ fn resolve_path(
         .ok_or(CliError::MissingHome { name })
 }
 
+fn ensure_persistable_path(path: &Path, name: &'static str) -> Result<(), CliError> {
+    if path.to_str().is_none() {
+        return Err(CliError::NonUtf8PersistentPath { name });
+    }
+    Ok(())
+}
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
     MissingHome { name: &'static str },
-    CurrentDirectory(String),
+    NonUtf8PersistentPath { name: &'static str },
+    Configuration(ConfigError),
+}
+
+impl From<ConfigError> for CliError {
+    fn from(error: ConfigError) -> Self {
+        Self::Configuration(error)
+    }
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
             Self::MissingHome { .. } => ExitCode::from(EXIT_CONFIG),
-            Self::CurrentDirectory(_) => ExitCode::from(EXIT_CONFIG),
+            Self::NonUtf8PersistentPath { .. } => ExitCode::from(EXIT_CONFIG),
+            Self::Configuration(_) => ExitCode::from(EXIT_CONFIG),
         }
     }
 }
@@ -1008,12 +1020,10 @@ impl fmt::Display for CliError {
                 formatter,
                 "cannot determine {name}: pass an explicit path or set HOME"
             ),
-            Self::CurrentDirectory(error) => {
-                write!(
-                    formatter,
-                    "cannot determine client working directory: {error}"
-                )
+            Self::NonUtf8PersistentPath { name } => {
+                write!(formatter, "cannot persist {name}: path is not valid UTF-8")
             }
+            Self::Configuration(error) => error.fmt(formatter),
         }
     }
 }
@@ -1040,6 +1050,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     fn parse(arguments: &[&str]) -> Cli {
@@ -1048,6 +1060,34 @@ mod tests {
 
     fn intent(arguments: &[&str]) -> CliIntent {
         parse(arguments).into_intent().unwrap()
+    }
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn new() -> Self {
+            let nonce = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let path =
+                env::temp_dir().join(format!("oll-cli-unit-test-{}-{nonce}", std::process::id()));
+            std::fs::create_dir_all(&path).unwrap();
+            Self(path)
+        }
+
+        fn write_config(&self, source: &str) -> PathBuf {
+            let root = self.0.join("config");
+            std::fs::create_dir_all(&root).unwrap();
+            std::fs::write(root.join("config.lua"), source).unwrap();
+            root
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.0).unwrap();
+        }
     }
 
     #[test]
@@ -1086,28 +1126,15 @@ mod tests {
             init.config_root(&environment).unwrap(),
             Path::new("/cli/config")
         );
-        assert_eq!(
-            init.config_path(&environment).unwrap(),
-            Path::new("/cli/config/config.lua")
-        );
         assert_eq!(init.log_dir(&environment).unwrap(), Path::new("/cli/log"));
 
         let CliIntent::Run(run) = intent(&["oll", "run"]) else {
             panic!()
         };
         assert_eq!(
-            run.replica_root(&environment).unwrap(),
-            Path::new("/env/replica")
-        );
-        assert_eq!(
             run.config_root(&environment).unwrap(),
             Path::new("/env/config")
         );
-        assert_eq!(
-            run.config_path(&environment).unwrap(),
-            Path::new("/env/config/config.lua")
-        );
-        assert_eq!(run.log_dir(&environment).unwrap(), Path::new("/env/log"));
 
         let environment = Environment {
             home: Some("/home/test".into()),
@@ -1115,29 +1142,8 @@ mod tests {
             ..Environment::default()
         };
         assert_eq!(
-            run.replica_root(&environment).unwrap(),
-            Path::new("/home/test/.local/share/oll")
-        );
-        assert_eq!(
             run.config_root(&environment).unwrap(),
             Path::new("/home/test/.config/oll")
-        );
-        assert_eq!(
-            run.config_path(&environment).unwrap(),
-            Path::new("/home/test/.config/oll/config.lua")
-        );
-        assert_eq!(
-            run.log_dir(&environment).unwrap(),
-            Path::new("/state/test/oll")
-        );
-
-        let environment = Environment {
-            home: Some("/home/test".into()),
-            ..Environment::default()
-        };
-        assert_eq!(
-            run.log_dir(&environment).unwrap(),
-            Path::new("/home/test/.local/state/oll")
         );
     }
 
@@ -1636,37 +1642,175 @@ mod tests {
     }
 
     #[test]
-    fn environment_dependencies_follow_the_concrete_intent() {
-        let empty = Environment::default();
-        for arguments in [
-            vec!["oll", "replica", "snapshot", "inspect", "file.ollsnap"],
-            vec!["oll", "replica", "snapshot", "verify", "file.ollsnap"],
-        ] {
-            intent(&arguments).validate_environment(&empty).unwrap();
-        }
-
-        let log_environment = Environment {
-            log_dir: Some("/logs".into()),
+    fn prepares_run_from_config_before_applying_environment_and_cli_overrides() {
+        let temporary = TestDirectory::new();
+        let config_root = temporary.write_config(
+            r#"
+            return {
+                format_version = 1,
+                node = {
+                    replica_root = "persisted/replica",
+                    log_dir = "persisted/log",
+                    listen = "127.0.0.1:7000",
+                    connect = { "https://persisted.example.com" },
+                },
+            }
+            "#,
+        );
+        let cwd = temporary.0.join("working");
+        std::fs::create_dir_all(&cwd).unwrap();
+        let environment = Environment {
+            config: Some(config_root.clone()),
+            replica: Some("environment/replica".into()),
+            log_dir: Some("environment/log".into()),
             ..Environment::default()
         };
-        for arguments in [vec!["oll", "sync", "--log"], vec!["oll", "plugin", "--log"]] {
-            intent(&arguments)
-                .validate_environment(&log_environment)
-                .unwrap();
-        }
 
-        for arguments in [
-            vec!["oll", "replica", "inspect", "/note.md"],
-            vec!["oll", "replica", "export", "--output", "file.ollsnap"],
-            vec!["oll", "replica", "import", "file.ollsnap"],
-            vec!["oll", "sync", "node-a"],
-            vec!["oll", "sync", "--log"],
-            vec!["oll", "plugin", "list"],
-            vec!["oll", "plugin", "validate"],
-            vec!["oll", "plugin", "--log"],
-        ] {
-            assert!(intent(&arguments).validate_environment(&empty).is_err());
-        }
+        let prepared = intent(&["oll", "run", "--replica", "cli/replica"])
+            .prepare(&environment, &cwd)
+            .unwrap();
+        let PreparedCliIntent::Run(prepared) = prepared else {
+            panic!()
+        };
+        assert_eq!(prepared.config_root, config_root);
+        assert_eq!(prepared.config.replica_root, cwd.join("cli/replica"));
+        assert_eq!(prepared.config.log_dir, cwd.join("environment/log"));
+        assert_eq!(
+            prepared.config.listen,
+            Some("127.0.0.1:7000".parse().unwrap())
+        );
+        assert_eq!(
+            prepared.config.connect[0].to_string(),
+            "https://persisted.example.com/"
+        );
+
+        let prepared = intent(&[
+            "oll",
+            "run",
+            "--log-dir",
+            "cli/log",
+            "--listen",
+            "127.0.0.1:8000",
+            "--connect",
+            "https://cli.example.com",
+        ])
+        .prepare(&environment, &cwd)
+        .unwrap();
+        let PreparedCliIntent::Run(prepared) = prepared else {
+            panic!()
+        };
+        assert_eq!(
+            prepared.config.replica_root,
+            cwd.join("environment/replica")
+        );
+        assert_eq!(prepared.config.log_dir, cwd.join("cli/log"));
+        assert_eq!(
+            prepared.config.listen,
+            Some("127.0.0.1:8000".parse().unwrap())
+        );
+        assert_eq!(
+            prepared.config.connect[0].to_string(),
+            "https://cli.example.com/"
+        );
+    }
+
+    #[test]
+    fn home_less_run_uses_paths_returned_by_an_absolute_config() {
+        let temporary = TestDirectory::new();
+        let config_root = temporary.write_config(
+            r#"
+            return {
+                format_version = 1,
+                node = {
+                    replica_root = "replica",
+                    log_dir = "log",
+                    listen = nil,
+                    connect = {},
+                },
+            }
+            "#,
+        );
+        let environment = Environment {
+            config: Some(config_root.clone()),
+            ..Environment::default()
+        };
+
+        let prepared = intent(&["oll", "run"])
+            .prepare(&environment, Path::new("/unrelated-daemon-cwd"))
+            .unwrap();
+        let PreparedCliIntent::Run(prepared) = prepared else {
+            panic!()
+        };
+        assert_eq!(prepared.config.replica_root, config_root.join("replica"));
+        assert_eq!(prepared.config.log_dir, config_root.join("log"));
+    }
+
+    #[test]
+    fn preparation_resolves_only_each_intents_required_resources() {
+        let environment = Environment {
+            config: Some("relative/config".into()),
+            log_dir: Some("relative/log".into()),
+            ..Environment::default()
+        };
+        let cwd = Path::new("/client/cwd");
+
+        let snapshot = intent(&["oll", "replica", "snapshot", "verify", "file.ollsnap"])
+            .prepare(&Environment::default(), cwd)
+            .unwrap();
+        let PreparedCliIntent::Client(snapshot) = snapshot else {
+            panic!()
+        };
+        assert_eq!(snapshot.dependency, ClientDependency::None);
+        let CliIntent::Replica(ReplicaIntent::SnapshotVerify { snapshot }) = snapshot.intent else {
+            panic!()
+        };
+        assert_eq!(snapshot, cwd.join("file.ollsnap"));
+
+        let log = intent(&["oll", "sync", "--log"])
+            .prepare(&environment, cwd)
+            .unwrap();
+        let PreparedCliIntent::Client(log) = log else {
+            panic!()
+        };
+        assert_eq!(
+            log.dependency,
+            ClientDependency::LogDir(cwd.join("relative/log"))
+        );
+
+        let admin = intent(&["oll", "status"])
+            .prepare(&environment, cwd)
+            .unwrap();
+        let PreparedCliIntent::Client(admin) = admin else {
+            panic!()
+        };
+        assert_eq!(
+            admin.dependency,
+            ClientDependency::ConfigRoot(cwd.join("relative/config"))
+        );
+    }
+
+    #[test]
+    fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
+        let cwd = Path::new("/startup/cwd");
+        let prepared = intent(&[
+            "oll",
+            "init",
+            "test-node",
+            "--config",
+            "deployment/config",
+            "--replica",
+            "deployment/replica",
+            "--log-dir",
+            "deployment/log",
+        ])
+        .prepare(&Environment::default(), cwd)
+        .unwrap();
+        let PreparedCliIntent::Init(prepared) = prepared else {
+            panic!()
+        };
+        assert_eq!(prepared.config_root, cwd.join("deployment/config"));
+        assert_eq!(prepared.replica_root, cwd.join("deployment/replica"));
+        assert_eq!(prepared.log_dir, cwd.join("deployment/log"));
     }
 
     #[test]
