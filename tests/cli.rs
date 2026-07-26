@@ -118,6 +118,8 @@ fn clap_errors_use_exit_code_two() {
         vec!["sync", "home.example"],
         vec!["sync", "node-a", "--log"],
         vec!["plugin"],
+        vec!["plugin", "install", "--release"],
+        vec!["plugin", "install", "../local-plugin"],
     ] {
         let output = oll().args(arguments).output().unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -341,4 +343,43 @@ fn plugin_call_help_and_argv_use_action_language() {
         .output()
         .unwrap();
     assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
+}
+
+#[test]
+fn plugin_install_help_and_validation_expose_file_driven_workflow() {
+    let install_help = oll()
+        .args(["plugin", "install", "--help"])
+        .output()
+        .unwrap();
+    assert!(install_help.status.success());
+    let stdout = String::from_utf8(install_help.stdout).unwrap();
+    assert!(
+        stdout.contains("[GIT_REMOTE]"),
+        "missing optional remote:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("plugins.lua"),
+        "missing file workflow:\n{stdout}"
+    );
+
+    for arguments in [
+        vec!["plugin", "install"],
+        vec!["plugin", "validate"],
+        vec![
+            "plugin",
+            "install",
+            "git@github.com:example/plugin.git",
+            "--release",
+            "--branch",
+            "release/v0.3.1",
+        ],
+    ] {
+        let output = oll()
+            .env_remove("HOME")
+            .env("OLL_CONFIG", "/tmp/oll-config")
+            .args(&arguments)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
+    }
 }

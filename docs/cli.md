@@ -181,9 +181,11 @@ or an Admin connection.
 ## Plugin commands
 
 ```text
-oll plugin install <git-url>
+oll plugin install
+oll plugin install <git-remote>
   [--rev <revision> | --branch <branch>]
   [--release | --source]
+oll plugin validate
 oll plugin list
 oll plugin info <plugin-id>
 oll plugin start <plugin-id>
@@ -195,11 +197,33 @@ oll plugin --log [<plugin-id>]
 oll plugin call <plugin-id> <action> [arguments...]
 ```
 
-Source installation is the default. `--release` and `--source` conflict;
-`--rev` and `--branch` conflict. A generic plugin call returns a job ID after the
-plugin stage is implemented. Its arguments are shell-style UTF-8 argv strings;
-the client preserves their order, duplicates, empty strings, and leading `-`
-characters without parsing or inferring types.
+`git-remote` accepts standard Git URLs and SCP-style SSH syntax such as
+`git@github.com:example/oll-anki.git`. Source installation is the default.
+`--release` and `--source` conflict; `--rev` and `--branch` conflict. Selection
+applies to both modes: source reads `oll.toml`, while release reads `oll.toml`
+and the direct artifact URLs in `oll.json` from the same selected repository
+state. Version ranges and Git tags have no oll semantics; publishers may expose
+version branches such as `release/v0.3.1`.
+
+Without a remote, `plugin install` reads `<config-root>/plugins.lua` and
+reconciles its declarations. With a remote, the daemon resolves the `PluginId`,
+atomically adds the declaration to that file, and then invokes the same
+file-driven reconciliation. An identical declaration is left unchanged. A
+different declaration for the same ID requires an interactive overwrite
+confirmation; a negative answer, EOF, or unavailable input changes neither the
+file nor the installation. Installation failure after a successful write does
+not roll back desired configuration.
+
+`plugin validate` is local and read-only. It validates the literal-only syntax
+and schema of `<config-root>/plugins.lua` without opening the Admin API,
+accessing a remote, running a recipe, or rewriting the file. Publisher and user
+file formats, source/release behavior, LuaJIT requirements, and stable error
+codes are defined in `plugin-packaging.md`.
+
+A generic plugin call returns a job ID after the plugin stage is implemented.
+Its arguments are shell-style UTF-8 argv strings; the client preserves their
+order, duplicates, empty strings, and leading `-` characters without parsing or
+inferring types.
 
 `plugin --log` reads `<log-dir>/plugin.log` locally, optionally filtering for
 one plugin ID. It does not require node configuration or an Admin connection.

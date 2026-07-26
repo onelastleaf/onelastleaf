@@ -8,7 +8,7 @@ configuration, and perform external side effects.
 
 There is no permission sandbox, signature requirement, official marketplace, or
 host intervention in publication. A plugin repository is installed directly
-from a Git URL.
+from a `GitRemote` accepted by the package contract.
 
 ## Target workflows
 
@@ -30,18 +30,16 @@ Markdown linting is not a planned host responsibility.
 
 ## Packaging
 
-The oll package manager is responsible for repository layout and installation
-configuration. It must eventually support GitHub, GitLab, Codeberg, Gitea, and
-Forgejo-compatible remotes.
-
-The default installation path builds from source using a configured build
-command. A plugin may alternatively provide a release binary. Build commands and
-release-selection fields are package-manager configuration and cannot be
-overridden by code running inside the plugin.
+The package manager reads publisher-owned `oll.toml` and `oll.json` files and
+the user-owned `<config-root>/plugins.lua` declaration module. Its complete
+source recipe, direct-release-download, validation, mutation, and diagnostic
+contract is defined in [plugin-packaging.md](plugin-packaging.md). Hosting
+platform APIs are not part of that contract.
 
 Plugins may use any implementation language that can implement the protobuf
 gRPC service. oll does not load a plugin ABI, inject an SDK, or require a Rust
-dynamic library.
+dynamic library. The configuration runtime is LuaJIT through `mlua`; other Lua
+implementations are not supported by the first version.
 
 ## Process lifecycle
 

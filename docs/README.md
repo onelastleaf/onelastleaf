@@ -24,6 +24,8 @@ documents describe the larger runtime and storage model around those messages.
   correlation propagation, file routing, and retention.
 - [Plugin system](plugin-system.md): process lifecycle, bidi gRPC, jobs,
   configuration callbacks, scheduling, logs, and package installation.
+- [Plugin packaging](plugin-packaging.md): Git remotes, `oll.toml`, `oll.json`,
+  `plugins.lua`, source recipes, release artifacts, and installation errors.
 
 ## Normative language
 

@@ -23,8 +23,8 @@ which source files and compiler flags are canonical.
   and snapshot payloads.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
 
-Package installation, Git forge adapters, source builds, release-asset
-selection, process spawning, and the plugin manifest are not wire protocols and
+Package installation, Git remote parsing, source recipes, direct release
+downloads, process spawning, and plugin manifests are not wire protocols and
 are therefore outside this directory.
 
 ## Local administration

@@ -199,6 +199,69 @@ impl FromStr for ConnectUrl {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct GitRemote {
+    original: String,
+    parsed: gix_url::Url,
+}
+
+impl GitRemote {
+    /// Return the original spelling for Git. Diagnostics should use `Display`,
+    /// which redacts URL passwords through `gix-url`.
+    pub fn as_str(&self) -> &str {
+        &self.original
+    }
+}
+
+impl fmt::Debug for GitRemote {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_tuple("GitRemote")
+            .field(&format_args!("{}", self.parsed))
+            .finish()
+    }
+}
+
+impl fmt::Display for GitRemote {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.parsed.fmt(formatter)
+    }
+}
+
+impl FromStr for GitRemote {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        if input.is_empty() {
+            return Err("Git remote cannot be empty".to_owned());
+        }
+
+        let parsed = gix_url::parse(input).map_err(|error| error.to_string())?;
+        if !matches!(
+            parsed.scheme,
+            gix_url::Scheme::Git
+                | gix_url::Scheme::Http
+                | gix_url::Scheme::Https
+                | gix_url::Scheme::Ssh
+        ) {
+            return Err(
+                "Git remote must use git, http, https, ssh, or SCP-style SSH syntax".to_owned(),
+            );
+        }
+        if parsed.host().is_none() {
+            return Err("Git remote must include a host".to_owned());
+        }
+        if parsed.path.is_empty() || parsed.path.as_slice() == b"/" {
+            return Err("Git remote must include a repository path".to_owned());
+        }
+
+        Ok(Self {
+            original: input.to_owned(),
+            parsed,
+        })
+    }
+}
+
 #[derive(Debug, Args)]
 pub struct InitArgs {
     /// Durable human-readable name paired with this node's generated NodeId.
@@ -367,21 +430,24 @@ pub struct PluginArgs {
 pub enum PluginCommand {
     /// Install a plugin from a Git repository.
     Install {
-        /// Git repository URL.
-        repository: Url,
-        /// Checkout this exact Git revision or tag.
-        #[arg(long, conflicts_with = "branch")]
+        /// Git remote. Omit it to install declarations from plugins.lua.
+        #[arg(value_name = "GIT_REMOTE")]
+        repository: Option<GitRemote>,
+        /// Checkout this exact Git revision.
+        #[arg(long, conflicts_with = "branch", requires = "repository")]
         rev: Option<String>,
         /// Checkout the head of this branch.
-        #[arg(long, conflicts_with = "rev")]
+        #[arg(long, conflicts_with = "rev", requires = "repository")]
         branch: Option<String>,
-        /// Download a release binary instead of building from source.
-        #[arg(long, conflicts_with = "source")]
+        /// Download the artifact declared by oll.json instead of building.
+        #[arg(long, conflicts_with = "source", requires = "repository")]
         release: bool,
         /// Build from source. This is the default installation mode.
-        #[arg(long, conflicts_with = "release")]
+        #[arg(long, conflicts_with = "release", requires = "repository")]
         source: bool,
     },
+    /// Validate the data-only plugins.lua configuration.
+    Validate,
     /// List installed plugins.
     List,
     /// Show one plugin's metadata and state.
@@ -588,12 +654,6 @@ pub enum GitSelector {
     Branch(String),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InstallMode {
-    Source,
-    Release,
-}
-
 #[derive(Debug, PartialEq)]
 pub enum PluginLogTarget {
     All,
@@ -602,11 +662,8 @@ pub enum PluginLogTarget {
 
 #[derive(Debug, PartialEq)]
 pub enum PluginIntent {
-    Install {
-        repository: Url,
-        selector: GitSelector,
-        mode: InstallMode,
-    },
+    Install(PluginInstallIntent),
+    Validate,
     List,
     Info {
         plugin_id: String,
@@ -633,6 +690,19 @@ pub enum PluginIntent {
         plugin_id: String,
         action: String,
         arguments: Vec<String>,
+    },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PluginInstallIntent {
+    Declared,
+    Source {
+        remote: GitRemote,
+        selector: GitSelector,
+    },
+    Release {
+        remote: GitRemote,
+        selector: GitSelector,
     },
 }
 
@@ -663,22 +733,26 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
                         ));
                     }
                 };
-                let mode = match (release, source) {
-                    (false, _) => InstallMode::Source,
-                    (true, false) => InstallMode::Release,
-                    (true, true) => {
+                let install = match repository {
+                    None if !matches!(&selector, GitSelector::Default) || release || source => {
+                        return Err(intent_error(
+                            ErrorKind::MissingRequiredArgument,
+                            "installation options require a Git remote",
+                        ));
+                    }
+                    None => PluginInstallIntent::Declared,
+                    Some(_) if release && source => {
                         return Err(intent_error(
                             ErrorKind::ArgumentConflict,
                             "--release cannot be combined with --source",
                         ));
                     }
+                    Some(remote) if release => PluginInstallIntent::Release { remote, selector },
+                    Some(remote) => PluginInstallIntent::Source { remote, selector },
                 };
-                Ok(PluginIntent::Install {
-                    repository,
-                    selector,
-                    mode,
-                })
+                Ok(PluginIntent::Install(install))
             }
+            PluginCommand::Validate => Ok(PluginIntent::Validate),
             PluginCommand::List => Ok(PluginIntent::List),
             PluginCommand::Info { plugin_id } => Ok(PluginIntent::Info { plugin_id }),
             PluginCommand::Start { plugin_id } => Ok(PluginIntent::Start { plugin_id }),
@@ -1330,11 +1404,18 @@ mod tests {
     #[test]
     fn parses_plugin_and_job_commands() {
         for arguments in [
+            vec!["oll", "plugin", "install"],
             vec![
                 "oll",
                 "plugin",
                 "install",
                 "https://github.com/example/oll-anki.git",
+            ],
+            vec![
+                "oll",
+                "plugin",
+                "install",
+                "git@github.com:example/oll-anki.git",
             ],
             vec![
                 "oll",
@@ -1358,6 +1439,8 @@ mod tests {
                 "plugin",
                 "install",
                 "https://github.com/example/oll-anki.git",
+                "--branch",
+                "release/v0.3.1",
                 "--release",
             ],
             vec![
@@ -1367,6 +1450,7 @@ mod tests {
                 "https://github.com/example/oll-anki.git",
                 "--source",
             ],
+            vec!["oll", "plugin", "validate"],
             vec!["oll", "plugin", "list"],
             vec!["oll", "plugin", "info", "oll.anki"],
             vec!["oll", "plugin", "start", "oll.anki"],
@@ -1434,27 +1518,73 @@ mod tests {
             })
         );
 
-        let CliIntent::Plugin(PluginIntent::Install { selector, mode, .. }) = intent(&[
+        assert_eq!(
+            intent(&["oll", "plugin", "install"]),
+            CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Declared))
+        );
+
+        let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Release {
+            remote,
+            selector,
+        })) = intent(&[
             "oll",
             "plugin",
             "install",
-            "https://example.com/plugin.git",
+            "git@example.com:plugins/example.git",
             "--branch",
-            "main",
+            "release/v0.3.1",
             "--release",
-        ]) else {
+        ])
+        else {
             panic!()
         };
-        assert_eq!(selector, GitSelector::Branch("main".to_owned()));
-        assert_eq!(mode, InstallMode::Release);
+        assert_eq!(remote.as_str(), "git@example.com:plugins/example.git");
+        assert_eq!(selector, GitSelector::Branch("release/v0.3.1".to_owned()));
 
-        let CliIntent::Plugin(PluginIntent::Install { selector, mode, .. }) =
-            intent(&["oll", "plugin", "install", "https://example.com/plugin.git"])
+        let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Source {
+            selector, ..
+        })) = intent(&["oll", "plugin", "install", "https://example.com/plugin.git"])
         else {
             panic!()
         };
         assert_eq!(selector, GitSelector::Default);
-        assert_eq!(mode, InstallMode::Source);
+        assert_eq!(
+            intent(&["oll", "plugin", "validate"]),
+            CliIntent::Plugin(PluginIntent::Validate)
+        );
+    }
+
+    #[test]
+    fn parses_git_remotes_without_treating_them_as_web_urls() {
+        for remote in [
+            "https://github.com/example/plugin.git",
+            "http://git.example.com/example/plugin.git",
+            "ssh://git@gitlab.com/example/plugin.git",
+            "git@gitlab.com:example/plugin.git",
+            "git://codeberg.org/example/plugin.git",
+        ] {
+            let parsed: GitRemote = remote.parse().unwrap();
+            assert_eq!(parsed.as_str(), remote);
+        }
+
+        for invalid in [
+            "",
+            "https://github.com",
+            "git@github.com:",
+            "ftp://example.com/plugin.git",
+            "../local-plugin",
+        ] {
+            assert!(
+                invalid.parse::<GitRemote>().is_err(),
+                "accepted {invalid:?}"
+            );
+        }
+
+        let credentialed: GitRemote = "https://user:secret@example.com/plugin.git"
+            .parse()
+            .unwrap();
+        assert!(!credentialed.to_string().contains("secret"));
+        assert!(!format!("{credentialed:?}").contains("secret"));
     }
 
     #[test]
@@ -1472,7 +1602,7 @@ mod tests {
             command: Command::Plugin(PluginArgs {
                 log: None,
                 command: Some(PluginCommand::Install {
-                    repository: "https://example.com/plugin.git".parse().unwrap(),
+                    repository: Some("https://example.com/plugin.git".parse().unwrap()),
                     rev: Some("v1".to_owned()),
                     branch: Some("main".to_owned()),
                     release: true,
@@ -1481,6 +1611,20 @@ mod tests {
             }),
         };
         assert!(install.into_intent().is_err());
+
+        let missing_remote = Cli {
+            command: Command::Plugin(PluginArgs {
+                log: None,
+                command: Some(PluginCommand::Install {
+                    repository: None,
+                    rev: None,
+                    branch: Some("main".to_owned()),
+                    release: false,
+                    source: false,
+                }),
+            }),
+        };
+        assert!(missing_remote.into_intent().is_err());
 
         let plugin = Cli {
             command: Command::Plugin(PluginArgs {
@@ -1518,6 +1662,7 @@ mod tests {
             vec!["oll", "sync", "node-a"],
             vec!["oll", "sync", "--log"],
             vec!["oll", "plugin", "list"],
+            vec!["oll", "plugin", "validate"],
             vec!["oll", "plugin", "--log"],
         ] {
             assert!(intent(&arguments).validate_environment(&empty).is_err());
@@ -1577,5 +1722,7 @@ mod tests {
             .is_err()
         );
         assert!(parse_from(["oll", "plugin"]).is_err());
+        assert!(parse_from(["oll", "plugin", "install", "--release"]).is_err());
+        assert!(parse_from(["oll", "plugin", "install", "--branch", "main"]).is_err());
     }
 }

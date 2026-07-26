@@ -11,7 +11,7 @@ or infer the role from configuration:
 | `oll run` | daemon | Enters the one long-running node runtime and does not exit after startup. |
 | `oll init` | bootstrap client | Initializes local configuration and the one replica without starting services. |
 | `oll start` | launcher client | Starts a detached `oll run` child, verifies readiness, and exits. |
-| snapshot inspect/verify and log viewing | local file client | Reads one user-selected snapshot or a file under the user log directory and exits. |
+| snapshot inspect/verify, log viewing, and `plugin validate` | local file client | Validates or reads one local file and exits. |
 | remaining operational subcommands | admin client | Opens the configured Admin API, makes a bounded request, renders the result, and exits. |
 
 `init` cannot use an already-running daemon: its purpose includes creating the

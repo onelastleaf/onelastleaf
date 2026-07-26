@@ -17,5 +17,6 @@ path = "src/main.rs"
 
 [dependencies]
 clap = { version = "4.6", features = ["derive", "env"] }
+gix-url = "0.37"
 loro = "1.13"
 url = "2.5"
