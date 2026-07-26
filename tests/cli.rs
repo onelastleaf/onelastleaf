@@ -65,7 +65,7 @@ fn help_exposes_the_complete_command_surface() {
 
     let stdout = String::from_utf8(output.stdout).unwrap();
     for command in [
-        "init", "run", "start", "stop", "status", "replica", "sync", "ping", "plugin", "job",
+        "init", "run", "start", "stop", "status", "log", "replica", "sync", "ping", "plugin", "job",
     ] {
         assert!(
             stdout.contains(command),
@@ -167,6 +167,7 @@ fn clap_errors_use_exit_code_two() {
         vec!["replica", "ops", "/note.md", "--limit", "0"],
         vec!["sync", "home.example"],
         vec!["sync", "node-a", "--log"],
+        vec!["log", "set", "oll::sync=Trace"],
         vec!["plugin"],
         vec!["plugin", "install", "--release"],
         vec!["plugin", "install", "../local-plugin"],
@@ -248,7 +249,7 @@ fn explicit_and_environment_paths_do_not_require_home() {
 }
 
 #[test]
-fn run_loads_self_contained_config_before_deriving_other_roots() {
+fn run_preparation_requires_only_the_config_root() {
     let deployment = TestDeployment::new();
     let output = oll()
         .env_remove("HOME")
@@ -269,7 +270,7 @@ fn run_loads_self_contained_config_before_deriving_other_roots() {
 }
 
 #[test]
-fn lua_evaluation_errors_are_configuration_errors_and_redact_values() {
+fn run_defers_lua_evaluation_until_the_node_handler() {
     let deployment = TestDeployment::new();
     fs::write(
         deployment.config().join("config.lua"),
@@ -283,10 +284,28 @@ fn lua_evaluation_errors_are_configuration_errors_and_redact_values() {
         .arg("run")
         .output()
         .unwrap();
-    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
+    assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
     let stderr = String::from_utf8(output.stderr).unwrap();
-    assert!(stderr.contains("cannot evaluate"));
+    assert!(stderr.contains("command is not implemented"));
     assert!(!stderr.contains("DO_NOT_PRINT_THIS_SECRET"));
+}
+
+#[test]
+fn log_set_is_a_typed_admin_command() {
+    let help = oll().args(["log", "set", "--help"]).output().unwrap();
+    assert!(help.status.success());
+    assert!(
+        String::from_utf8(help.stdout)
+            .unwrap()
+            .contains("TARGET=LEVEL")
+    );
+
+    let output = oll()
+        .env("OLL_CONFIG", "/tmp/oll-config")
+        .args(["log", "set", "oll::sync=trace"])
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
 }
 
 #[test]

@@ -11,7 +11,7 @@ use std::{
 
 use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum, error::ErrorKind};
 
-use crate::configuration::{ConfigError, ConfigRuntime, ResolvedNodeConfig};
+use crate::configuration::ResolvedNodeConfig;
 
 pub use crate::configuration::ConnectUrl;
 
@@ -71,6 +71,7 @@ impl Cli {
             Command::Start => Ok(CliIntent::Start),
             Command::Stop => Ok(CliIntent::Stop),
             Command::Status(args) => Ok(CliIntent::Status { json: args.json }),
+            Command::Log(args) => Ok(CliIntent::Log(args.command.into())),
             Command::Replica(args) => Ok(CliIntent::Replica(args.command.into())),
             Command::Sync(args) => match (args.log, args.node_name, args.retries) {
                 (true, None, None) => Ok(CliIntent::Sync(SyncIntent::ViewLog)),
@@ -108,6 +109,8 @@ pub enum Command {
     Stop,
     /// Show node and configured peer status.
     Status(StatusArgs),
+    /// Inspect and adjust local daemon log filters.
+    Log(LogArgs),
     /// Inspect, import, and export replica state.
     Replica(ReplicaArgs),
     /// Synchronize with configured peers or inspect the sync log.
@@ -302,6 +305,129 @@ pub struct StatusArgs {
 }
 
 #[derive(Debug, Args)]
+pub struct LogArgs {
+    #[command(subcommand)]
+    pub command: LogCommand,
+}
+
+#[derive(Debug, Subcommand)]
+pub enum LogCommand {
+    /// Set one live log target filter.
+    Set {
+        #[arg(value_name = "TARGET=LEVEL")]
+        directive: LogFilterDirective,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogFilterDirective {
+    pub target: LogTarget,
+    pub level: LogFilterLevel,
+}
+
+impl FromStr for LogFilterDirective {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let Some((target, level)) = input.split_once('=') else {
+            return Err("log filter directive must be TARGET=LEVEL".to_owned());
+        };
+        if level.contains('=') {
+            return Err("log filter directive must contain exactly one '='".to_owned());
+        }
+
+        Ok(Self {
+            target: target.parse()?,
+            level: level.parse()?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LogTarget(String);
+
+impl LogTarget {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for LogTarget {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.0.fmt(formatter)
+    }
+}
+
+impl FromStr for LogTarget {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let mut segments = input.split("::");
+        if segments.next() != Some("oll") {
+            return Err("log target must begin with 'oll'".to_owned());
+        }
+
+        for segment in segments {
+            let mut bytes = segment.bytes();
+            let Some(first) = bytes.next() else {
+                return Err("log target contains an empty identifier segment".to_owned());
+            };
+            if !(first.is_ascii_alphabetic() || first == b'_')
+                || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
+                return Err(
+                    "log target segments must be ASCII identifiers separated by '::'".to_owned(),
+                );
+            }
+        }
+
+        Ok(Self(input.to_owned()))
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LogFilterLevel {
+    Error,
+    Warn,
+    Info,
+    Debug,
+    Trace,
+}
+
+impl LogFilterLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Error => "error",
+            Self::Warn => "warn",
+            Self::Info => "info",
+            Self::Debug => "debug",
+            Self::Trace => "trace",
+        }
+    }
+}
+
+impl fmt::Display for LogFilterLevel {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl FromStr for LogFilterLevel {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        match input {
+            "error" => Ok(Self::Error),
+            "warn" => Ok(Self::Warn),
+            "info" => Ok(Self::Info),
+            "debug" => Ok(Self::Debug),
+            "trace" => Ok(Self::Trace),
+            _ => Err("log level must be error, warn, info, debug, or trace".to_owned()),
+        }
+    }
+}
+
+#[derive(Debug, Args)]
 pub struct ReplicaArgs {
     #[command(subcommand)]
     pub command: ReplicaCommand,
@@ -460,6 +586,7 @@ pub enum CliIntent {
     Start,
     Stop,
     Status { json: bool },
+    Log(LogIntent),
     Replica(ReplicaIntent),
     Sync(SyncIntent),
     Ping { node_name: NodeName },
@@ -545,9 +672,35 @@ pub struct PreparedInitIntent {
 #[derive(Debug)]
 pub struct PreparedRunIntent {
     pub config_root: PathBuf,
-    pub config: ResolvedNodeConfig,
-    pub runtime: ConfigRuntime,
+    pub overrides: RunOverrides,
     pub pingback: Option<LoopbackAddr>,
+}
+
+/// Runtime-only values resolved from CLI and environment inputs. The node
+/// handler applies them after it owns the deployment lock and loads config.lua.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RunOverrides {
+    pub replica_root: Option<PathBuf>,
+    pub log_dir: Option<PathBuf>,
+    pub listen: Option<SocketAddr>,
+    pub connect: Option<Vec<ConnectUrl>>,
+}
+
+impl RunOverrides {
+    pub fn apply_to(&self, config: &mut ResolvedNodeConfig) {
+        if let Some(replica_root) = &self.replica_root {
+            config.replica_root = replica_root.clone();
+        }
+        if let Some(log_dir) = &self.log_dir {
+            config.log_dir = log_dir.clone();
+        }
+        if let Some(listen) = self.listen {
+            config.listen = Some(listen);
+        }
+        if let Some(connect) = &self.connect {
+            config.connect = connect.clone();
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -620,6 +773,25 @@ pub enum SyncIntent {
         max_attempts: Option<NonZeroU32>,
     },
     ViewLog,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum LogIntent {
+    Set {
+        target: LogTarget,
+        level: LogFilterLevel,
+    },
+}
+
+impl From<LogCommand> for LogIntent {
+    fn from(command: LogCommand) -> Self {
+        match command {
+            LogCommand::Set { directive } => Self::Set {
+                target: directive.target,
+                level: directive.level,
+            },
+        }
+    }
 }
 
 #[derive(Debug, PartialEq)]
@@ -799,27 +971,28 @@ impl CliIntent {
             }
             Self::Run(args) => {
                 let config_root = resolve_client_path(&args.config_root(environment)?, cwd);
-                let (runtime, mut config) = ConfigRuntime::load(&config_root)?;
-
-                if let Some(replica_root) =
-                    args.replica_root.as_ref().or(environment.replica.as_ref())
-                {
-                    config.replica_root = resolve_client_path(replica_root, cwd);
-                }
-                if let Some(log_dir) = args.log_dir.as_ref().or(environment.log_dir.as_ref()) {
-                    config.log_dir = resolve_client_path(log_dir, cwd);
-                }
-                if let Some(listen) = args.listen {
-                    config.listen = Some(listen);
-                }
-                if !args.connect.is_empty() {
-                    config.connect = args.connect;
-                }
+                let overrides = RunOverrides {
+                    replica_root: args
+                        .replica_root
+                        .as_ref()
+                        .or(environment.replica.as_ref())
+                        .map(|path| resolve_client_path(path, cwd)),
+                    log_dir: args
+                        .log_dir
+                        .as_ref()
+                        .or(environment.log_dir.as_ref())
+                        .map(|path| resolve_client_path(path, cwd)),
+                    listen: args.listen,
+                    connect: if args.connect.is_empty() {
+                        None
+                    } else {
+                        Some(args.connect)
+                    },
+                };
 
                 Ok(PreparedCliIntent::Run(PreparedRunIntent {
                     config_root,
-                    config,
-                    runtime,
+                    overrides,
                     pingback: args.pingback,
                 }))
             }
@@ -981,13 +1154,6 @@ fn ensure_persistable_path(path: &Path, name: &'static str) -> Result<(), CliErr
 pub enum CliError {
     MissingHome { name: &'static str },
     NonUtf8PersistentPath { name: &'static str },
-    Configuration(ConfigError),
-}
-
-impl From<ConfigError> for CliError {
-    fn from(error: ConfigError) -> Self {
-        Self::Configuration(error)
-    }
 }
 
 impl CliError {
@@ -995,7 +1161,6 @@ impl CliError {
         match self {
             Self::MissingHome { .. } => ExitCode::from(EXIT_CONFIG),
             Self::NonUtf8PersistentPath { .. } => ExitCode::from(EXIT_CONFIG),
-            Self::Configuration(_) => ExitCode::from(EXIT_CONFIG),
         }
     }
 }
@@ -1010,7 +1175,6 @@ impl fmt::Display for CliError {
             Self::NonUtf8PersistentPath { name } => {
                 write!(formatter, "cannot persist {name}: path is not valid UTF-8")
             }
-            Self::Configuration(error) => error.fmt(formatter),
         }
     }
 }
@@ -1382,6 +1546,31 @@ mod tests {
     }
 
     #[test]
+    fn parses_log_filter_directives_into_typed_intents() {
+        let CliIntent::Log(LogIntent::Set { target, level }) =
+            intent(&["oll", "log", "set", "oll::sync=trace"])
+        else {
+            panic!()
+        };
+        assert_eq!(target.as_str(), "oll::sync");
+        assert_eq!(level, LogFilterLevel::Trace);
+
+        for directive in [
+            "sync=trace",
+            "oll:sync=trace",
+            "oll::=trace",
+            "oll::sync=Trace",
+            "oll::sync=trace=debug",
+            "oll::sync",
+        ] {
+            assert!(
+                parse_from(["oll", "log", "set", directive]).is_err(),
+                "accepted {directive:?}"
+            );
+        }
+    }
+
+    #[test]
     fn parses_plugin_and_job_commands() {
         for arguments in [
             vec!["oll", "plugin", "install"],
@@ -1616,19 +1805,11 @@ mod tests {
     }
 
     #[test]
-    fn prepares_run_from_config_before_applying_environment_and_cli_overrides() {
+    fn prepares_run_overrides_without_evaluating_config() {
         let temporary = TestDirectory::new();
         let config_root = temporary.write_config(
             r#"
-            return {
-                format_version = 1,
-                node = {
-                    replica_root = "persisted/replica",
-                    log_dir = "persisted/log",
-                    listen = "127.0.0.1:7000",
-                    connect = { "https://persisted.example.com" },
-                },
-            }
+            error("run preparation must not evaluate config.lua")
             "#,
         );
         let cwd = temporary.0.join("working");
@@ -1647,16 +1828,16 @@ mod tests {
             panic!()
         };
         assert_eq!(prepared.config_root, config_root);
-        assert_eq!(prepared.config.replica_root, cwd.join("cli/replica"));
-        assert_eq!(prepared.config.log_dir, cwd.join("environment/log"));
         assert_eq!(
-            prepared.config.listen,
-            Some("127.0.0.1:7000".parse().unwrap())
+            prepared.overrides.replica_root,
+            Some(cwd.join("cli/replica"))
         );
         assert_eq!(
-            prepared.config.connect[0].to_string(),
-            "https://persisted.example.com/"
+            prepared.overrides.log_dir,
+            Some(cwd.join("environment/log"))
         );
+        assert_eq!(prepared.overrides.listen, None);
+        assert_eq!(prepared.overrides.connect, None);
 
         let prepared = intent(&[
             "oll",
@@ -1674,36 +1855,49 @@ mod tests {
             panic!()
         };
         assert_eq!(
-            prepared.config.replica_root,
-            cwd.join("environment/replica")
+            prepared.overrides.replica_root,
+            Some(cwd.join("environment/replica"))
         );
-        assert_eq!(prepared.config.log_dir, cwd.join("cli/log"));
+        assert_eq!(prepared.overrides.log_dir, Some(cwd.join("cli/log")));
         assert_eq!(
-            prepared.config.listen,
+            prepared.overrides.listen,
             Some("127.0.0.1:8000".parse().unwrap())
         );
         assert_eq!(
-            prepared.config.connect[0].to_string(),
+            prepared.overrides.connect.unwrap()[0].to_string(),
             "https://cli.example.com/"
         );
     }
 
     #[test]
-    fn home_less_run_uses_paths_returned_by_an_absolute_config() {
-        let temporary = TestDirectory::new();
-        let config_root = temporary.write_config(
-            r#"
-            return {
-                format_version = 1,
-                node = {
-                    replica_root = "replica",
-                    log_dir = "log",
-                    listen = nil,
-                    connect = {},
-                },
-            }
-            "#,
+    fn run_overrides_apply_after_configuration_load() {
+        let mut config = ResolvedNodeConfig {
+            replica_root: PathBuf::from("/persisted/replica"),
+            log_dir: PathBuf::from("/persisted/log"),
+            listen: Some("127.0.0.1:7000".parse().unwrap()),
+            connect: vec!["https://persisted.example.com".parse().unwrap()],
+        };
+        let overrides = RunOverrides {
+            replica_root: Some(PathBuf::from("/override/replica")),
+            log_dir: Some(PathBuf::from("/override/log")),
+            listen: Some("127.0.0.1:8000".parse().unwrap()),
+            connect: Some(vec!["https://override.example.com".parse().unwrap()]),
+        };
+
+        overrides.apply_to(&mut config);
+
+        assert_eq!(config.replica_root, Path::new("/override/replica"));
+        assert_eq!(config.log_dir, Path::new("/override/log"));
+        assert_eq!(config.listen, Some("127.0.0.1:8000".parse().unwrap()));
+        assert_eq!(
+            config.connect[0].to_string(),
+            "https://override.example.com/"
         );
+    }
+
+    #[test]
+    fn home_less_run_with_absolute_config_needs_no_other_roots() {
+        let config_root = PathBuf::from("/absolute/config");
         let environment = Environment {
             config: Some(config_root.clone()),
             ..Environment::default()
@@ -1715,8 +1909,9 @@ mod tests {
         let PreparedCliIntent::Run(prepared) = prepared else {
             panic!()
         };
-        assert_eq!(prepared.config.replica_root, config_root.join("replica"));
-        assert_eq!(prepared.config.log_dir, config_root.join("log"));
+        assert_eq!(prepared.config_root, config_root);
+        assert_eq!(prepared.overrides.replica_root, None);
+        assert_eq!(prepared.overrides.log_dir, None);
     }
 
     #[test]
@@ -1761,6 +1956,21 @@ mod tests {
             admin.dependency,
             ClientDependency::ConfigRoot(cwd.join("relative/config"))
         );
+
+        let log_set = intent(&["oll", "log", "set", "oll::sync=debug"])
+            .prepare(&environment, cwd)
+            .unwrap();
+        let PreparedCliIntent::Client(log_set) = log_set else {
+            panic!()
+        };
+        assert_eq!(
+            log_set.dependency,
+            ClientDependency::ConfigRoot(cwd.join("relative/config"))
+        );
+        assert!(matches!(
+            log_set.intent,
+            CliIntent::Log(LogIntent::Set { .. })
+        ));
     }
 
     #[test]
