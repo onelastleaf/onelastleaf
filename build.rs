@@ -25,14 +25,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let protoc = protoc_bin_vendored::protoc_bin_path()?;
-    // The build script is single-threaded and sets this before tonic-build
+    // The build script is single-threaded and sets this before tonic-prost-build
     // starts any work, so no concurrent environment access is possible.
     unsafe {
         env::set_var("PROTOC", &protoc);
     }
     let out_dir = PathBuf::from(env::var("OUT_DIR")?);
 
-    tonic_build::configure()
+    tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
         .compile_protos(NODE_PROTO_FILES, &["proto"])?;
