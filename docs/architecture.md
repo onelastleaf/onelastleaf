@@ -21,9 +21,9 @@ one running oll daemon = one node = one replica
 Consequences:
 
 - `oll` MUST NOT host, mount, switch between, or supervise multiple replicas.
-- A completed deployment has exactly one data directory and one `ReplicaId`.
-  The node stage reserves that one slot; the replica stage creates its
-  `ReplicaId` and store.
+- A completed deployment has exactly one user-editable working tree, one
+  configured replica store, and one `ReplicaId`. The node stage reserves that
+  one slot; the replica stage creates its `ReplicaId` and store contents.
 - A path is unambiguous inside the daemon; document and plugin APIs do not need
   a `ReplicaId` routing field.
 - Importing a snapshot never adds a second replica to a running daemon.
@@ -75,19 +75,29 @@ The complete logical document tree owned by a node. It has one stable
 `ReplicaId`. Nodes that synchronize the same logical library use the same
 `ReplicaId` while retaining different `NodeId` values.
 
-An oll replica is not one `LoroDoc`. It is a collection of CRDT objects:
+An oll replica is not one `LoroDoc`. Its user-editable working tree is separate
+from the oll-managed replica store. The store contains a collection of CRDT
+objects and content-addressed binary blobs:
 
 ```text
 replica
-├── catalog LoroDoc        # directory tree and document identities
-└── document LoroDocs      # one LoroDoc per document
+├── catalog LoroDoc        # directory tree, text/binary identities, metadata
+├── document LoroDocs      # one LoroDoc per text document
+└── binary blobs           # LWW bytes, keyed by SHA-256
 ```
+
+The working tree contains only ordinary user-editable directories and files.
+It never contains hidden catalog, Loro, or journal files. The configured SQL
+store is the durable recovery authority; its layout and reconciliation rules
+are in [replica-store.md](replica-store.md).
 
 ### Document
 
-A stable `DocumentId`, one `LoroDoc`, and its catalog entry. A document path is
-derived from its catalog position and is not its identity. Moving or renaming a
-document does not replace its `DocumentId`.
+A supported text file has a stable `DocumentId`, one `LoroDoc`, and a catalog
+entry. Its path is derived from catalog position and is not its identity.
+Moving or renaming a document does not replace its `DocumentId` when oll
+observes a reliable live rename. A binary file instead has a `BinaryId`, a
+catalog entry, and LWW blob versions; it has no Loro document.
 
 ### Connection topology
 
@@ -110,7 +120,7 @@ Clap CLI / daemon entry
  replica    sync    plugin supervisor
     |         |          |
  catalog +   gRPC bidi   plugin gRPC bidi
- documents   peers       + Lua callbacks
+ docs/blobs  peers       + Lua callbacks
 ```
 
 The node runtime owns lifecycle, configuration, the single replica, peer
@@ -134,8 +144,9 @@ starting replica, sync, or plugin work. See
 
 - Plugins are fully trusted and may read or modify any document.
 - Replica convergence is provided by Loro CRDTs.
-- `Revision` preconditions protect application intent from stale plugin writes;
-  they are not required for CRDT convergence.
+- `CatalogRevision` and `DocumentRevision` preconditions protect application
+  intent from stale path/metadata and text/CRDT writes respectively; they are
+  not required for CRDT convergence.
 - A CRDT commit and an external side effect cannot be atomic. oll provides no
   rollback, compensation, saga, or exactly-once promise for external systems.
 - Runtime APIs do not expose Loro container IDs or library APIs to plugins.
@@ -150,4 +161,6 @@ fingerprint match.
 
 Persistent snapshot files are different: they can outlive a running binary and
 therefore carry an explicit format version. Unsupported snapshot versions are
-rejected rather than migrated implicitly.
+rejected rather than migrated implicitly. Replica and sync compatibility use
+the exact protobuf descriptor fingerprint; Loro payload compatibility is proven
+by actual decode/import rather than a second Loro encoding fingerprint.

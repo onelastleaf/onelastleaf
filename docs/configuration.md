@@ -32,13 +32,15 @@ user code.
 `config.lua` MUST return exactly one Lua table. The initial schema is:
 
 ```lua
-local replica = "/home/user/.local/share/oll"
-
 return {
     format_version = 1,
 
     node = {
-        replica_root = replica,
+        replica_root = "/home/user/Documents/oll",
+        replica_store = {
+            driver = "sqlite",
+            path = "/home/user/.local/share/oll/stores/<node-id>/replica.sqlite3",
+        },
         log_dir = "/home/user/.local/state/oll",
         listen = "127.0.0.1:7443",
         connect = {
@@ -55,15 +57,40 @@ required table with these fields:
 | Field | Type | Rule |
 | --- | --- | --- |
 | `replica_root` | string | Required non-empty UTF-8 OS path. |
+| `replica_store` | table | Required tagged SQLite or PostgreSQL store configuration. |
 | `log_dir` | string | Required non-empty UTF-8 OS path. |
 | `listen` | string or `nil` | At most one socket address. |
 | `connect` | array of strings | Zero or more HTTP(S) connect URLs in declared order. |
 
-Unknown top-level and `node` fields are errors so misspelled configuration does
-not silently select another behavior. Later stages may extend the versioned
-schema only after documenting their ownership. `NodeIdentity` is also not Lua
-configuration: it resides in the separate, user-editable `node.json` record
-rather than being inferred from Lua globals or a returned table.
+`node.replica_store` has exactly two valid shapes:
+
+```lua
+-- A local SQLite store.
+replica_store = {
+    driver = "sqlite",
+    path = "/absolute/or/config-relative/replica.sqlite3",
+}
+
+-- A PostgreSQL store. oll.getenv keeps a password out of the file and argv.
+replica_store = {
+    driver = "postgres",
+    url = oll.getenv("OLL_POSTGRES_URL"),
+}
+```
+
+SQLite requires `path` and forbids `url`. PostgreSQL requires `url` and forbids
+`path`. `driver` is exactly `"sqlite"` or `"postgres"`; a SQLite path is an OS
+path and a PostgreSQL URL is a non-empty PostgreSQL connection URL. Unknown
+fields in either tagged table, unknown top-level or `node` fields, and every
+missing required field are errors. This means a hand-written configuration with
+a partial `node` table fails validation. oll does not append defaults to an
+arbitrary Lua program after its `return` statement. `oll init` instead writes a
+complete initial table with explicit defaults.
+
+Later stages may extend the versioned schema only after documenting their
+ownership. `NodeIdentity` is also not Lua configuration: it resides in the
+separate, user-editable `node.json` record rather than being inferred from Lua
+globals or a returned table.
 
 oll converts the validated node table into a Rust-owned `ResolvedNodeConfig`
 before starting the node runtime. Node, replica, and sync code consume this
@@ -117,23 +144,43 @@ does not produce an execution-limit error because no such limit exists.
 The process startup working directory is captured before dispatch. Relative
 root paths from CLI options or `OLL_*` environment variables are joined to this
 directory without checking existence or calling `canonicalize`. Absolute paths
-remain unchanged. This applies to config, replica, and log roots.
+remain unchanged. This applies to config, replica, and log roots. A relative
+SQLite `replica_store.path` returned by `config.lua` is instead joined to the
+config root. A PostgreSQL store URL is not an OS path.
 
 `oll init` has no existing deployment configuration. It resolves:
 
 ```text
-config root:  --config  > OLL_CONFIG  > HOME default
-replica root: --replica > OLL_REPLICA > HOME default
-log dir:      --log-dir > OLL_LOG_DIR > XDG_STATE_HOME/HOME default
+config root:  --config  > OLL_CONFIG  > platform configuration directory / oll
+replica root: --replica > OLL_REPLICA > platform Documents directory / oll
+log dir:      --log-dir > OLL_LOG_DIR > platform state directory / oll
+replica store: generated explicit SQLite path using the in-memory NodeId
 ```
 
-It writes the resolved absolute replica root and log directory into the initial
+The config-root fallback is the platform configuration directory plus `oll`.
+On Linux, the Documents fallback uses `XDG_DOCUMENTS_DIR` when configured and
+otherwise `$HOME/Documents/oll`; the data and state fallbacks use the ordinary
+XDG data/state locations. The platform directory helper provides corresponding
+locations on Darwin. If no needed platform directory can be determined and no
+explicit root supplies it, initialization fails rather than inventing a path.
+
+The implementation obtains these platform locations through the `directories`
+crate (`UserDirs` for Documents and `ProjectDirs` for configuration, data, and
+state) rather than maintaining a second parser for `user-dirs.dirs` or a table
+of Darwin paths. oll still appends its own `oll` component and applies the
+fallback/error behavior above; the crate chooses only the platform base.
+
+The generated SQLite path is
+`<platform-data-dir>/oll/stores/<generated-node-id>/replica.sqlite3`, as
+defined in [replica-store.md](replica-store.md). `init` writes the resolved
+absolute replica root, store path, and log directory into the initial
 `config.lua`. A relative path returned by a hand-written `config.lua` is instead
 resolved relative to the config root, never relative to the daemon's current
-working directory. Because these roots are persisted as Lua strings, an `init`
-root that cannot be represented as UTF-8 is rejected as a configuration error.
-Document and snapshot arguments remain native `PathBuf` values and are not
-subject to this persisted-config restriction.
+working directory. Because persisted filesystem paths are Lua strings, an
+`init` replica root, log directory, or SQLite path that cannot be represented
+as UTF-8 is rejected as a configuration error. The config root itself and
+document/snapshot arguments remain native `PathBuf` values and are not subject
+to this persisted-config restriction.
 
 `oll run` first resolves only the config root. The node runtime then takes the
 deployment lock, validates `node.json`, evaluates `config.lua`, and applies
@@ -142,6 +189,7 @@ runtime overrides:
 ```text
 replica root: --replica > OLL_REPLICA > config.lua node.replica_root
 log dir:      --log-dir > OLL_LOG_DIR > config.lua node.log_dir
+replica store: config.lua node.replica_store
 listen:       --listen > config.lua node.listen
 connect:      non-empty --connect list > config.lua node.connect
 ```
@@ -149,6 +197,11 @@ connect:      non-empty --connect list > config.lua node.connect
 Runtime overrides do not rewrite `config.lua`. Omitting a topology option uses
 the persisted value. Temporarily clearing a persisted topology value requires a
 future explicit CLI operation; an empty string is never a clearing sentinel.
+The current CLI surface has no generic string store override: choosing SQLite
+versus PostgreSQL and supplying its required path or URL is the typed tagged
+table above. A future CLI store option must construct exactly one of those
+shapes rather than infer a backend from an ambiguous string. A user who wants
+PostgreSQL writes that complete table before `run`.
 
 `oll start` resolves its config root to an absolute path before detaching and
 passes that path to the `oll run` child. The child must not reinterpret a
@@ -162,17 +215,18 @@ snapshot and log clients retain the intent-specific dependencies defined in
 ## Errors and tests
 
 Missing or unreadable files, Lua syntax failures, evaluation failures, a
-non-table or multiple return values, unsupported format versions, unknown
-fields, invalid field types, invalid URLs or socket addresses, and invalid paths
-are configuration errors and exit with `EX_CONFIG` (`78`). Diagnostics identify
-the config file and field path without printing Lua values that may contain
-secrets.
+non-table or multiple return values, unsupported format versions, unknown or
+missing fields, invalid tagged-store combinations, invalid field types, invalid
+URLs or socket addresses, and invalid paths are configuration errors and exit
+with `EX_CONFIG` (`78`). Diagnostics identify the config file and field path
+without printing Lua values that may contain secrets.
 
 Tests cover successful computed returns, wrong return arity and type, schema
-errors, controlled module containment, CLI and environment precedence,
-relative-path bases, and a HOME-less deployment whose absolute config root
-supplies its persisted replica and log paths. Tests do not execute intentionally
-non-terminating Lua in-process.
+errors including both store variants and missing fields, controlled module
+containment, CLI and environment precedence, relative-path bases, and a
+HOME-less deployment whose absolute config root supplies its persisted replica,
+store, and log paths. Tests do not execute intentionally non-terminating Lua
+in-process.
 
 ## Troubleshooting a startup that never becomes ready
 

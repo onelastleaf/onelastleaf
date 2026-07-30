@@ -19,9 +19,11 @@ documents describe the larger runtime and storage model around those messages.
 - [Local administration API](admin-api.md): subcommand-selected process roles,
   the typed gRPC-over-UDS boundary, background startup, and local debugging.
 - [Replica model](replica.md): the document tree, catalog, per-document
-  `LoroDoc`, revisions, and local commit semantics.
+  `LoroDoc`, binary entries, revisions, and local commit semantics.
+- [Replica store and working tree](replica-store.md): the user-editable file
+  tree, SQL-backed CRDT store, filesystem reconciliation, and recovery rules.
 - [Snapshot format](snapshot-format.md): the `.ollsnap` tar+zstd container and
-  export/import behavior.
+  export/import behavior for catalog, text documents, and binary blobs.
 - [Synchronization](synchronization.md): peer-to-peer CRDT replication and its
   object-level protocol.
 - [Observability](observability.md): structured JSON logs, aggregation,

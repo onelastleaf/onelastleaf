@@ -25,23 +25,31 @@ not. See `admin-api.md`.
 Default paths are:
 
 ```text
-replica root: $HOME/.local/share/oll
-config root:  $HOME/.config/oll
-log dir:      $XDG_STATE_HOME/oll
-              or $HOME/.local/state/oll when XDG_STATE_HOME is unset
+replica root: platform Documents directory / oll
+config root:  platform configuration directory / oll
+replica store: SQLite at
+               <platform-data-dir>/oll/stores/<new-node-id>/replica.sqlite3
+log dir:      platform state directory / oll
 ```
+
+On Linux, the default replica root uses the XDG user Documents directory when
+available and otherwise falls back to `$HOME/Documents/oll`. The platform
+directory helper supplies the corresponding Documents, configuration, data, and
+state locations on Darwin. The resolved paths and their HOME-less behavior are
+defined in [configuration.md](configuration.md).
 
 For `init`, command-line root options override their corresponding `OLL_*`
 variables, which override the defaults above. `run` first resolves only the
-config root using `--config`, `OLL_CONFIG`, or its HOME default. The node then
-takes its single-instance lock before it validates `node.json`, executes
-`<config-root>/config.lua`, and applies command-line values over environment
-values over the persisted replica and log roots. It MUST NOT require HOME to
-derive replica or log defaults before reading a configuration selected by an
-absolute config root. Other commands that need the config/Admin API or a log
-file use the same intent-specific resolution without command-line root
-overrides. The complete returned-table schema and precedence rules are defined
-in `configuration.md`.
+config root using `--config`, `OLL_CONFIG`, or its platform configuration
+directory default. The node then takes its single-instance lock before it
+validates `node.json`, executes `<config-root>/config.lua`, and applies
+command-line values over environment values over the persisted replica and log
+roots, then reads the required typed replica-store table from configuration. It
+MUST NOT require HOME to derive replica or log defaults before reading a
+configuration selected by an absolute config root. Other commands that need the
+config/Admin API or a log file use the same intent-specific resolution without
+command-line root overrides. The complete returned-table schema and precedence
+rules are defined in `configuration.md`.
 
 oll is a user-level daemon. Each root and every file beneath it belongs to the
 user who initialized and runs that deployment; oll does not require a system
@@ -51,7 +59,8 @@ Paths are accepted as OS paths and are not required to exist during argument
 parsing. Relative CLI and environment root paths are joined to the process
 startup working directory without `canonicalize`; relative roots returned by
 `config.lua` are joined to the config root. `init` persists resolved absolute
-roots, which must be representable as UTF-8 Lua strings, and `start` passes an
+replica, log, and SQLite-store paths, which must be representable as UTF-8 Lua
+strings; the config root itself stays a native OS path. `start` passes an
 absolute config root to its detached `run` child. Document and snapshot paths
 remain native `PathBuf` values and do not acquire this persistence restriction.
 
@@ -104,17 +113,20 @@ and no topology-derived authority level.
 
 `init` and `run` each define their own root and topology flags. They are not one
 shared argument group: future command-specific options need not be added to both
-commands. `init` creates the selected directories, persists the replica root,
-log directory, and topology in `<config-root>/config.lua`, and writes
-`<config-root>/node.json`. It establishes only an empty replica slot; `ReplicaId`
-and replica data are created later. When either initialization file already
-exists, it warns and asks for an interactive `y`/`n` replacement confirmation.
-`run` locates those files through its selected config root; its `--replica`,
-`--log-dir`, `--listen`, and `--connect` values are temporary runtime overrides
-and do not rewrite configuration. `config.lua` is an executable LuaJIT module
-that must return the versioned table defined in `configuration.md`; oll reads
-the returned table rather than named Lua globals. Full layout, recovery, and
-lock behavior are in `node.md`.
+commands. `init` creates the selected directories, writes a complete
+`config.lua` containing the replica root, default SQLite replica store, log
+directory, and topology, and writes `<config-root>/node.json`. It establishes
+only an empty replica slot; `ReplicaId` and replica data are created later. A
+PostgreSQL store is selected by replacing the generated `replica_store` table in
+`config.lua` with the documented tagged configuration. When either
+initialization file already exists, it warns and asks for an interactive `y`/`n`
+replacement confirmation. `run` locates those files through its selected config
+root; its `--replica`, `--log-dir`, `--listen`, and `--connect` values are
+temporary runtime overrides and do not rewrite configuration. `config.lua` is
+an executable LuaJIT module that must return the complete versioned table
+defined in `configuration.md`; oll reads the returned table rather than named
+Lua globals. Full layout, recovery, and lock behavior are in `node.md` and
+`replica-store.md`.
 
 `node-name` is required when initializing a deployment. It is the durable,
 globally presented human name paired one-to-one with the generated `NodeId`, not
@@ -131,11 +143,14 @@ the background and verifies readiness with the nonce exchange specified in
 all child processes, then waits for actual daemon termination rather than
 treating the initial `accepted` response as completion.
 
-`status` reports the local `NodeName` prominently, its `NodeId`, and configured
-listen and connection targets. A target learned through `SyncHello` is displayed
-with the remote node's protocol-declared `NodeName` and `NodeId`; a target whose
-first handshake has not completed is displayed by URL as pending. `--json`
-selects the machine-readable schema; human-readable output is the default.
+`status` reports the local `NodeName` prominently, its `NodeId`, configured
+listen and connection targets, and, after the replica stage, whether the local
+replica is uninitialized, initialized with no visible entries, or initialized
+and populated. Both initialized states include the active `ReplicaId`. A target
+learned through `SyncHello` is displayed with the remote node's
+protocol-declared `NodeName` and `NodeId`; a target whose first handshake has
+not completed is displayed by URL as pending. `--json` selects the
+machine-readable schema; human-readable output is the default.
 
 `oll log set <target>=<level>` is an Admin client command. It changes only the
 live target filter and does not rewrite `config.lua` or `node.json`. Its accepted
@@ -152,17 +167,53 @@ oll replica snapshot inspect <snapshot> [--json]
 oll replica snapshot verify <snapshot>
 ```
 
-`--limit` must be greater than zero. The CLI does not enforce a snapshot file
-extension; the format itself is defined in `snapshot-format.md`.
+`inspect` addresses one managed text document and reports its catalog and
+document identities, separate revisions, path, media type, encoding, and byte
+size. A directory or binary path is rejected rather than being assigned a fake
+`DocumentId`. `ops` returns the local high-level records associated with that
+document; it is not a Loro operation log and never prints document content.
+`--limit` must be greater than zero and records are rendered newest first. The
+CLI does not enforce a snapshot file extension; the format itself is defined in
+`snapshot-format.md`.
 
-`replica import` replaces the node's one replica with the complete replica in
-the snapshot; it is not a CRDT merge and never adds a second replica. Immediately
-before submitting the import, an interactive client MUST separately ask the
-user to confirm that the current replica has been exported to a backup snapshot
-and that the destructive replacement should proceed. Either negative answer,
-end-of-file, or inability to read interactive confirmation cancels the import
-without sending the Admin request. The first implementation has no flag that
-bypasses these confirmations.
+`ops --format json` is the stable machine-readable form:
+
+```json
+{
+  "operations": [
+    {
+      "timestamp": "2026-07-30T00:00:00Z",
+      "operation_id": "opaque-operation-id",
+      "source": "filesystem",
+      "kind": "move",
+      "catalog_node_id": "catalog-node-uuid-v4",
+      "document_id": "document-uuid-v4",
+      "path_before": "/notes/a.md",
+      "path_after": "/archive/a.md",
+      "correlation_id": "opaque-correlation-id"
+    }
+  ]
+}
+```
+
+`source` is `filesystem`, `plugin`, `sync`, or `snapshot_import`; `kind` is
+`create`, `update`, `move`, `delete`, or `replace`. `path_before` and
+`path_after` are nullable strings when that side of the operation does not
+exist. No other field is nullable. The default text format presents the same
+fields for a human but is not a parsing interface; scripts use JSON.
+
+Before the first scan or snapshot import has initialized the replica, `inspect`,
+`ops`, and `export` return `FAILED_PRECONDITION`; `import` remains available so
+a snapshot can initialize the slot.
+
+`replica import` replaces the node's one replica and its visible working tree
+with the complete replica in the snapshot; it is not a CRDT merge and never
+adds a second replica. Immediately before submitting the import, an interactive
+client MUST separately ask the user to confirm that the current replica has
+been exported to a backup snapshot and that the destructive replacement should
+proceed. Either negative answer, end-of-file, or inability to read interactive
+confirmation cancels the import without sending the Admin request. The first
+implementation has no flag that bypasses these confirmations.
 
 Replica document and snapshot path arguments are OS paths represented by
 `PathBuf`. Before an Admin request is constructed, the client captures its

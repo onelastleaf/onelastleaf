@@ -54,7 +54,7 @@ replica behavior:
 - the typed Admin gRPC service over UDS;
 - detached `start` launch, single-instance enforcement, and nonce pingback;
 - `connect`/`listen` deployment configuration;
-- one data directory and one replica slot;
+- one configured user-editable working tree and one replica-store slot;
 - Tokio runtime ownership;
 - structured JSON logging, user-owned log-directory sinks, aggregation, dynamic filters,
   and correlation context as specified in `observability.md`;
@@ -82,11 +82,15 @@ Completion criteria:
 The replica stage implements:
 
 - persistent `ReplicaId`;
-- the catalog `LoroDoc`;
-- stable `DocumentId` values and one `LoroDoc` per document;
+- the catalog `LoroDoc` and its `LoroTree` namespace;
+- stable `DocumentId` values and one `LoroDoc` per text document;
+- `BinaryId` values, LWW binary metadata, and content-addressed binary blobs;
+- the SQL-backed replica store, initial working-tree scan, recursive watcher,
+  debounced reconciliation, and crash-safe projection recovery;
 - path lookup and directory-tree traversal;
 - content and abstract CRDT read/write APIs;
-- opaque document `Revision` tokens and optimistic preconditions;
+- separate opaque catalog/document revision tokens and optimistic
+  preconditions;
 - local commit coordination and crash recovery;
 - `.ollsnap` export and import.
 
@@ -94,7 +98,8 @@ Completion criteria:
 
 - create/read/update/move/delete operations survive restart;
 - stale revisions reject the complete host-level commit before mutation;
-- snapshot round trips preserve catalog and every retained document CRDT;
+- snapshot round trips preserve catalog, every retained document CRDT, and
+  every retained binary blob;
 - malformed archives cannot escape the import staging directory.
 
 ## 4. Sync
@@ -102,8 +107,10 @@ Completion criteria:
 Sync is implemented only after the replica object model is stable. It adds:
 
 - symmetric bidi gRPC sessions;
-- exact protocol/Loro encoding fingerprint checks;
+- exact protocol-schema fingerprint checks and actual Loro decode/import
+  validation;
 - catalog and document object advertisements;
+- content-addressed binary-blob transfer after catalog metadata arrives;
 - per-object delta or snapshot transfer;
 - chunk validation, flow control, import acknowledgement, and reconnection;
 - durable remote `NodeIdentity` bindings and collision rejection;

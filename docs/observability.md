@@ -7,22 +7,24 @@ mechanism. Metrics and distributed tracing systems are optional future sinks;
 they are not required before the logging contract is complete.
 
 Logs are part of feature correctness, especially for synchronization, process
-lifecycle, persistence recovery, snapshot import, and plugin jobs. New workflows
-MUST define useful start, success, failure, duration, and identity fields rather
-than emitting only free-form error strings.
+lifecycle, working-tree reconciliation, replica-store recovery, snapshot import,
+and plugin jobs. New workflows MUST define useful start, success, failure,
+duration, and identity fields rather than emitting only free-form error strings.
 
 ## Location and ownership
 
 oll is a user-level daemon. Daemon logs live under the deployment's log
-directory, whose default is:
+directory, whose default is the platform state directory plus `oll`. On Linux
+that is:
 
 ```text
 $XDG_STATE_HOME/oll/
 ```
 
-When `XDG_STATE_HOME` is unset, the default is
-`$HOME/.local/state/oll/`. `oll init --log-dir`, `oll run --log-dir`, and
-`OLL_LOG_DIR` select another directory according to `cli.md`.
+When `XDG_STATE_HOME` is unset, the Linux default is
+`$HOME/.local/state/oll/`; the platform directory helper supplies the Darwin
+location. `oll init --log-dir`, `oll run --log-dir`, and `OLL_LOG_DIR` select
+another directory according to `cli.md`.
 
 oll creates the directory and files as the user running the deployment:
 
@@ -49,8 +51,8 @@ error rather than a silent loss of observability.
 
 - startup, validated configuration summary, and shutdown;
 - node and replica initialization;
-- recovery and persistence failures;
-- catalog/document operation summaries;
+- replica-store recovery, projection, and persistence failures;
+- filesystem scan/reconciliation and catalog/document/binary operation summaries;
 - snapshot export/import/replace lifecycle;
 - sync connection, disconnection, retry, and transfer summaries;
 - plugin process/job lifecycle;
@@ -65,12 +67,13 @@ stream:
 
 - listen/connect addresses, DNS, TCP, TLS, HTTP/2, and gRPC failures;
 - local and peer `NodeName`, `NodeId`, `ReplicaId`, and connection identity;
-- `SyncHello`/`SyncReady` results and fingerprint mismatches;
-- catalog/document advertisements and delta requests;
+- `SyncHello`/`SyncReady` results and schema mismatches;
+- catalog/document advertisements, delta requests, and binary-blob requests;
 - snapshot fallback decisions;
 - object, transfer, chunk-count, byte-count, duration, and flow-credit fields;
 - payload checksum/decompression failure;
-- Loro import result and frontier/version summary;
+- Loro decode/import result and frontier/version summary;
+- binary blob verification, byte counts, and pending/materialized state;
 - EOF, retry, backoff, and reconnection.
 
 Normal levels record one event per operation or transfer phase, not one event per
@@ -115,10 +118,10 @@ codes, and no multiline records. A representative event is:
   "target": "oll::sync",
   "event": "replica_transfer_completed",
   "message": "document update imported",
-  "node_id": "node-a",
-  "peer_node_id": "node-b",
-  "replica_id": "replica-1",
-  "document_id": "doc-42",
+  "node_id": "9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3",
+  "peer_node_id": "44d62c47-0d82-42f0-a767-e3d6d5e75858",
+  "replica_id": "f00cb07c-d513-4399-9c3f-9cf947d81945",
+  "document_id": "60c8b0de-1d43-4f48-9a9c-13b7d19af3b4",
   "connection_id": "conn-8",
   "transfer_id": "transfer-19",
   "correlation_id": "corr-31",
@@ -136,7 +139,7 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 `message`, including:
 
 - `node_name`, `node_id`, `peer_node_name`, `peer_node_id`, and `replica_id`;
-- `catalog_node_id`, `document_id`, and sanitized `path`;
+- `catalog_node_id`, `document_id`, `binary_id`, and sanitized `path`;
 - `connection_id`, `transfer_id`, and `message_id`;
 - `plugin_instance_id`, `job_id`, `task_id`, and `task_group_id`;
 - `plugin_desired_state`, `plugin_process_state`, `exit_status`, `signal`,
@@ -222,7 +225,8 @@ the surrounding operation failed.
 No level, including `TRACE`, may record:
 
 - document bodies or selected document text;
-- raw Loro update/snapshot bytes or complete protobuf payloads;
+- raw Loro update/snapshot bytes, binary blob bytes, or complete protobuf
+  payloads;
 - Lua configuration values, prompts, credentials, or AI tokens;
 - HTTP authorization, cookies, private keys, or plugin secrets;
 - artifact contents.
@@ -261,6 +265,7 @@ Tests must verify:
 - redaction of representative secrets and document content;
 - correct sink routing and limited duplication;
 - rotation/reopen behavior;
-- useful structured context on network, import, and recovery failures.
+- useful structured context on working-tree reconciliation, network, import,
+  projection, and recovery failures;
 - plugin desired-state persistence, process-state transitions, exit detection,
   restart decisions, backoff, and graceful-to-signal escalation.

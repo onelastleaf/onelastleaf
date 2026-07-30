@@ -182,10 +182,13 @@ side effects.
 Plugins can request complete document content, list directories, read the whole
 tree, read oll CRDT values, and submit mutations.
 
-A long-running plugin should submit the `Revision` read with its source
-document. If another node or client changed that document before commit, oll
-returns `REVISION_CONFLICT` without applying any requested mutation. There is no
-lock wait and no deadlock path.
+A long-running plugin submits the explicit revision pair relevant to the state
+it relied on: `DocumentId` plus `DocumentRevision` for body or abstract-CRDT
+writes, and `CatalogNodeId` plus `CatalogRevision` for a move, rename, delete,
+or metadata change. A conservative operation can include both pairs. If another
+node or client changed a guarded target before commit, oll returns
+`REVISION_CONFLICT` without applying any requested mutation. There is no lock
+wait and no deadlock path.
 
 ## Lua configuration
 

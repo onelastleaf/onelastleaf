@@ -72,6 +72,63 @@ directive. The CLI command `oll log set oll::sync=trace` owns that presentation
 syntax, validates it, and sends the two typed fields. The change applies to the
 running daemon only and resets at restart.
 
+## Replica administration
+
+The replica stage extends the typed Admin service with replica-specific methods;
+it does not tunnel the `oll replica` argv through one generic RPC.
+
+- `GetStatus` gains an explicit three-valued replica state: `uninitialized`
+  with no `ReplicaId`, `initialized_empty` with an active `ReplicaId` and no
+  visible entries, or `initialized_populated` with an active `ReplicaId` and
+  one or more visible entries.
+- `InspectReplicaDocument` resolves one managed text document and exposes its
+  `CatalogNodeId`, `CatalogRevision`, `DocumentId`, `DocumentRevision`, path,
+  media type, encoding, and byte size. It is not a generic directory or binary
+  inspection RPC.
+- `ListReplicaOperations` returns newest-first local high-level history for the
+  selected document. Its records carry source, create/update/move/delete/replace
+  kind, IDs, paths, time, and correlation ID, never Loro internals or content.
+- `ExportReplica` writes a complete `.ollsnap` checkpoint to a validated local
+  output path.
+- `ImportReplica` validates a local `.ollsnap`, then initializes or replaces
+  the one replica and marks its working-tree projection pending.
+
+The local CLI begins with native `PathBuf` inputs, so these Admin methods use a
+separate replica-stage `NativePath` protobuf message containing raw Unix pathname
+bytes. It is deliberately not `DocumentPath`: `DocumentPath` is a normalized,
+absolute, UTF-8 address inside the logical replica namespace and remains the
+document/plugin API type. Before serializing `NativePath`, the CLI resolves a
+relative input against its startup working directory. The daemon then checks
+absolute-path rules and, for document inspection/history, containment under
+`replica_root` before converting it to `DocumentPath`. Snapshot source and
+destination paths use the same native representation but have their own input
+or output validation and are not required to be inside the working tree.
+Containment alone is not sufficient for a managed-document request: every
+relative segment must also meet the UTF-8 namespace rules in
+[replica.md](replica.md).
+
+The replica-stage wire shape is:
+
+```proto
+message NativePath {
+  bytes unix_path = 1;
+}
+```
+
+`unix_path` must be non-empty, absolute, and contain no NUL byte. It exists only
+on the Unix Admin service; it is not a cross-platform pathname encoding.
+
+`InspectReplicaDocument` and `ListReplicaOperations` return `INVALID_ARGUMENT`
+when the contained path resolves to a directory or binary rather than a text
+document. The broader catalog/document API may list those kinds, but this local
+Admin surface keeps the already defined CLI commands document-scoped.
+
+An uninitialized replica rejects inspect, operation-history, and export with
+`FAILED_PRECONDITION`; import is allowed so it can initialize the slot. A path
+outside the working tree for a document request is `INVALID_ARGUMENT`. The
+replica protobuf update must use the method and message names fixed in this
+section rather than introducing a generic command or entry-inspection RPC.
+
 ## Errors
 
 Admin method failures use gRPC status codes directly. They do not wrap every
@@ -82,6 +139,8 @@ types. The request context is validated before method-specific work:
 | --- | --- | --- |
 | exact schema fingerprint differs | `FAILED_PRECONDITION` | Restart the still-running daemon so it matches the CLI binary. |
 | normalized request is malformed | `INVALID_ARGUMENT` | The client or caller constructed an invalid typed request. |
+| managed-document path lies outside `replica_root` | `INVALID_ARGUMENT` | Use a document path inside the configured working tree. |
+| replica operation requires an initialized replica | `FAILED_PRECONDITION` | Add a working-tree file and run oll, or import a snapshot first. |
 | daemon is stopping or the UDS cannot serve a request | `UNAVAILABLE` | Retry only after the daemon is ready again. |
 | unexpected daemon failure | `INTERNAL` | Inspect the correlated daemon log event. |
 

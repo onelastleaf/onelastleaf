@@ -5,7 +5,9 @@
 The node stage supplies the one long-running daemon shell. It owns the
 deployment lock, `NodeIdentity`, Tokio runtime, logs, local Admin UDS, launch
 handshake, and graceful shutdown. It does not create a `ReplicaId`, a catalog,
-or any document store. Those belong to the replica stage.
+or a replica database. Those belong to the replica stage. It does establish the
+complete configuration that tells the later replica stage where its working
+tree and store will live.
 
 The first node implementation is Unix-only. It supports Linux and Darwin and
 uses Unix domain sockets, `flock`, `setsid`, inherited file descriptors, and
@@ -30,14 +32,18 @@ from editing it.
   run/                       0700 runtime directory when used locally
     admin.sock               transient Admin UDS
 
-<replica-root>/              one empty replica slot at node-stage completion
+<replica-root>/              user-editable working tree; no oll metadata here
+<sqlite-store>/replica.sqlite3
+                              oll-managed local store when driver = sqlite
+PostgreSQL URL                external store location when driver = postgres
 <log-dir>/                   user-owned JSON log files
 ```
 
 The node-stage slot is only the configured `replica_root` directory. `oll init`
 creates it when absent but does not assign a `ReplicaId`, write a catalog, or
-create a replica store. Existing directory contents are never deleted or
-interpreted by the node stage.
+create a replica database. It writes the required `replica_store` configuration
+at the same time, but the replica stage opens that configured store. Existing
+working-tree contents are never deleted or interpreted by the node stage.
 
 `node.json` is strict JSON with this initial schema:
 
@@ -103,10 +109,12 @@ different local user cannot attach an Admin endpoint to the deployment.
 ## Initialization and recovery
 
 `oll init <node-name>` is a local bootstrap operation. It first resolves its
-three roots and takes the same deployment lock. It checks for existing
-initialization material and obtains any required confirmation before creating
-ordinary prerequisite directories. It then writes the initial `config.lua` and,
-only after that succeeds, writes a newly generated UUID-v4 `node.json`. Each
+config root, working-tree root, and log directory and takes the same deployment
+lock. It checks for existing initialization material and obtains any required
+confirmation before creating ordinary prerequisite directories. It then
+generates one UUID-v4 `NodeIdentity` in memory, derives the default SQLite
+store path from that exact `NodeId`, writes a complete initial `config.lua`, and
+only after that succeeds writes `node.json` with the same identity. Each
 replacement is written to a new sibling temporary file and atomically renamed
 into its final path. oll does not follow a target file when replacing it. The
 minimal lock-directory creation required by the third lock fallback is the one
@@ -130,8 +138,8 @@ bypass flag exists in the first implementation. A running daemon or concurrent
 `init` holds the lock and causes an immediate failure instead of a prompt.
 
 This initialization sequence does not claim a replica has been created. It
-establishes only its configured empty slot; replica initialization begins in
-the replica stage.
+establishes only the configured empty working-tree/store slot; replica
+initialization begins in the replica stage.
 
 ## Startup
 
@@ -143,16 +151,22 @@ The foreground `oll run` sequence is:
 4. evaluate and validate `config.lua`, then apply environment and CLI runtime
    overrides;
 5. initialize the required log directory and sinks;
-6. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
+6. in the replica stage, open and recover the configured store, complete any
+   pending targeted or whole-tree projection before treating those paths as
+   input, then register the recursive watcher, perform the initial scan, and
+   reconcile events queued during that scan;
+7. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
    the node ready;
-7. when invoked by `oll start`, complete the one-use nonce pingback only after
+8. when invoked by `oll start`, complete the one-use nonce pingback only after
    the Admin service can answer requests.
 
 Configuration evaluation remains before every node service, but it is no
 longer part of generic CLI preparation for `run`: the node runtime owns it so
 the lock can precede trusted Lua execution. A Lua configuration that does not
 return therefore holds its acquired lock but cannot create logs, an Admin
-socket, a replica, or a network listener.
+socket, a replica, or a network listener. The node-only implementation skips
+step 6; the replica stage inserts it before the Admin service becomes ready so
+no client can observe a half-recovered replica.
 
 Each successful startup step is owned by a resource guard. A later synchronous
 failure drops already acquired file descriptors, listeners, and temporary
@@ -184,9 +198,11 @@ The accepted response is written before shutdown begins. The ordered sequence
 then is:
 
 1. stop accepting new Admin connections and new node work;
-2. close node listeners and notify owned tasks to stop;
-3. wait for in-flight node work through the 10-second graceful-shutdown
-   deadline, then abort remaining local tasks;
+2. close node listeners, stop accepting filesystem events, and notify owned
+   tasks to stop;
+3. wait for in-flight node work, including replica reconciliation and
+   projection tasks added by the replica stage, through the 10-second
+   graceful-shutdown deadline, then abort remaining local tasks;
 4. write and flush the final structured lifecycle events;
 5. remove the Admin socket and release the lock by dropping its descriptor;
 6. exit the process.
@@ -211,8 +227,11 @@ without an Admin acknowledgement. A second such signal terminates immediately;
 
 `GetStatus` reports the complete `NodeIdentity`, lifecycle, start time, process
 ID, configured listen address when present, and configured peer status. The
-configured listen value is not a claim that the later sync listener is already
-bound during the node-only stage.
+replica-stage extension distinguishes uninitialized, initialized-empty, and
+initialized-populated state and includes `ReplicaId` only in the two initialized
+states. The configured listen
+value is not a claim that the later sync listener is already bound during the
+node-only stage.
 
 Dynamic log filtering is part of node lifecycle: `oll log set
 <target>=<level>` changes the live daemon through the typed Admin API and is

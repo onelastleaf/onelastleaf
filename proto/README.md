@@ -28,12 +28,13 @@ binary replacement, as intended.
 
 - `oll/admin.proto`: the local typed gRPC administration service, request
   context, node status, and graceful daemon shutdown.
-- `oll/common.proto`: identities, shared log severity, tracing/depth metadata,
-  and shared errors.
+- `oll/common.proto`: identities, opaque catalog/document revisions, shared log
+  severity, tracing/depth metadata, and shared errors.
 - `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
   configuration-function handles.
-- `oll/document.proto`: stable document identities, paths, directory access,
-  full document access, oll's CRDT abstraction, and optimistic host commits.
+- `oll/document.proto`: stable catalog/document/binary identities, paths,
+  directory access, full document access, oll's CRDT abstraction, and
+  optimistic host commits.
 - `oll/replication.proto`: symmetric peer replication using opaque Loro update
   and snapshot payloads.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
@@ -59,6 +60,16 @@ The node stage initially implements `GetStatus`, `Shutdown`, and
 only in their respective implementation stages. Future CLI arguments must not
 be tunneled as generic strings to avoid extending this schema.
 
+The replica-stage protocol change adds three explicit status states
+(`uninitialized`, `initialized_empty`, and `initialized_populated`) plus
+`InspectReplicaDocument`, `ListReplicaOperations`, `ExportReplica`, and
+`ImportReplica`. The first two are document-scoped because the existing CLI
+takes a document path; they are not silently broadened into generic catalog
+entry inspection. Snapshot source/destination paths and local document paths
+use a Unix-native pathname-bytes message on this Admin-only boundary, then the
+daemon performs containment and namespace conversion. That native path type is
+not reused by the portable document/plugin API.
+
 `GetStatus` returns `NodeIdentity`, the durable one-to-one pairing of UUID-v4
 `NodeId` and human-readable `NodeName`, plus the configured listen address when
 present. The name is node-declared and globally consistent, not a receiver-local
@@ -80,14 +91,24 @@ content.
 
 ## Document invariants
 
-`Revision` is scoped to the node returned with it. It is opaque to plugins and
-must not be synthesized or parsed. A plugin that reads a document and later
-modifies it includes that revision in `CommitDocumentsRequest.preconditions`.
+The replica-stage document contract uses two opaque revision types. A
+`CatalogRevision` is scoped to one `CatalogNodeId` and covers path, name,
+parent, kind, and metadata. A `DocumentRevision` is scoped to one `DocumentId`
+and covers the text body and abstract CRDT containers. They are opaque to
+plugins and must not be synthesized or parsed. A plugin includes the explicit
+target ID and relevant revision(s) in `CommitDocumentsRequest.preconditions`.
 oll checks every precondition immediately before opening one host-level commit.
 If any check fails, oll returns `REVISION_CONFLICT` with
 `RevisionConflictDetail` and applies no mutation. The catalog and documents are
 separate LoroDocs, so local atomic visibility requires the replica write
 coordinator and crash-recovery journal; it is not one Loro transaction.
+
+The same replica contract adds UUID-v4 `BinaryId` and `NODE_KIND_BINARY` for
+working-tree files whose bytes follow binary LWW rather than document CRDT
+semantics. A binary has catalog and blob metadata but no `DocumentRevision`.
+The pre-replica descriptor still contains its older generic `Revision` shape;
+the replica protocol change must replace it with these explicit types before
+replica handlers are implemented.
 
 Mutations in one commit are evaluated in order. Indexes used by later mutations
 observe earlier mutations in that commit. Text offsets count Unicode scalar
@@ -103,6 +124,14 @@ The CRDT model in `document.proto` is an oll API. Implementations translate it
 to Loro internally. Plugins never receive Loro container IDs, frontiers, version
 vectors, or library-specific operations.
 
+Every text document LoroDoc has fixed named `content` (`LoroText`) and `data`
+(`LoroMap`) roots. Create initializes both, body replacement and filesystem
+reconciliation affect `content`, and abstract CRDT paths are rooted under
+`data`. No wire operation creates, replaces, or deletes either fixed root.
+Invalid paths, indexes, ranges, or container kinds reject the complete ordered
+host commit with `INVALID_ARGUMENT` before any result is published. Binary
+entries are not accepted by document operations and never receive a LoroDoc.
+
 CRDT commit and external side effects are not atomic. The runtime provides no
 rollback, compensation, saga, or exactly-once guarantee for external systems.
 
@@ -113,9 +142,9 @@ Both peers are replicas with identical read/write authority and run this state
 machine:
 
 1. Each side sends one `SyncHello` and verifies the remote `NodeIdentity`, one
-   `ReplicaId`, exact schema hash, and Loro encoding fingerprint. A contradictory
-   known name-to-ID or ID-to-name binding closes the stream, as does another
-   mismatch; there is no downgrade or receiver-local rename.
+   `ReplicaId`, and exact schema hash. A contradictory known name-to-ID or
+   ID-to-name binding closes the stream, as does another mismatch; there is no
+   downgrade or receiver-local rename.
 2. Each side chooses parameters supported by the other and sends `SyncReady`.
 3. Either side may advertise catalog/document object summaries and request
    missing updates for each object's LoroDoc.
@@ -123,6 +152,9 @@ machine:
    receiver verifies chunk count, size, and SHA-256 before importing it.
 5. After a successful Loro import, the receiver sends `ReplicaTransferAck` and
    advertises its new summary when it changes.
+6. Catalog-referenced binary blobs use separate hash-addressed streaming
+   transfer messages. They are verified by SHA-256 and never modeled as Loro
+   objects.
 
 The sender must not have more unacknowledged transfer bytes in flight than the
 receiver granted through `FlowControl`. A Loro object snapshot is only a
@@ -136,10 +168,10 @@ its transfer, import result, and acknowledgement reuse one ID across both peers
 so their structured logs can be aggregated into one distributed operation.
 
 Only the replication protocol carries Loro version vectors, frontiers, and
-encoded update/snapshot bytes. Applications and plugins use document revisions.
-The Loro encoding fingerprint is a build artifact covering the Loro export
-implementation and oll's chosen encoding policy; it is not a negotiated API
-version.
+encoded update/snapshot bytes. Applications and plugins use catalog/document
+revisions. Loro compatibility is determined by actual decode/import of a
+verified payload, not by a separate encoding fingerprint. The current unused
+`SyncHello` placeholder field is removed with the sync protocol implementation.
 
 ## Plugin stream
 
@@ -229,7 +261,7 @@ authentication mechanism.
 From the repository root:
 
 ```sh
-protoc -I proto \
+protoc --fatal_warnings -I proto \
   --include_imports \
   --descriptor_set_out=/tmp/oll-protocol.pb \
   $(find proto/oll -name '*.proto' -print | sort)
