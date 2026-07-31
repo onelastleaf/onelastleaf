@@ -149,6 +149,12 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 - `error_code`, `retryable`, `attempt`, and `backoff_ms`;
 - `bytes`, `object_count`, `chunk_count`, and `duration_ms`.
 
+Each delayed working-tree projection retry is a structured `WARN` event with a
+sanitized namespace `path`, the one-based `attempt` that failed, the
+`error_code`, and `backoff_ms`. The final operation or recovery failure remains
+a separate `ERROR` event under the same correlation ID; neither event includes
+file contents.
+
 For host-ingested plugin events, `timestamp` is the plugin emission time and
 `observed_at` is the host receive time. Host events may omit `observed_at` when
 it is identical to `timestamp`.

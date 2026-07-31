@@ -25,7 +25,7 @@ use crate::{
         CliIntent, ClientDependency, ConfirmationRequirement, LogIntent, OutputFormat,
         PreparedCliIntent, PreparedClientIntent, PreparedRunIntent, ReplicaIntent,
     },
-    configuration::ConfigRuntime,
+    configuration::{ConfigRuntime, validate_storage_layout},
     protocol::oll::{
         GetStatusResponse, InspectReplicaDocumentResponse, NodeLifecycleState, PeerConnectionState,
         ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
@@ -193,6 +193,13 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     let (config_runtime, mut config) = ConfigRuntime::load(&intent.config_root)
         .map_err(|error| NodeError::Config(error.to_string()))?;
     intent.overrides.apply_to(&mut config);
+    validate_storage_layout(
+        &intent.config_root,
+        &config.replica_root,
+        &config.log_dir,
+        &config.replica_store,
+    )
+    .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
     ensure_replica_slot(&config.replica_root)?;
     let parent_liveness = ParentLivenessPipe::create()?;
 

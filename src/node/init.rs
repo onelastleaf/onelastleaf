@@ -6,6 +6,9 @@ use std::{
 };
 
 use crate::cli::{ConnectUrl, PreparedInitIntent};
+use crate::configuration::{
+    ReplicaStoreConfig, validate_storage_layout, validate_working_tree_roots,
+};
 
 use super::{
     identity::{NodeIdentity, atomic_write, identity_path},
@@ -22,16 +25,14 @@ pub enum InitResult {
 }
 
 pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
+    validate_working_tree_roots(&intent.config_root, &intent.replica_root, &intent.log_dir)
+        .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
     let _lock = DeploymentLock::acquire_for_init(&intent.config_root)?;
     let config_path = intent.config_root.join(CONFIG_FILENAME);
     let node_path = identity_path(&intent.config_root);
     if (path_exists(&config_path)? || path_exists(&node_path)?) && !confirm_replacement()? {
         return Ok(InitResult::Cancelled);
     }
-
-    ensure_directory(&intent.config_root, 0o700, "configuration root")?;
-    ensure_directory(&intent.replica_root, 0o700, "replica root")?;
-    ensure_log_directory(&intent.log_dir)?;
 
     let identity = NodeIdentity::generate(intent.node_name);
     let replica_store = intent
@@ -42,6 +43,19 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     let store_parent = replica_store.parent().ok_or_else(|| {
         NodeError::Internal("generated replica store path has no parent".to_owned())
     })?;
+    validate_storage_layout(
+        &intent.config_root,
+        &intent.replica_root,
+        &intent.log_dir,
+        &ReplicaStoreConfig::Sqlite {
+            path: replica_store.clone(),
+        },
+    )
+    .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
+
+    ensure_directory(&intent.config_root, 0o700, "configuration root")?;
+    ensure_directory(&intent.replica_root, 0o700, "replica root")?;
+    ensure_log_directory(&intent.log_dir)?;
     ensure_directory(store_parent, 0o700, "replica store directory")?;
     let source = initial_config(
         &intent.replica_root,
@@ -204,5 +218,32 @@ mod tests {
     #[test]
     fn lua_strings_escape_control_bytes_without_json_unicode_escapes() {
         assert_eq!(lua_string("a\n\u{0001}b"), "\"a\\n\\001b\"");
+    }
+
+    #[test]
+    fn rejects_working_tree_overlap_before_creating_deployment_directories() {
+        let directory = TempDir::new().unwrap();
+        let mut nested_log = intent(&directory);
+        nested_log.log_dir = nested_log.replica_root.join("logs");
+        let replica_root = nested_log.replica_root.clone();
+        let error = initialize(nested_log).err().unwrap();
+        assert!(matches!(error, NodeError::Config(_)));
+        assert!(!replica_root.exists());
+
+        let directory = TempDir::new().unwrap();
+        let mut nested_config = intent(&directory);
+        nested_config.config_root = nested_config.replica_root.join("config");
+        let replica_root = nested_config.replica_root.clone();
+        let error = initialize(nested_config).err().unwrap();
+        assert!(matches!(error, NodeError::Config(_)));
+        assert!(!replica_root.exists());
+
+        let directory = TempDir::new().unwrap();
+        let mut nested_store = intent(&directory);
+        nested_store.replica_store_base = nested_store.replica_root.clone();
+        let replica_root = nested_store.replica_root.clone();
+        let error = initialize(nested_store).err().unwrap();
+        assert!(matches!(error, NodeError::Config(_)));
+        assert!(!replica_root.exists());
     }
 }

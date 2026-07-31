@@ -270,6 +270,26 @@ unaffected user path normally. This prevents a crash while writing one synced or
 plugin-produced file from discarding unrelated files a user created in the
 editable working tree.
 
+Targeted recovery records are a durable set accumulated across host-level
+commits in the active generation. Adding records for a later commit MUST NOT
+replace earlier records, and completing that later commit MUST NOT clear every
+record in the generation. oll projects each recorded path independently. Each
+path receives at most three total materialization attempts, with a non-zero
+bounded delay between failed attempts and structured retry events containing the
+path, attempt, error code, and backoff. A successful materialization or removal
+is acknowledged by deleting exactly that path's record. When a batch contains
+multiple paths, oll continues with the other paths after one exhausts its
+attempts, acknowledges only successful paths, and returns the projection
+failure while leaving every failed path durable.
+
+Consequently, a store commit remains authoritative even when all three attempts
+to write its working-tree file fail. A later unrelated commit can acknowledge
+only the paths it actually projected; it cannot erase the failed record. The
+next reconciliation or restart retries the retained path from current store
+state before that path can be imported as filesystem input. If a newer commit
+touches the same pending path, projecting the newest authoritative state and
+then acknowledging that exact path completes both obligations.
+
 Snapshot import is deliberately different: it replaces the complete logical
 replica after two explicit user confirmations. Its candidate-store transaction
 sets the whole-tree `projection_pending` marker. While that marker is set,
@@ -326,6 +346,10 @@ Replica persistence tests cover both SQLite and PostgreSQL logical behavior:
   an offline or otherwise unpaired move is deletion plus creation;
 - a failed precondition or SQL transaction leaves every live LoroDoc, catalog
   entry, blob version, operation record, and projection marker unchanged;
+- a targeted file projection retries three times with delay, acknowledges only
+  successfully projected paths, and an unrelated later commit cannot erase a
+  failed path's marker or allow stale working-tree bytes to overwrite the
+  committed store state;
 - restart completes a targeted projection before importing that path;
 - snapshot replacement crashes immediately before and immediately after the
   active-generation switch, and each restart selects the documented generation

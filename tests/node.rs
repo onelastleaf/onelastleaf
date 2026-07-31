@@ -12,6 +12,7 @@ use serde_json::Value;
 use tempfile::TempDir;
 
 const EXIT_UNAVAILABLE: i32 = 69;
+const EXIT_CONFIG: i32 = 78;
 
 fn oll() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oll"))
@@ -203,4 +204,41 @@ fn start_performs_the_nonce_handshake_when_loopback_is_available() {
     );
     assert_eq!(wait_for_status(&config_root)["node_name"], "home-node");
     stop(&config_root);
+}
+
+#[test]
+fn daemon_rejects_persisted_and_overridden_working_tree_overlaps_before_startup() {
+    let directory = TempDir::new().unwrap();
+    initialize(&directory);
+    let config_root = directory.path().join("config");
+    let replica_root = directory.path().join("replica");
+    let log_dir = directory.path().join("log");
+    let config_path = config_root.join("config.lua");
+    let original = fs::read_to_string(&config_path).unwrap();
+    let nested_log = replica_root.join("logs");
+    let invalid = original.replace(log_dir.to_str().unwrap(), nested_log.to_str().unwrap());
+    assert_ne!(invalid, original);
+    fs::write(&config_path, invalid).unwrap();
+
+    let persisted = oll()
+        .arg("run")
+        .arg("--config")
+        .arg(&config_root)
+        .output()
+        .unwrap();
+    assert_eq!(persisted.status.code(), Some(EXIT_CONFIG));
+    assert!(!nested_log.join("oll.log").exists());
+    assert!(!config_root.join("run/admin.sock").exists());
+
+    fs::write(&config_path, original).unwrap();
+    let overridden = oll()
+        .arg("run")
+        .arg("--config")
+        .arg(&config_root)
+        .arg("--replica")
+        .arg(&log_dir)
+        .output()
+        .unwrap();
+    assert_eq!(overridden.status.code(), Some(EXIT_CONFIG));
+    assert!(!config_root.join("run/admin.sock").exists());
 }

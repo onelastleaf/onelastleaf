@@ -421,9 +421,7 @@ impl ReplicaRuntime {
                 .map_err(|error| ReplicaError::Internal(error.to_string()))?;
         }
         if !projection_paths.is_empty() {
-            self.project_targeted(&replica, &projection_paths).await?;
-            self.store
-                .clear_projection_paths(replica.generation_id)
+            self.project_targeted(&replica, &projection_paths, correlation_id)
                 .await?;
         }
         Ok(response)

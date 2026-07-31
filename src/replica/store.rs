@@ -414,14 +414,22 @@ impl ReplicaStore {
         .map_err(store_error)
     }
 
-    pub async fn clear_projection_paths(&self, generation_id: Uuid) -> Result<(), ReplicaError> {
+    pub async fn clear_projection_path(
+        &self,
+        generation_id: Uuid,
+        path: &str,
+    ) -> Result<(), ReplicaError> {
         let mut transaction = self.pool.begin().await.map_err(store_error)?;
         require_active_generation(&mut transaction, generation_id).await?;
-        sqlx::query("DELETE FROM projection_paths WHERE generation_id = $1")
-            .bind(generation_id.to_string())
-            .execute(&mut *transaction)
-            .await
-            .map_err(store_error)?;
+        sqlx::query(
+            "DELETE FROM projection_paths
+             WHERE generation_id = $1 AND path = $2",
+        )
+        .bind(generation_id.to_string())
+        .bind(path)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
         transaction.commit().await.map_err(store_error)
     }
 
@@ -1401,6 +1409,20 @@ mod tests {
                 .ok_or_else(|| "PostgreSQL retained commit is missing".to_owned())?;
             if restored.request != retained.request || restored.response != retained.response {
                 return Err("PostgreSQL retained commit changed bytes".to_owned());
+            }
+            store
+                .clear_projection_path(loaded.generation_id, "/saved-projection-marker")
+                .await
+                .map_err(|error| error.to_string())?;
+            if store
+                .projection_paths(loaded.generation_id)
+                .await
+                .map_err(|error| error.to_string())?
+                != ["/initial-projection-marker"]
+            {
+                return Err(
+                    "PostgreSQL path acknowledgement cleared an unrelated marker".to_owned(),
+                );
             }
 
             let mut candidate = loaded.clone();

@@ -203,6 +203,30 @@ table above. A future CLI store option must construct exactly one of those
 shapes rather than infer a backend from an ambiguous string. A user who wants
 PostgreSQL writes that complete table before `run`.
 
+After applying all runtime overrides, oll MUST validate the resolved local
+storage layout before it initializes log sinks, opens the replica store, binds
+the Admin socket, or starts the working-tree watcher. The working tree and every
+daemon-managed filesystem location must be disjoint:
+
+- `config_root` and `replica_root` MUST NOT be equal, and neither may be an
+  ancestor of the other;
+- `log_dir` and `replica_root` MUST NOT be equal, and neither may be an ancestor
+  of the other;
+- for a SQLite store, the database's management directory (the configured
+  database file's immediate parent, which also owns SQLite journal, WAL, shared
+  memory, and temporary siblings) and `replica_root` MUST NOT be equal, and
+  neither may be an ancestor of the other.
+
+These checks compare normalized filesystem locations rather than only the
+original strings. Existing symlinked ancestors are resolved for the comparison
+so two spellings of the same or nested location cannot bypass isolation; this
+does not rewrite the configured paths or require their final components to
+already exist. PostgreSQL has no local store path to compare. `oll init`
+applies the same checks before creating the corresponding deployment
+directories. This prevents configuration, Admin runtime files, logs, SQLite
+files, or a working tree nested beneath their management directories from ever
+entering the recursive watcher namespace.
+
 `oll start` resolves its config root to an absolute path before detaching and
 passes that path to the `oll run` child. The child must not reinterpret a
 relative deployment path from the launcher's working directory. It can precheck
@@ -217,16 +241,19 @@ snapshot and log clients retain the intent-specific dependencies defined in
 Missing or unreadable files, Lua syntax failures, evaluation failures, a
 non-table or multiple return values, unsupported format versions, unknown or
 missing fields, invalid tagged-store combinations, invalid field types, invalid
-URLs or socket addresses, and invalid paths are configuration errors and exit
-with `EX_CONFIG` (`78`). Diagnostics identify the config file and field path
-without printing Lua values that may contain secrets.
+URLs or socket addresses, invalid paths, and overlapping local storage
+locations are configuration errors and exit with `EX_CONFIG` (`78`).
+Diagnostics identify the config file and field path without printing Lua values
+that may contain secrets.
 
 Tests cover successful computed returns, wrong return arity and type, schema
 errors including both store variants and missing fields, controlled module
 containment, CLI and environment precedence, relative-path bases, and a
 HOME-less deployment whose absolute config root supplies its persisted replica,
-store, and log paths. Tests do not execute intentionally non-terminating Lua
-in-process.
+store, and log paths. They also cover equality, both ancestor directions, and
+existing symlink aliases between the working tree and each local
+daemon-managed location, including layouts produced by runtime overrides and
+`oll init`. Tests do not execute intentionally non-terminating Lua in-process.
 
 ## Troubleshooting a startup that never becomes ready
 

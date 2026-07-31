@@ -39,6 +39,8 @@ use super::{
 };
 
 const WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
+const PROJECTION_ATTEMPTS: u32 = 3;
+const PROJECTION_RETRY_DELAY: Duration = Duration::from_millis(100);
 
 #[derive(Clone, Debug)]
 pub struct DocumentInspection {
@@ -362,10 +364,7 @@ impl ReplicaRuntime {
         }
         *self.state.write().await = Some(change.replica.clone());
         if !change.projection_paths.is_empty() {
-            self.project_targeted(&change.replica, &change.projection_paths)
-                .await?;
-            self.store
-                .clear_projection_paths(change.replica.generation_id)
+            self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;
         }
         self.logger
@@ -411,10 +410,7 @@ impl ReplicaRuntime {
             .await?;
         *self.state.write().await = Some(change.replica.clone());
         if !change.projection_paths.is_empty() {
-            self.project_targeted(&change.replica, &change.projection_paths)
-                .await?;
-            self.store
-                .clear_projection_paths(change.replica.generation_id)
+            self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;
         }
         self.logger
@@ -520,9 +516,7 @@ impl ReplicaRuntime {
                     )
                     .map_err(|error| ReplicaError::Internal(error.to_string()))?;
                 let recovery = async {
-                    self.project_targeted(&replica, &paths).await?;
-                    self.store
-                        .clear_projection_paths(replica.generation_id)
+                    self.project_targeted(&replica, &paths, correlation_id)
                         .await
                 }
                 .await;
@@ -565,6 +559,7 @@ impl ReplicaRuntime {
         &self,
         replica: &ActiveReplica,
         paths: &[String],
+        correlation_id: &str,
     ) -> Result<(), ReplicaError> {
         let desired = replica.projected_paths()?;
         let by_path = desired
@@ -572,19 +567,93 @@ impl ReplicaRuntime {
             .map(|(id, path)| (path.as_str(), *id))
             .collect::<BTreeMap<_, _>>();
         let mut removals = Vec::new();
-        let mut materialize = BTreeSet::new();
-        for path in paths {
+        let mut materializations = Vec::new();
+        for path in paths.iter().cloned().collect::<BTreeSet<_>>() {
             if let Some(id) = by_path.get(path.as_str()) {
-                materialize.insert(*id);
+                materializations.push((path, *id));
             } else {
-                removals.push(path.clone());
+                removals.push(path);
             }
         }
-        removals.sort_by_key(|path| std::cmp::Reverse(path.matches('/').count()));
-        for path in removals {
-            remove_path(&self.native_path(&path)?)?;
+        removals.sort_by(|left, right| {
+            right
+                .matches('/')
+                .count()
+                .cmp(&left.matches('/').count())
+                .then_with(|| left.cmp(right))
+        });
+        materializations.sort_by(|(left, _), (right, _)| {
+            left.matches('/')
+                .count()
+                .cmp(&right.matches('/').count())
+                .then_with(|| left.cmp(right))
+        });
+        let targets = removals.into_iter().map(|path| (path, None)).chain(
+            materializations
+                .into_iter()
+                .map(|(path, id)| (path, Some(id))),
+        );
+        let mut first_failure = None;
+        for (path, id) in targets {
+            let projection = 'attempts: {
+                for attempt in 1..=PROJECTION_ATTEMPTS {
+                    let result = if let Some(id) = id {
+                        match replica.entries.get(&id) {
+                            Some(entry) => match self.native_path(&path) {
+                                Ok(native_path) => {
+                                    self.materialize_entry(replica, entry, &native_path).await
+                                }
+                                Err(error) => Err(error),
+                            },
+                            None => Err(ReplicaError::CorruptStore(
+                                "projection entry is missing".to_owned(),
+                            )),
+                        }
+                    } else {
+                        match self.native_path(&path) {
+                            Ok(native_path) => remove_path(&native_path),
+                            Err(error) => Err(error),
+                        }
+                    };
+                    match result {
+                        Ok(()) => break 'attempts Ok(()),
+                        Err(error) if attempt < PROJECTION_ATTEMPTS => {
+                            let _ = self.logger.emit(
+                                LogLevel::Warn,
+                                "oll::replica",
+                                "working_tree_projection_retrying",
+                                correlation_id,
+                                json!({
+                                    "path": &path,
+                                    "error_code": error.code(),
+                                    "retryable": true,
+                                    "attempt": attempt,
+                                    "backoff_ms": u64::try_from(
+                                        PROJECTION_RETRY_DELAY.as_millis()
+                                    )
+                                    .unwrap_or(u64::MAX),
+                                }),
+                            );
+                            tokio::time::sleep(PROJECTION_RETRY_DELAY).await;
+                        }
+                        Err(error) => break 'attempts Err(error),
+                    }
+                }
+                unreachable!("projection attempt loop always returns")
+            };
+            let result = match projection {
+                Ok(()) => {
+                    self.store
+                        .clear_projection_path(replica.generation_id, &path)
+                        .await
+                }
+                Err(error) => Err(error),
+            };
+            if first_failure.is_none() {
+                first_failure = result.err();
+            }
         }
-        self.materialize_paths(replica, materialize).await
+        first_failure.map_or(Ok(()), Err)
     }
 
     async fn materialize_paths(
