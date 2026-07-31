@@ -3,7 +3,6 @@ use std::{
     path::{Component, Path},
 };
 
-use encoding_rs::{Encoding, UTF_8};
 use getrandom::fill as fill_random;
 use loro::{
     Container, ContainerType, ExportMode, LoroDoc, LoroMap, LoroValue, TreeID, TreeParentId,
@@ -15,7 +14,10 @@ use walkdir::WalkDir;
 
 use super::{
     ReplicaError,
-    classification::{BinaryFile, ClassifiedFile, DecodedText, classify_path},
+    classification::{
+        BinaryFile, ClassifiedFile, DecodedText, classify_path, encode_text,
+        is_supported_text_encoding,
+    },
     store::{NewBlob, NewBlobSource},
     types::{
         ActiveReplica, BinaryEntry, BinaryStamp, BinaryVersion, CATALOG_FORMAT_VERSION,
@@ -843,7 +845,7 @@ pub fn decode_catalog_snapshot(
                 "directory" => EntryData::Directory,
                 "document" => {
                     let encoding = map_string(&record, "encoding")?;
-                    if Encoding::for_label(encoding.as_bytes()).is_none() {
+                    if !is_supported_text_encoding(&encoding) {
                         return Err(ReplicaError::InvalidSnapshot(
                             "document entry has an unknown encoding".to_owned(),
                         ));
@@ -1032,9 +1034,33 @@ pub(crate) fn validate_loaded_replica(replica: &ActiveReplica) -> Result<(), Rep
         ));
     }
     for document in replica.documents.values() {
-        validate_document_snapshot(&document.loro).map_err(|error| {
+        let loro = validate_document_snapshot(&document.loro).map_err(|error| {
             ReplicaError::CorruptStore(format!("stored document Loro snapshot is invalid: {error}"))
         })?;
+        let catalog_document = replica
+            .entries
+            .values()
+            .filter_map(CatalogEntry::document)
+            .find(|entry| entry.document_id == document.document_id)
+            .ok_or_else(|| {
+                ReplicaError::CorruptStore(
+                    "stored document object has no catalog metadata".to_owned(),
+                )
+            })?;
+        let content = loro.get_text("content").to_string();
+        let (encoded, promoted) = encode_text(
+            &content,
+            &catalog_document.encoding,
+            catalog_document.has_byte_order_mark,
+        )?;
+        let encoded_size = u64::try_from(encoded.len()).map_err(|_| {
+            ReplicaError::CorruptStore("stored document size overflows u64".to_owned())
+        })?;
+        if promoted || encoded_size != catalog_document.size_bytes {
+            return Err(ReplicaError::CorruptStore(
+                "stored document size or encoding differs from its catalog metadata".to_owned(),
+            ));
+        }
         let expected: [u8; 32] = sha2::Sha256::digest(&document.loro).into();
         if expected != document.revision {
             return Err(ReplicaError::CorruptStore(
@@ -1077,54 +1103,6 @@ fn entries_equivalent(left: &CatalogEntry, right: &CatalogEntry) -> bool {
         }
         _ => false,
     }
-}
-
-pub fn normalize_imported_encodings(
-    catalog_bytes: &[u8],
-    peer: u64,
-    entries: &mut BTreeMap<Uuid, CatalogEntry>,
-    documents: &BTreeMap<Uuid, DocumentObject>,
-) -> Result<Vec<u8>, ReplicaError> {
-    let catalog = import_loro_doc(catalog_bytes, peer)?;
-    let entries_map = catalog.get_map("entries");
-    let mut changed = false;
-    for entry in entries.values_mut() {
-        let EntryData::Document(document) = &mut entry.data else {
-            continue;
-        };
-        let object = documents.get(&document.document_id).ok_or_else(|| {
-            ReplicaError::InvalidSnapshot("catalog references a missing document".to_owned())
-        })?;
-        let doc = validate_document_snapshot(&object.loro)?;
-        let text = doc.get_text("content").to_string();
-        let (_, promoted) = super::classification::encode_text(
-            &text,
-            &document.encoding,
-            document.has_byte_order_mark,
-        )?;
-        if promoted {
-            if !changed {
-                catalog.set_next_commit_origin("snapshot_import");
-            }
-            document.encoding = UTF_8.name().to_owned();
-            document.has_byte_order_mark = false;
-            document.size_bytes = u64::try_from(text.len()).map_err(|_| {
-                ReplicaError::InvalidSnapshot("promoted document size overflow".to_owned())
-            })?;
-            entry.recompute_revision();
-            write_entry_record(
-                &get_entry_record(&entries_map, entry.catalog_node_id)?,
-                entry,
-            )?;
-            changed = true;
-        }
-    }
-    if changed {
-        catalog.commit();
-    }
-    catalog
-        .export(ExportMode::Snapshot)
-        .map_err(loro_encode_error)
 }
 
 pub fn generate_loro_peer_id(excluded: &BTreeSet<u64>) -> Result<u64, ReplicaError> {

@@ -207,6 +207,17 @@ then is:
 5. remove the Admin socket and release the lock by dropping its descriptor;
 6. exit the process.
 
+The first accepted request or first termination signal records one absolute
+deadline and one shutdown correlation ID. Admin draining and replica shutdown
+use that same deadline concurrently; replica shutdown is not deferred until the
+Admin server has finished. Stopping the replica first removes the operating
+system watcher and wakes its event loop. Work from the watcher event already
+being handled may drain until the deadline, but queued events do not begin new
+reconciliations after shutdown starts. At the deadline the node aborts both the
+remaining Admin work and replica-owned tasks, and Tokio blocking-task teardown
+must not add a second unbounded wait before the socket and deployment lock are
+released.
+
 The node stage has no replica, sync, or plugin work to drain yet. Later stages
 extend the owned-work set but must preserve this externally visible ordering.
 The daemon does not use an Admin "kill" method. If `oll stop` reaches its

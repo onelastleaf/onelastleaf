@@ -13,14 +13,12 @@ use tempfile::{Builder as TempBuilder, TempDir};
 use time::format_description::well_known::Rfc3339;
 use uuid::Uuid;
 
-use crate::node::logging::{LogLevel, new_correlation_id};
+use crate::node::logging::LogLevel;
 
 use super::{
     ReplicaError,
-    model::{
-        decode_catalog_snapshot, generate_loro_peer_id, normalize_imported_encodings,
-        validate_document_snapshot,
-    },
+    classification::encode_text,
+    model::{decode_catalog_snapshot, generate_loro_peer_id, validate_document_snapshot},
     store::{NewBlob, NewBlobSource},
     types::{
         ActiveReplica, DocumentObject, OperationKind, OperationRecord, OperationSource,
@@ -33,6 +31,17 @@ const SNAPSHOT_FORMAT: &str = "onelastleaf-replica-snapshot";
 const SNAPSHOT_FORMAT_VERSION: u32 = 1;
 const MANIFEST_ENTRY: &str = "manifest.json";
 const CATALOG_ENTRY: &str = "catalog.loro";
+
+#[cfg(test)]
+struct ExportArchiveTestHook {
+    destination: PathBuf,
+    started: std::sync::mpsc::Sender<()>,
+    release: std::sync::mpsc::Receiver<()>,
+}
+
+#[cfg(test)]
+static EXPORT_ARCHIVE_TEST_HOOK: std::sync::Mutex<Option<ExportArchiveTestHook>> =
+    std::sync::Mutex::new(None);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 pub struct SnapshotInspection {
@@ -133,8 +142,8 @@ pub fn verify_snapshot(path: &Path) -> Result<SnapshotInspection, ReplicaError> 
 pub(crate) async fn export_runtime(
     runtime: &ReplicaRuntime,
     destination: &Path,
+    correlation_id: &str,
 ) -> Result<(Uuid, Uuid), ReplicaError> {
-    let correlation_id = new_correlation_id();
     let started = std::time::Instant::now();
     runtime
         .logger
@@ -142,7 +151,7 @@ pub(crate) async fn export_runtime(
             LogLevel::Info,
             "oll::replica",
             "snapshot_export_started",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({}),
         )
         .map_err(|error| ReplicaError::Internal(error.to_string()))?;
@@ -152,7 +161,7 @@ pub(crate) async fn export_runtime(
             LogLevel::Info,
             "oll::replica",
             "snapshot_export_completed",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({
                 "snapshot_id": snapshot_id.to_string(),
                 "replica_id": replica_id.to_string(),
@@ -163,7 +172,7 @@ pub(crate) async fn export_runtime(
             snapshot_failure_level(error),
             "oll::replica",
             "snapshot_export_failed",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({
                 "error_code": error.code(),
                 "duration_ms": elapsed_ms(started),
@@ -285,50 +294,65 @@ async fn export_runtime_inner(
     fs::write(&manifest_path, &manifest_bytes)
         .map_err(|error| ReplicaError::io("stage snapshot manifest", error))?;
 
-    let temporary = parent.join(format!(".oll-snapshot-{}.tmp", Uuid::new_v4()));
-    let archive_temporary = temporary.clone();
+    let mut archive_temporary = TempBuilder::new()
+        .prefix(".oll-snapshot-")
+        .suffix(".tmp")
+        .tempfile_in(parent)
+        .map_err(|error| ReplicaError::io("create snapshot temporary file", error))?;
     let archive_manifest_path = manifest_path.clone();
     let archive_catalog_path = catalog_path.clone();
     let archive_manifest = manifest.clone();
     let archive_staging_root = staging.path().to_owned();
-    let task = tokio::task::spawn_blocking(move || {
+    #[cfg(test)]
+    let archive_test_hook = {
+        let mut hook = EXPORT_ARCHIVE_TEST_HOOK.lock().unwrap();
+        if hook
+            .as_ref()
+            .is_some_and(|hook| hook.destination == destination)
+        {
+            hook.take()
+        } else {
+            None
+        }
+    };
+    let task = tokio::task::spawn_blocking(move || -> Result<_, ReplicaError> {
+        #[cfg(test)]
+        if let Some(hook) = archive_test_hook {
+            let _ = hook.started.send(());
+            let _ = hook.release.recv();
+        }
         build_archive(
-            &archive_temporary,
+            archive_temporary.as_file_mut(),
             &archive_manifest_path,
             &archive_catalog_path,
             &archive_manifest,
             &archive_staging_root,
-        )
+        )?;
+        Ok(archive_temporary)
     })
     .await;
-    let result = match task {
-        Ok(result) => result,
+    let temporary = match task {
+        Ok(result) => result?,
         Err(error) => {
-            let _ = fs::remove_file(&temporary);
             return Err(ReplicaError::Internal(format!(
                 "snapshot archive task failed: {error}"
             )));
         }
     };
-    if let Err(error) = result {
-        let _ = fs::remove_file(&temporary);
-        return Err(error);
-    }
     drop(coordinator);
-    match fs::hard_link(&temporary, destination) {
+    match fs::hard_link(temporary.path(), destination) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {
-            let _ = fs::remove_file(&temporary);
             return Err(ReplicaError::AlreadyExists(
                 "snapshot destination already exists".to_owned(),
             ));
         }
         Err(error) => {
-            let _ = fs::remove_file(&temporary);
             return Err(ReplicaError::io("publish replica snapshot", error));
         }
     }
-    fs::remove_file(&temporary)
+    temporary
+        .close()
         .map_err(|error| ReplicaError::io("remove snapshot temporary link", error))?;
     File::open(parent)
         .and_then(|directory| directory.sync_all())
@@ -339,8 +363,8 @@ async fn export_runtime_inner(
 pub(crate) async fn import_runtime(
     runtime: &ReplicaRuntime,
     source: &Path,
+    correlation_id: &str,
 ) -> Result<(Uuid, Uuid), ReplicaError> {
-    let correlation_id = new_correlation_id();
     let started = std::time::Instant::now();
     runtime
         .logger
@@ -348,17 +372,17 @@ pub(crate) async fn import_runtime(
             LogLevel::Info,
             "oll::replica",
             "snapshot_import_started",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({}),
         )
         .map_err(|error| ReplicaError::Internal(error.to_string()))?;
-    let result = import_runtime_inner(runtime, source, &correlation_id).await;
+    let result = import_runtime_inner(runtime, source, correlation_id).await;
     let log_result = match &result {
         Ok((snapshot_id, replica_id)) => runtime.logger.emit(
             LogLevel::Info,
             "oll::replica",
             "snapshot_import_completed",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({
                 "snapshot_id": snapshot_id.to_string(),
                 "replica_id": replica_id.to_string(),
@@ -369,7 +393,7 @@ pub(crate) async fn import_runtime(
             snapshot_failure_level(error),
             "oll::replica",
             "snapshot_import_failed",
-            &correlation_id,
+            correlation_id,
             serde_json::json!({
                 "error_code": error.code(),
                 "duration_ms": elapsed_ms(started),
@@ -397,7 +421,7 @@ async fn import_runtime_inner(
     let replica_id = parse_manifest_uuid(&verified.manifest.replica_id, "replica_id")?;
     let catalog_bytes = fs::read(&verified.catalog_path)
         .map_err(|error| ReplicaError::io("read staged catalog", error))?;
-    let (root_catalog_node_id, mut entries) = decode_catalog_snapshot(&catalog_bytes)?;
+    let (root_catalog_node_id, entries) = decode_catalog_snapshot(&catalog_bytes)?;
     let mut excluded_peers = BTreeSet::new();
     let catalog_doc = validate_loro_and_collect_peers(&catalog_bytes, &mut excluded_peers)?;
     drop(catalog_doc);
@@ -412,8 +436,6 @@ async fn import_runtime_inner(
         documents.insert(*document_id, DocumentObject::new(*document_id, bytes));
     }
     let peer = generate_loro_peer_id(&excluded_peers)?;
-    let catalog_loro =
-        normalize_imported_encodings(&catalog_bytes, peer, &mut entries, &documents)?;
     let lamport_clock = entries
         .values()
         .filter_map(|entry| entry.binary())
@@ -426,7 +448,7 @@ async fn import_runtime_inner(
         replica_id,
         loro_peer_id: peer,
         root_catalog_node_id,
-        catalog_loro,
+        catalog_loro: catalog_bytes,
         lamport_clock,
         projection_generation: 1,
         entries,
@@ -619,9 +641,17 @@ fn stage_and_verify(path: &Path) -> Result<VerifiedSnapshot, ReplicaError> {
     let catalog_documents = catalog_entries
         .values()
         .filter_map(|entry| {
-            entry
-                .document()
-                .map(|document| (document.document_id, !entry.deleted))
+            entry.document().map(|document| {
+                (
+                    document.document_id,
+                    (
+                        !entry.deleted,
+                        document.encoding.clone(),
+                        document.has_byte_order_mark,
+                        document.size_bytes,
+                    ),
+                )
+            })
         })
         .collect::<BTreeMap<_, _>>();
     let referenced_blobs = catalog_entries
@@ -634,15 +664,13 @@ fn stage_and_verify(path: &Path) -> Result<VerifiedSnapshot, ReplicaError> {
     let mut documents = BTreeMap::new();
     for declared in &manifest.documents {
         let document_id = parse_manifest_uuid(&declared.document_id, "document_id")?;
-        let expected_live = catalog_documents
-            .get(&document_id)
-            .copied()
-            .ok_or_else(|| {
+        let (expected_live, encoding, has_byte_order_mark, size_bytes) =
+            catalog_documents.get(&document_id).ok_or_else(|| {
                 ReplicaError::InvalidSnapshot(
                     "manifest document is not referenced by the catalog".to_owned(),
                 )
             })?;
-        if expected_live != (declared.state == ManifestDocumentState::Live) {
+        if *expected_live != (declared.state == ManifestDocumentState::Live) {
             return Err(ReplicaError::InvalidSnapshot(
                 "manifest document state contradicts the catalog".to_owned(),
             ));
@@ -652,7 +680,27 @@ fn stage_and_verify(path: &Path) -> Result<VerifiedSnapshot, ReplicaError> {
         })?;
         let bytes = fs::read(&staged)
             .map_err(|error| ReplicaError::io("read verified document snapshot", error))?;
-        validate_document_snapshot(&bytes)?;
+        let document = validate_document_snapshot(&bytes)?;
+        let content = document.get_text("content").to_string();
+        let (encoded, promoted) =
+            encode_text(&content, encoding, *has_byte_order_mark).map_err(|_| {
+                ReplicaError::InvalidSnapshot(
+                    "catalog document encoding metadata is invalid".to_owned(),
+                )
+            })?;
+        if promoted {
+            return Err(ReplicaError::InvalidSnapshot(
+                "catalog document content is not exactly representable in its declared encoding"
+                    .to_owned(),
+            ));
+        }
+        let encoded_size = u64::try_from(encoded.len())
+            .map_err(|_| ReplicaError::InvalidSnapshot("document size overflow".to_owned()))?;
+        if encoded_size != *size_bytes {
+            return Err(ReplicaError::InvalidSnapshot(
+                "catalog document size differs from its encoded content".to_owned(),
+            ));
+        }
         if documents.insert(document_id, staged).is_some() {
             return Err(ReplicaError::InvalidSnapshot(
                 "manifest repeats a document_id".to_owned(),
@@ -676,11 +724,30 @@ fn stage_and_verify(path: &Path) -> Result<VerifiedSnapshot, ReplicaError> {
         ));
     }
     let mut blobs = BTreeMap::new();
+    let mut blob_sizes = BTreeMap::new();
     for declared in &manifest.blobs {
         let staged = staged_paths.remove(&declared.entry).ok_or_else(|| {
             ReplicaError::InvalidSnapshot("verified blob entry is missing".to_owned())
         })?;
+        let actual_size = fs::metadata(&staged)
+            .map_err(|error| ReplicaError::io("inspect verified blob", error))?
+            .len();
+        blob_sizes.insert(declared.sha256.clone(), actual_size);
         blobs.insert(declared.sha256.clone(), staged);
+    }
+    for version in catalog_entries
+        .values()
+        .filter_map(|entry| entry.binary())
+        .flat_map(|binary| binary.versions.values())
+    {
+        let actual_size = blob_sizes.get(&version.sha256).ok_or_else(|| {
+            ReplicaError::InvalidSnapshot("catalog references a missing blob".to_owned())
+        })?;
+        if *actual_size != version.size_bytes {
+            return Err(ReplicaError::InvalidSnapshot(
+                "catalog binary version size differs from its blob".to_owned(),
+            ));
+        }
     }
     if !staged_paths.is_empty() {
         return Err(ReplicaError::InvalidSnapshot(
@@ -813,18 +880,12 @@ fn inspection(manifest: &Manifest) -> Result<SnapshotInspection, ReplicaError> {
 }
 
 fn build_archive(
-    output_path: &Path,
+    output: &mut File,
     manifest_path: &Path,
     catalog_path: &Path,
     manifest: &Manifest,
     staging_root: &Path,
 ) -> Result<(), ReplicaError> {
-    let output = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .mode(0o600)
-        .open(output_path)
-        .map_err(|error| ReplicaError::io("create snapshot temporary file", error))?;
     let mut encoder = zstd::stream::write::Encoder::new(output, 3)
         .map_err(|error| ReplicaError::io("initialize zstd encoder", error))?;
     encoder
@@ -856,8 +917,8 @@ fn build_archive(
         .map_err(|error| ReplicaError::io("sync snapshot temporary file", error))
 }
 
-fn append_archive_file(
-    archive: &mut Builder<&mut zstd::stream::write::Encoder<'_, File>>,
+fn append_archive_file<W: Write>(
+    archive: &mut Builder<W>,
     entry_path: &str,
     source_path: &Path,
 ) -> Result<(), ReplicaError> {
@@ -1009,10 +1070,20 @@ fn elapsed_ms(started: std::time::Instant) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::io::Cursor;
+    use std::{io::Cursor, sync::Arc};
 
     use super::*;
-    use crate::replica::model::{initialize_from_disk, scan_working_tree};
+    use crate::{
+        configuration::ReplicaStoreConfig,
+        node::{NodeIdentity, logging::NodeLogger},
+        replica::{
+            model::{
+                get_entry_record, import_loro_doc, initialize_from_disk, scan_working_tree,
+                write_entry_record,
+            },
+            types::EntryData,
+        },
+    };
 
     #[derive(Clone)]
     struct TestArchiveEntry {
@@ -1065,6 +1136,46 @@ mod tests {
                 TestArchiveEntry::regular(blob.entry.clone(), self.payloads[&blob.entry].clone())
             }));
             entries
+        }
+
+        fn mutate_catalog(
+            &mut self,
+            mutate: impl FnOnce(&mut BTreeMap<Uuid, super::super::types::CatalogEntry>),
+        ) {
+            let source = self.payloads[CATALOG_ENTRY].clone();
+            let (_, mut entries) = decode_catalog_snapshot(&source).unwrap();
+            mutate(&mut entries);
+            let catalog = import_loro_doc(&source, 17).unwrap();
+            catalog.set_next_commit_origin("snapshot_test");
+            let records = catalog.get_map("entries");
+            for entry in entries.values() {
+                write_entry_record(
+                    &get_entry_record(&records, entry.catalog_node_id).unwrap(),
+                    entry,
+                )
+                .unwrap();
+            }
+            catalog.commit();
+            let encoded = catalog.export(loro::ExportMode::Snapshot).unwrap();
+            self.manifest.catalog.size_bytes = encoded.len() as u64;
+            self.manifest.catalog.sha256 = hex_sha256(&encoded);
+            self.payloads.insert(CATALOG_ENTRY.to_owned(), encoded);
+        }
+
+        fn replace_first_document_text(&mut self, text: &str) {
+            let declared = self.manifest.documents.first_mut().unwrap();
+            let source = self.payloads[&declared.entry].clone();
+            let document = import_loro_doc(&source, 19).unwrap();
+            document.set_next_commit_origin("snapshot_test");
+            document
+                .get_text("content")
+                .update(text, loro::UpdateOptions::default())
+                .unwrap();
+            document.commit();
+            let encoded = document.export(loro::ExportMode::Snapshot).unwrap();
+            declared.size_bytes = encoded.len() as u64;
+            declared.sha256 = hex_sha256(&encoded);
+            self.payloads.insert(declared.entry.clone(), encoded);
         }
     }
 
@@ -1392,6 +1503,261 @@ mod tests {
             manifest_source(&invalid_loro.manifest),
             entries,
         );
+    }
+
+    #[test]
+    fn archive_contract_validates_catalog_document_and_binary_payload_sizes() {
+        let directory = TempDir::new().unwrap();
+        let fixture = test_snapshot();
+
+        let mut wrong_document_size = fixture.clone();
+        wrong_document_size.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.size_bytes += 1;
+        });
+        assert_invalid(
+            &directory,
+            "catalog-document-size.ollsnap",
+            manifest_source(&wrong_document_size.manifest),
+            wrong_document_size.entries(),
+        );
+
+        let mut wrong_binary_size = fixture.clone();
+        wrong_binary_size.mutate_catalog(|entries| {
+            let version = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Binary(binary) => binary.versions.values_mut().next(),
+                    _ => None,
+                })
+                .unwrap();
+            version.size_bytes += 1;
+        });
+        assert_invalid(
+            &directory,
+            "catalog-binary-size.ollsnap",
+            manifest_source(&wrong_binary_size.manifest),
+            wrong_binary_size.entries(),
+        );
+
+        let mut utf16 = fixture.clone();
+        utf16.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.encoding = "UTF-16LE".to_owned();
+            document.has_byte_order_mark = true;
+            document.size_bytes = encode_text("snapshot document", "UTF-16LE", true)
+                .unwrap()
+                .0
+                .len() as u64;
+        });
+        let valid_utf16 = directory.path().join("valid-utf16-bom.ollsnap");
+        write_test_archive(
+            &valid_utf16,
+            manifest_source(&utf16.manifest),
+            &utf16.entries(),
+        );
+        verify_snapshot(&valid_utf16).unwrap();
+
+        let mut wrong_utf16_size = utf16;
+        wrong_utf16_size.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.size_bytes += 1;
+        });
+        assert_invalid(
+            &directory,
+            "wrong-utf16-bom-size.ollsnap",
+            manifest_source(&wrong_utf16_size.manifest),
+            wrong_utf16_size.entries(),
+        );
+
+        let mut invalid_bom = fixture.clone();
+        invalid_bom.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.encoding = "windows-1252".to_owned();
+            document.has_byte_order_mark = true;
+        });
+        assert_invalid(
+            &directory,
+            "invalid-bom-encoding.ollsnap",
+            manifest_source(&invalid_bom.manifest),
+            invalid_bom.entries(),
+        );
+
+        let mut unrepresentable = fixture;
+        unrepresentable.replace_first_document_text("snapshot 🍃");
+        unrepresentable.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.encoding = "windows-1252".to_owned();
+            document.has_byte_order_mark = false;
+            document.size_bytes = "snapshot 🍃".len() as u64;
+        });
+        assert_invalid(
+            &directory,
+            "unrepresentable-document.ollsnap",
+            manifest_source(&unrepresentable.manifest),
+            unrepresentable.entries(),
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn invalid_catalog_payload_metadata_cannot_replace_the_active_replica() {
+        let directory = TempDir::new().unwrap();
+        let mut fixture = test_snapshot();
+        fixture.mutate_catalog(|entries| {
+            let document = entries
+                .values_mut()
+                .find_map(|entry| match &mut entry.data {
+                    EntryData::Document(document) => Some(document),
+                    _ => None,
+                })
+                .unwrap();
+            document.size_bytes += 1;
+        });
+        let snapshot = directory.path().join("invalid-metadata.ollsnap");
+        write_test_archive(
+            &snapshot,
+            manifest_source(&fixture.manifest),
+            &fixture.entries(),
+        );
+
+        let root = directory.path().join("working");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("original.md"), "authoritative").unwrap();
+        let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
+        let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+        let runtime = ReplicaRuntime::start(
+            root.clone(),
+            &ReplicaStoreConfig::Sqlite {
+                path: directory.path().join("store/replica.sqlite3"),
+            },
+            identity.node_id(),
+            logger,
+        )
+        .await
+        .unwrap();
+        let before = runtime.status().await;
+
+        assert!(matches!(
+            runtime
+                .import_snapshot(&snapshot, "invalid-import-correlation")
+                .await,
+            Err(ReplicaError::InvalidSnapshot(_))
+        ));
+        assert_eq!(runtime.status().await, before);
+        assert_eq!(
+            fs::read_to_string(root.join("original.md")).unwrap(),
+            "authoritative"
+        );
+        runtime
+            .shutdown(tokio::time::Instant::now() + std::time::Duration::from_secs(2))
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_export_cleans_its_owned_temporary_archive() {
+        let directory = TempDir::new().unwrap();
+        let root = directory.path().join("working");
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("document.md"), "snapshot content").unwrap();
+        let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
+        let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+        let runtime = ReplicaRuntime::start(
+            root,
+            &ReplicaStoreConfig::Sqlite {
+                path: directory.path().join("store/replica.sqlite3"),
+            },
+            identity.node_id(),
+            logger,
+        )
+        .await
+        .unwrap();
+        let destination = directory.path().join("cancelled.ollsnap");
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        *EXPORT_ARCHIVE_TEST_HOOK.lock().unwrap() = Some(ExportArchiveTestHook {
+            destination: destination.clone(),
+            started: started_tx,
+            release: release_rx,
+        });
+
+        let export_runtime = Arc::clone(&runtime);
+        let export_destination = destination.clone();
+        let export = tokio::spawn(async move {
+            export_runtime
+                .export_snapshot(&export_destination, "cancelled-export-correlation")
+                .await
+        });
+        tokio::task::spawn_blocking(move || started_rx.recv().unwrap())
+            .await
+            .unwrap();
+        assert!(directory.path().read_dir().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".oll-snapshot-")
+        }));
+
+        export.abort();
+        assert!(export.await.unwrap_err().is_cancelled());
+        assert!(!destination.exists());
+        release_tx.send(()).unwrap();
+        for _ in 0..100 {
+            let has_temporary = directory.path().read_dir().unwrap().any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".oll-snapshot-")
+            });
+            if !has_temporary {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(!directory.path().read_dir().unwrap().any(|entry| {
+            entry
+                .unwrap()
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".oll-snapshot-")
+        }));
+
+        runtime
+            .shutdown(tokio::time::Instant::now() + std::time::Duration::from_secs(2))
+            .await
+            .unwrap();
     }
 
     #[test]

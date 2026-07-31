@@ -12,7 +12,7 @@ or infer the role from configuration:
 | `oll init` | bootstrap client | Initializes local configuration, `NodeIdentity`, and the one empty replica slot without starting services. |
 | `oll start` | launcher client | Starts a detached `oll run` child, verifies readiness, and exits. |
 | snapshot inspect/verify, log viewing, and `plugin validate` | local file client | Validates or reads one local file and exits. |
-| remaining operational subcommands | admin client | Opens the configured Admin API, makes a bounded request, renders the result, and exits. |
+| remaining operational subcommands | admin client | Opens the configured Admin API, makes one request under its method-specific deadline policy, renders the result, and exits. |
 
 `init` cannot use an already-running daemon: its purpose includes creating the
 state required before the first daemon can start. `start` is also necessarily a
@@ -55,6 +55,15 @@ protocol descriptor fingerprint, and a client connecting to an older
 still-running daemon receives a protocol-mismatch error with an instruction to
 restart it. Schema changes are coordinated binary upgrades.
 
+Admin connection establishment has a 10-second timeout independent of request
+execution. Short local methods such as status, shutdown, log-filter changes,
+document inspection, and operation listing carry a 10-second gRPC request
+deadline. `ExportReplica` and `ImportReplica` deliberately carry no fixed client
+request deadline: version 1 snapshots have no size limit, so a valid operation
+may take much longer than ten seconds. They remain bounded by explicit client
+termination and by the daemon's node-wide graceful-shutdown deadline; the
+transport channel does not impose a hidden per-request timeout on them.
+
 The service grows with the required implementation order. The node stage owns
 status, graceful shutdown, and typed live log-filter changes. Replica, sync, and
 plugin RPCs are added only when their domain models have met the preceding
@@ -92,6 +101,12 @@ it does not tunnel the `oll replica` argv through one generic RPC.
   output path.
 - `ImportReplica` validates a local `.ollsnap`, then initializes or replaces
   the one replica and marks its working-tree projection pending.
+
+Both snapshot methods inherit the `correlation_id` in their
+`AdminCallContext` through replica execution, structured snapshot lifecycle
+events, asynchronous work, and snapshot-import operation records. The replica
+layer must not replace that ID merely because it crosses from the Admin handler
+into snapshot code.
 
 The local CLI begins with native `PathBuf` inputs, so these Admin methods use a
 separate replica-stage `NativePath` protobuf message containing raw Unix pathname

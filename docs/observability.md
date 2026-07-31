@@ -167,6 +167,10 @@ Correlation IDs are mandatory, not an optional logging enhancement.
   the first oll boundary.
 - Every child call, task, log, and artifact transfer inherits the current
   `correlation_id`.
+- An Admin snapshot export or import, its replica-layer lifecycle events, its
+  blocking archive work, and any snapshot-import operation records inherit the
+  `AdminCallContext` correlation ID without generating a replacement at the
+  replica boundary.
 - A genuinely independent operation receives a new ID.
 - A plugin exit, its restart-backoff decision, the replacement spawn, and the
   replacement session's readiness share one lifecycle correlation ID. The

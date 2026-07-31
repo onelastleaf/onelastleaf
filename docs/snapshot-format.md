@@ -166,11 +166,18 @@ contract.
 `oll replica snapshot verify <snapshot>` performs the complete streaming
 archive validation: it checks the exact declared entry set and order, entry
 types and paths, sizes, every SHA-256, catalog-to-document/blob references, and
-decodability plus the fixed schema of every Loro snapshot. On success it writes
-exactly `verified snapshot <snapshot-id>` followed by a newline. On failure it
-writes no success line, returns a nonzero status, and reports which validation
-class failed without dumping archive content. Both commands are local file
-clients and do not read the current deployment configuration or replica.
+decodability plus the fixed schema of every Loro snapshot. It also validates
+the catalog's business metadata against those payloads: every retained binary
+version's `size_bytes` equals the verified blob length, and every retained
+document's `size_bytes` equals the exact byte length obtained by encoding its
+`content` with the catalog-declared encoding and BOM. An unknown encoding,
+invalid BOM combination, or text that cannot be represented exactly by its
+declared encoding is an inconsistent snapshot rather than an import-time
+normalization opportunity. On success verify writes exactly `verified snapshot
+<snapshot-id>` followed by a newline. On failure it writes no success line,
+returns a nonzero status, and reports which validation class failed without
+dumping archive content. Both commands are local file clients and do not read
+the current deployment configuration or replica.
 
 ## Import validation
 
@@ -181,9 +188,12 @@ Import is staged before active-replica mutation:
 3. verify the exact declared entry set, byte sizes, and SHA-256 hashes;
 4. open every Loro snapshot in staging to prove it is decodable;
 5. verify that catalog-referenced retained binary hashes are present in staged
-   blobs and that no blob is undeclared;
-6. build a complete candidate store without mutating the active store;
-7. only then acquire the replica write coordinator and atomically commit the
+   blobs, that no blob is undeclared, and that every binary-version byte size
+   equals its verified staged blob length;
+6. encode every retained document's `content` using its catalog encoding and
+   BOM and verify exact representability plus the catalog byte size;
+7. build a complete candidate store without mutating the active store;
+8. only then acquire the replica write coordinator and atomically commit the
    candidate catalog, documents, blobs, `ReplicaId`, fresh local `LoroPeerId`,
    and `projection_pending` marker.
 
@@ -254,6 +264,8 @@ no-replace races, and both same- and different-`ReplicaId` replacement. Negative
 fixtures cover malformed and duplicate manifest fields, undeclared or duplicate
 entries, wrong order/type/size/hash, zstd corruption, trailing data, absolute or
 traversing paths, links and special files, missing referenced objects, extra
-blobs, invalid catalog/document schemas, and undecodable Loro bytes. Streaming
-tests use inputs larger than the implementation buffers to prove that inspect,
-verify, export, and import do not require the complete archive or blob in memory.
+blobs, catalog-to-payload size contradictions for documents and retained binary
+versions, invalid document encoding/BOM metadata, invalid catalog/document
+schemas, and undecodable Loro bytes. Streaming tests use inputs larger than the
+implementation buffers to prove that inspect, verify, export, and import do not
+require the complete archive or blob in memory.

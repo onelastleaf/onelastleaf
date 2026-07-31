@@ -17,8 +17,9 @@ use notify_debouncer_full::{
 };
 use serde_json::json;
 use tokio::{
-    sync::{Mutex, RwLock, mpsc},
+    sync::{Mutex, RwLock, mpsc, watch},
     task::JoinHandle,
+    time::{Instant, timeout_at},
 };
 use uuid::Uuid;
 
@@ -63,6 +64,7 @@ pub struct ReplicaRuntime {
     pub(crate) coordinator: Mutex<()>,
     pub(crate) logger: Arc<NodeLogger>,
     watcher: StdMutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,
+    event_shutdown: watch::Sender<bool>,
     event_task: Mutex<Option<JoinHandle<()>>>,
 }
 
@@ -75,6 +77,7 @@ impl ReplicaRuntime {
     ) -> Result<Arc<Self>, ReplicaError> {
         let store = Arc::new(ReplicaStore::open(store_config).await?);
         let active = store.load_active().await?;
+        let (event_shutdown, event_shutdown_rx) = watch::channel(false);
         let runtime = Arc::new(Self {
             root,
             writer_node_id,
@@ -83,6 +86,7 @@ impl ReplicaRuntime {
             coordinator: Mutex::new(()),
             logger,
             watcher: StdMutex::new(None),
+            event_shutdown,
             event_task: Mutex::new(None),
         });
         runtime.recover_projection(None).await?;
@@ -113,7 +117,7 @@ impl ReplicaRuntime {
         }
         let task_runtime = Arc::clone(&runtime);
         let task = tokio::spawn(async move {
-            task_runtime.event_loop(receiver).await;
+            task_runtime.event_loop(receiver, event_shutdown_rx).await;
         });
         *runtime.event_task.lock().await = Some(task);
         Ok(runtime)
@@ -179,22 +183,40 @@ impl ReplicaRuntime {
             .await
     }
 
-    pub async fn export_snapshot(&self, destination: &Path) -> Result<(Uuid, Uuid), ReplicaError> {
-        super::snapshot::export_runtime(self, destination).await
+    pub async fn export_snapshot(
+        &self,
+        destination: &Path,
+        correlation_id: &str,
+    ) -> Result<(Uuid, Uuid), ReplicaError> {
+        super::snapshot::export_runtime(self, destination, correlation_id).await
     }
 
-    pub async fn import_snapshot(&self, source: &Path) -> Result<(Uuid, Uuid), ReplicaError> {
-        super::snapshot::import_runtime(self, source).await
+    pub async fn import_snapshot(
+        &self,
+        source: &Path,
+        correlation_id: &str,
+    ) -> Result<(Uuid, Uuid), ReplicaError> {
+        super::snapshot::import_runtime(self, source, correlation_id).await
     }
 
-    pub async fn shutdown(&self) -> Result<(), ReplicaError> {
+    pub async fn shutdown(&self, deadline: Instant) -> Result<(), ReplicaError> {
         self.take_watcher();
-        if let Some(task) = self.event_task.lock().await.take() {
-            task.await.map_err(|error| {
+        let _ = self.event_shutdown.send(true);
+        let Some(mut task) = self.event_task.lock().await.take() else {
+            return Ok(());
+        };
+        match timeout_at(deadline, &mut task).await {
+            Ok(result) => result.map_err(|error| {
                 ReplicaError::Internal(format!("filesystem watcher task failed: {error}"))
-            })?;
+            }),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err(ReplicaError::Internal(
+                    "filesystem watcher exceeded the graceful shutdown deadline".to_owned(),
+                ))
+            }
         }
-        Ok(())
     }
 
     pub(crate) async fn replace_state(&self, replica: ActiveReplica) {
@@ -235,8 +257,24 @@ impl ReplicaRuntime {
     async fn event_loop(
         self: Arc<Self>,
         mut receiver: mpsc::UnboundedReceiver<DebounceEventResult>,
+        mut shutdown: watch::Receiver<bool>,
     ) {
-        while let Some(result) = receiver.recv().await {
+        loop {
+            let result = tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow_and_update() {
+                        break;
+                    }
+                    continue;
+                }
+                result = receiver.recv() => {
+                    let Some(result) = result else {
+                        break;
+                    };
+                    result
+                }
+            };
             let correlation_id = new_correlation_id();
             match result {
                 Ok(events) => {

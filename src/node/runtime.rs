@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::Arc,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use getrandom::fill as fill_random;
@@ -17,7 +17,7 @@ use tokio::{
     process::Child,
     sync::watch,
     task::JoinHandle,
-    time::{sleep, timeout},
+    time::{Instant, sleep, timeout, timeout_at},
 };
 
 use crate::{
@@ -244,7 +244,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
                 &startup_correlation,
                 json!({ "reason": "admin_socket" }),
             );
-            let _ = replica.shutdown().await;
+            let _ = replica.shutdown(Instant::now() + SHUTDOWN_DEADLINE).await;
             return Err(error);
         }
     };
@@ -269,19 +269,21 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     ));
 
     if let Err(error) = wait_for_admin_ready(&socket_guard.path).await {
+        state.begin_shutdown();
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
-        let _ = admin_task.await;
+        let _ = wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
         signal_task.abort();
-        let _ = replica.shutdown().await;
+        let _ = signal_task.await;
         return Err(error);
     }
     if let Some(pingback) = intent.pingback
         && let Err(error) = complete_pingback(pingback.as_socket_addr()).await
     {
+        state.begin_shutdown();
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
-        let _ = admin_task.await;
+        let _ = wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
         signal_task.abort();
-        let _ = replica.shutdown().await;
+        let _ = signal_task.await;
         return Err(error);
     }
 
@@ -296,19 +298,10 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }),
     )?;
 
-    let mut server_result = wait_for_shutdown(&mut admin_task, &mut shutdown_rx).await;
+    let (shutdown_correlation, server_result) =
+        wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
     signal_task.abort();
-    if let Err(error) = replica.shutdown().await
-        && server_result.is_ok()
-    {
-        server_result = Err(replica_node_error(error));
-    }
-
-    let shutdown_correlation = server_result
-        .as_ref()
-        .ok()
-        .cloned()
-        .unwrap_or_else(new_correlation_id);
+    let _ = signal_task.await;
     let _ = logger.emit(
         if server_result.is_ok() {
             LogLevel::Info
@@ -335,33 +328,45 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
 async fn wait_for_shutdown(
     admin_task: &mut JoinHandle<Result<(), NodeError>>,
     shutdown: &mut watch::Receiver<ShutdownNotice>,
-) -> Result<String, NodeError> {
-    tokio::select! {
+    replica: &ReplicaRuntime,
+) -> (String, Result<(), NodeError>) {
+    let (completed_admin, trigger_error) = tokio::select! {
         result = &mut *admin_task => {
-            let correlation_id = shutdown
-                .borrow()
-                .correlation_id()
-                .map(str::to_owned)
-                .unwrap_or_else(new_correlation_id);
-            join_admin_task(result).map(|_| correlation_id)
+            (Some(result), None)
         },
         changed = shutdown.changed() => {
-            changed.map_err(|_| NodeError::Internal("daemon shutdown channel closed unexpectedly".to_owned()))?;
-            let correlation_id = shutdown
-                .borrow_and_update()
-                .correlation_id()
-                .map(str::to_owned)
-                .unwrap_or_else(new_correlation_id);
-            match timeout(SHUTDOWN_DEADLINE, &mut *admin_task).await {
-                Ok(result) => join_admin_task(result).map(|_| correlation_id),
-                Err(_) => {
-                    admin_task.abort();
-                    let _ = admin_task.await;
-                    Err(NodeError::Unavailable("daemon shutdown exceeded its graceful deadline".to_owned()))
-                }
+            let error = changed.err().map(|_| {
+                NodeError::Internal("daemon shutdown channel closed unexpectedly".to_owned())
+            });
+            (None, error)
+        }
+    };
+    let notice = shutdown.borrow_and_update().clone();
+    let correlation_id = notice
+        .correlation_id()
+        .map(str::to_owned)
+        .unwrap_or_else(new_correlation_id);
+    let deadline = notice.requested_at().unwrap_or_else(Instant::now) + SHUTDOWN_DEADLINE;
+
+    let admin_drain = async {
+        if let Some(result) = completed_admin {
+            return join_admin_task(result);
+        }
+        match timeout_at(deadline, &mut *admin_task).await {
+            Ok(result) => join_admin_task(result),
+            Err(_) => {
+                admin_task.abort();
+                let _ = admin_task.await;
+                Err(NodeError::Unavailable(
+                    "daemon shutdown exceeded its graceful deadline".to_owned(),
+                ))
             }
         }
-    }
+    };
+    let replica_drain = async { replica.shutdown(deadline).await.map_err(replica_node_error) };
+    let (admin_result, replica_result) = tokio::join!(admin_drain, replica_drain);
+    let result = trigger_error.map_or(admin_result, Err).and(replica_result);
+    (correlation_id, result)
 }
 
 fn join_admin_task(
@@ -1116,11 +1121,15 @@ fn format_timestamp(timestamp: &prost_types::Timestamp) -> String {
 }
 
 fn in_runtime<T>(future: impl Future<Output = Result<T, NodeError>>) -> Result<T, NodeError> {
-    tokio::runtime::Builder::new_multi_thread()
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|error| NodeError::Internal(format!("cannot initialize Tokio runtime: {error}")))?
-        .block_on(future)
+        .map_err(|error| {
+            NodeError::Internal(format!("cannot initialize Tokio runtime: {error}"))
+        })?;
+    let result = runtime.block_on(future);
+    runtime.shutdown_timeout(Duration::ZERO);
+    result
 }
 
 fn replica_node_error(error: ReplicaError) -> NodeError {

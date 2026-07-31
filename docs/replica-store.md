@@ -161,30 +161,58 @@ initial scan with such an entry fails without creating active replica metadata;
 a later watcher event leaves existing catalog state unchanged and records the
 error.
 
-Regular files are classified as follows:
+Regular files are classified by one ordered decision path:
 
-1. a known binary signature detected by `infer` is binary;
-2. a UTF-8, UTF-16LE, or UTF-16BE BOM is text only when `encoding_rs` decodes
-   the complete contents without replacement, and the BOM is recorded;
-3. valid UTF-8 is a text document with UTF-8 encoding and no BOM;
-4. otherwise, `chardetng` selects a candidate legacy encoding and oll accepts
-   it only when `encoding_rs` decodes the complete byte sequence without a
-   replacement character;
-5. data not accepted by the preceding exact rules is binary.
+1. `infer` is a media-signature input, not the final text/binary decision. A
+   `MatcherType::Text` result such as HTML, XML, or shell script remains a text
+   candidate and supplies its media type. A non-text `infer` result is a strong
+   binary signature and is binary.
+2. Unicode signatures and byte structure are checked before generic UTF-8:
+   UTF-8, UTF-16LE/BE, UTF-32LE/BE, UTF-7, and UTF-EBCDIC are accepted only
+   after strict complete decoding. A recognized BOM is recorded. Conservative
+   zero-lane checks may recognize BOM-less UTF-16 and UTF-32, but arbitrary NUL
+   bytes are not accepted as UTF-8 text.
+3. Otherwise, exact UTF-8 is accepted only when its decoded content passes the
+   text control-character policy below.
+4. `chardetng` selects among its supported legacy candidates. oll supplements
+   that detector only for formats outside its candidate set or for an
+   unambiguous structural extension: GB18030 four-byte sequences,
+   ISO-8859-15, MacRoman, and IBM037 EBCDIC. Every candidate must decode the
+   complete byte sequence without replacement and pass the same text-content
+   policy.
+5. Data not accepted by the preceding rules is binary. A known binary signature
+   supplies its media type; otherwise the media type is
+   `application/octet-stream`.
 
-The catalog records an accepted document's encoding and any BOM needed to
-write it back. Loro text is Unicode; materialization encodes that text using
-the catalog value. A user saving a document in a different accepted encoding
-updates that metadata together with the text. This intentionally supports a
-useful subset of common text encodings rather than claiming to classify every
-byte sequence perfectly. `chardetng` does not provide a confidence score, so
-oll does not describe this heuristic as an unambiguous proof that arbitrary
-bytes are text; `infer` signatures and exact decoding are the available guards.
-Filesystem-created text documents start with media type `text/plain`. A binary
-signature recognized by `infer` supplies that binary's media type; an otherwise
-unrecognized binary uses `application/octet-stream`. Media type is catalog
-metadata and may later be changed through a catalog mutation without changing
-the file's object identity or classification.
+The text-content policy rejects NUL and rejects content dominated by C0/C1
+controls other than ordinary text whitespace. This prevents the fact that some
+single-byte encodings define nearly every byte from turning arbitrary data into
+text. It is still impossible to prove from bytes alone that every surviving
+single-byte sequence was intended as text, so the implementation and CLI must
+not describe heuristic legacy detection as certainty.
+
+The supported input encoding families include ASCII, UTF-8, UTF-16, UTF-16LE/BE, UTF-32,
+UTF-32LE/BE, UTF-7, UTF-EBCDIC, GB2312, GBK, GB18030, Big5, Shift-JIS, EUC-JP,
+ISO-2022-JP, EUC-KR, KS X 1001, TIS-620, ISO-8859-1, ISO-8859-2, ISO-8859-5,
+ISO-8859-15, Windows-1252, Windows-1251, Windows-1250, MacRoman, IBM037
+EBCDIC, KOI8-R, and KOI8-U. Where the listed byte formats are subsets or aliases
+that cannot be distinguished without external metadata, the catalog records a
+reversible canonical encoding: ASCII as UTF-8, generic UTF-16/UTF-32 as the
+detected endian form, GB2312 as GBK, KS X 1001 as EUC-KR, TIS-620 as
+windows-874, ISO-8859-1 as windows-1252 when no distinguishing bytes exist, and
+generic recognized EBCDIC as IBM037. KOI8-R is preferred for the shared
+KOI8-R/U repertoire; KOI8-U is recorded when its distinguishing Ukrainian byte
+positions occur. Canonicalization must preserve the decoded text and exact
+re-encoding; it is not permission to decode with replacement.
+
+The catalog records an accepted document's canonical encoding and any BOM
+needed to write it back. Loro text is Unicode; materialization encodes that text
+using the catalog value. A user saving a document in a different accepted
+encoding updates that metadata together with the text. A text signature
+recognized by `infer` supplies media types such as `text/html`, `text/xml`, or
+`text/x-shellscript`; other filesystem-created text starts as `text/plain`.
+Media type is catalog metadata and may later be changed through a catalog
+mutation without changing the file's object identity or classification.
 
 Materialization MUST NOT replace an unrepresentable Unicode scalar with a
 substitute byte sequence. If merged document text cannot be encoded exactly in
@@ -338,6 +366,12 @@ are excluded from `.ollsnap`. `--limit` returns the newest records first.
 
 Replica persistence tests cover both SQLite and PostgreSQL logical behavior:
 
+- the complete supported text-encoding matrix decodes and re-encodes exactly;
+  `infer` HTML/XML/shell results remain documents with their text media types,
+  while known binary signatures and NUL/control-rich data remain binaries;
+- extended UTF-32 and EBCDIC documents survive a host commit, snapshot
+  verification, projection, and restart without changing their recorded
+  encoding or text;
 - an empty startup remains uninitialized, then the first live file event
   atomically creates one replica and imports that file;
 - an entry created while the startup scan is running is not missed;

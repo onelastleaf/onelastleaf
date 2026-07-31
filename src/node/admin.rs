@@ -7,13 +7,14 @@ use std::{
         Arc,
         atomic::{AtomicU8, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use hyper_util::rt::TokioIo;
 use tokio::{
     net::{UnixListener, UnixStream},
     sync::watch,
+    time::Instant,
 };
 use tokio_stream::wrappers::UnixListenerStream;
 use tonic::{
@@ -56,17 +57,20 @@ use super::{
 const LIFECYCLE_STARTING: u8 = 1;
 const LIFECYCLE_RUNNING: u8 = 2;
 const LIFECYCLE_STOPPING: u8 = 3;
-const ADMIN_CALL_DEADLINE: Duration = Duration::from_secs(10);
+const ADMIN_CONNECT_DEADLINE: Duration = Duration::from_secs(10);
+const ADMIN_SHORT_CALL_DEADLINE: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug, Default)]
 pub struct ShutdownNotice {
     correlation_id: Option<String>,
+    requested_at: Option<Instant>,
 }
 
 impl ShutdownNotice {
     pub fn requested(correlation_id: String) -> Self {
         Self {
             correlation_id: Some(correlation_id),
+            requested_at: Some(Instant::now()),
         }
     }
 
@@ -76,6 +80,10 @@ impl ShutdownNotice {
 
     pub fn correlation_id(&self) -> Option<&str> {
         self.correlation_id.as_deref()
+    }
+
+    pub fn requested_at(&self) -> Option<Instant> {
+        self.requested_at
     }
 }
 
@@ -276,10 +284,11 @@ impl Admin for AdminService {
                 serde_json::json!({}),
             );
             let shutdown = self.state.shutdown.clone();
+            let notice = ShutdownNotice::requested(correlation_id);
             tokio::spawn(async move {
                 // Let tonic serialize the accepted response before the server starts closing.
                 tokio::time::sleep(Duration::from_millis(25)).await;
-                let _ = shutdown.send(ShutdownNotice::requested(correlation_id));
+                let _ = shutdown.send(notice);
             });
         }
         Ok(Response::new(AdminShutdownResponse { accepted: true }))
@@ -387,7 +396,12 @@ impl Admin for AdminService {
         let correlation_id = self.validate_context(request.context)?;
         self.require_serving()?;
         let path = Self::native_path(request.snapshot_path, "snapshot_path")?;
-        let (snapshot_id, replica_id) = match self.state.replica.export_snapshot(&path).await {
+        let (snapshot_id, replica_id) = match self
+            .state
+            .replica
+            .export_snapshot(&path, &correlation_id)
+            .await
+        {
             Ok(result) => result,
             Err(error) => {
                 self.log_rpc(&correlation_id, "ExportReplica", "error", started);
@@ -412,7 +426,12 @@ impl Admin for AdminService {
         let correlation_id = self.validate_context(request.context)?;
         self.require_serving()?;
         let path = Self::native_path(request.snapshot_path, "snapshot_path")?;
-        let (snapshot_id, replica_id) = match self.state.replica.import_snapshot(&path).await {
+        let (snapshot_id, replica_id) = match self
+            .state
+            .replica
+            .import_snapshot(&path, &correlation_id)
+            .await
+        {
             Ok(result) => result,
             Err(error) => {
                 self.log_rpc(&correlation_id, "ImportReplica", "error", started);
@@ -525,8 +544,7 @@ pub async fn connect(socket: &Path) -> Result<AdminClient<Channel>, NodeError> {
     let socket = Arc::new(PathBuf::from(socket));
     let channel = Endpoint::try_from("http://[::]:50051")
         .map_err(|error| NodeError::Internal(format!("cannot create Admin endpoint: {error}")))?
-        .connect_timeout(ADMIN_CALL_DEADLINE)
-        .timeout(ADMIN_CALL_DEADLINE)
+        .connect_timeout(ADMIN_CONNECT_DEADLINE)
         .connect_with_connector(service_fn(move |_| {
             let socket = Arc::clone(&socket);
             async move {
@@ -559,10 +577,12 @@ pub async fn get_status(
     correlation_id: String,
 ) -> Result<GetStatusResponse, NodeError> {
     let mut client = connect(socket).await?;
+    let mut request = Request::new(GetStatusRequest {
+        context: Some(call_context(correlation_id)),
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
     client
-        .get_status(GetStatusRequest {
-            context: Some(call_context(correlation_id)),
-        })
+        .get_status(request)
         .await
         .map(Response::into_inner)
         .map_err(status_error)
@@ -570,11 +590,13 @@ pub async fn get_status(
 
 pub async fn request_shutdown(socket: &Path, correlation_id: String) -> Result<(), NodeError> {
     let mut client = connect(socket).await?;
+    let mut request = Request::new(AdminShutdownRequest {
+        context: Some(call_context(correlation_id)),
+        reason: "requested by oll stop".to_owned(),
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
     let response = client
-        .shutdown(AdminShutdownRequest {
-            context: Some(call_context(correlation_id)),
-            reason: "requested by oll stop".to_owned(),
-        })
+        .shutdown(request)
         .await
         .map_err(status_error)?
         .into_inner();
@@ -594,12 +616,14 @@ pub async fn set_log_filter(
     correlation_id: String,
 ) -> Result<SetLogFilterResponse, NodeError> {
     let mut client = connect(socket).await?;
+    let mut request = Request::new(SetLogFilterRequest {
+        context: Some(call_context(correlation_id)),
+        target: target.as_str().to_owned(),
+        level: LogLevel::from_cli(level).to_proto() as i32,
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
     client
-        .set_log_filter(SetLogFilterRequest {
-            context: Some(call_context(correlation_id)),
-            target: target.as_str().to_owned(),
-            level: LogLevel::from_cli(level).to_proto() as i32,
-        })
+        .set_log_filter(request)
         .await
         .map(Response::into_inner)
         .map_err(status_error)
@@ -611,11 +635,13 @@ pub async fn inspect_replica_document(
     correlation_id: String,
 ) -> Result<InspectReplicaDocumentResponse, NodeError> {
     let mut client = connect(socket).await?;
+    let mut request = Request::new(InspectReplicaDocumentRequest {
+        context: Some(call_context(correlation_id)),
+        document_path: Some(native_path(document_path)),
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
     client
-        .inspect_replica_document(InspectReplicaDocumentRequest {
-            context: Some(call_context(correlation_id)),
-            document_path: Some(native_path(document_path)),
-        })
+        .inspect_replica_document(request)
         .await
         .map(Response::into_inner)
         .map_err(status_error)
@@ -633,12 +659,14 @@ pub async fn list_replica_operations(
         .map_err(|_| NodeError::Config("operation limit is too large".to_owned()))?
         .unwrap_or(0);
     let mut client = connect(socket).await?;
+    let mut request = Request::new(ListReplicaOperationsRequest {
+        context: Some(call_context(correlation_id)),
+        document_path: Some(native_path(document_path)),
+        limit,
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
     client
-        .list_replica_operations(ListReplicaOperationsRequest {
-            context: Some(call_context(correlation_id)),
-            document_path: Some(native_path(document_path)),
-            limit,
-        })
+        .list_replica_operations(request)
         .await
         .map(Response::into_inner)
         .map_err(status_error)
@@ -684,9 +712,10 @@ fn native_path(path: &Path) -> NativePath {
 
 fn status_error(status: Status) -> NodeError {
     match status.code() {
-        tonic::Code::FailedPrecondition | tonic::Code::Unavailable => {
-            NodeError::Unavailable(status.message().to_owned())
-        }
+        tonic::Code::FailedPrecondition
+        | tonic::Code::Unavailable
+        | tonic::Code::Cancelled
+        | tonic::Code::DeadlineExceeded => NodeError::Unavailable(status.message().to_owned()),
         tonic::Code::InvalidArgument
         | tonic::Code::NotFound
         | tonic::Code::AlreadyExists
@@ -714,6 +743,7 @@ mod tests {
 
     use tempfile::TempDir;
     use tokio::{net::UnixListener, sync::watch, time::timeout};
+    use uuid::Uuid;
 
     use crate::{
         configuration::{ReplicaStoreConfig, ResolvedNodeConfig},
@@ -723,11 +753,113 @@ mod tests {
     use super::*;
     use crate::node::{identity::NodeIdentity, logging::NodeLogger};
 
+    struct SlowAdmin;
+
+    #[tonic::async_trait]
+    impl Admin for SlowAdmin {
+        async fn get_status(
+            &self,
+            _request: Request<GetStatusRequest>,
+        ) -> Result<Response<GetStatusResponse>, Status> {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            Ok(Response::new(GetStatusResponse::default()))
+        }
+
+        async fn shutdown(
+            &self,
+            _request: Request<AdminShutdownRequest>,
+        ) -> Result<Response<AdminShutdownResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
+
+        async fn set_log_filter(
+            &self,
+            _request: Request<SetLogFilterRequest>,
+        ) -> Result<Response<SetLogFilterResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
+
+        async fn inspect_replica_document(
+            &self,
+            _request: Request<InspectReplicaDocumentRequest>,
+        ) -> Result<Response<InspectReplicaDocumentResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
+
+        async fn list_replica_operations(
+            &self,
+            _request: Request<ListReplicaOperationsRequest>,
+        ) -> Result<Response<ListReplicaOperationsResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
+
+        async fn export_replica(
+            &self,
+            _request: Request<ExportReplicaRequest>,
+        ) -> Result<Response<ExportReplicaResponse>, Status> {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            Ok(Response::new(ExportReplicaResponse {
+                snapshot_id: Uuid::new_v4().to_string(),
+                replica_id: None,
+            }))
+        }
+
+        async fn import_replica(
+            &self,
+            _request: Request<ImportReplicaRequest>,
+        ) -> Result<Response<ImportReplicaResponse>, Status> {
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            Ok(Response::new(ImportReplicaResponse {
+                snapshot_id: Uuid::new_v4().to_string(),
+                replica_id: None,
+            }))
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn short_admin_calls_have_deadlines_but_snapshot_calls_do_not() {
+        let directory = TempDir::new().unwrap();
+        let socket = directory.path().join("slow-admin.sock");
+        let listener = match UnixListener::bind(&socket) {
+            Ok(listener) => listener,
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return,
+            Err(error) => panic!("cannot bind test Admin socket: {error}"),
+        };
+        let incoming = UnixListenerStream::new(listener);
+        let task = tokio::spawn(async move {
+            Server::builder()
+                .add_service(AdminServer::new(SlowAdmin))
+                .serve_with_incoming(incoming)
+                .await
+                .unwrap();
+        });
+        tokio::task::yield_now().await;
+
+        let error = get_status(&socket, "slow-status-correlation".to_owned())
+            .await
+            .unwrap_err();
+        assert!(matches!(error, NodeError::Unavailable(_)), "{error:?}");
+
+        let snapshot = directory.path().join("slow.ollsnap");
+        export_replica(&socket, &snapshot, "slow-export-correlation".to_owned())
+            .await
+            .unwrap();
+        import_replica(&socket, &snapshot, "slow-import-correlation".to_owned())
+            .await
+            .unwrap();
+
+        task.abort();
+        let _ = task.await;
+    }
+
     #[tokio::test]
     async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         let directory = TempDir::new().unwrap();
         let identity = NodeIdentity::generate("home-node".parse().unwrap());
         let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+        logger
+            .set_filter("oll::admin".to_owned(), LogLevel::Trace)
+            .unwrap();
         let config = ResolvedNodeConfig {
             replica_root: directory.path().join("replica"),
             replica_store: ReplicaStoreConfig::Sqlite {
@@ -758,7 +890,7 @@ mod tests {
         let state = Arc::new(AdminState::new(
             identity.clone(),
             config,
-            logger,
+            Arc::clone(&logger),
             Arc::clone(&replica),
             shutdown,
         ));
@@ -820,6 +952,55 @@ mod tests {
             .unwrap();
         assert_eq!(imported.snapshot_id, exported.snapshot_id);
         assert_eq!(imported.replica_id, exported.replica_id);
+        let imported_operations = list_replica_operations(
+            &socket,
+            &document_path,
+            Some(10),
+            "import-operations-correlation".to_owned(),
+        )
+        .await
+        .unwrap();
+        assert!(imported_operations.operations.iter().any(|operation| {
+            operation.source == ReplicaOperationSource::SnapshotImport as i32
+                && operation.correlation_id == "import-correlation"
+        }));
+
+        let events = std::fs::read_to_string(directory.path().join("log/oll.log"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .collect::<Vec<_>>();
+        for (method, event, correlation_id) in [
+            (
+                "ExportReplica",
+                "snapshot_export_started",
+                "export-correlation",
+            ),
+            (
+                "ExportReplica",
+                "snapshot_export_completed",
+                "export-correlation",
+            ),
+            (
+                "ImportReplica",
+                "snapshot_import_started",
+                "import-correlation",
+            ),
+            (
+                "ImportReplica",
+                "snapshot_import_completed",
+                "import-correlation",
+            ),
+        ] {
+            assert!(events.iter().any(|record| {
+                record["event"] == event && record["correlation_id"] == correlation_id
+            }));
+            assert!(events.iter().any(|record| {
+                record["event"] == "admin_request"
+                    && record["method"] == method
+                    && record["correlation_id"] == correlation_id
+            }));
+        }
 
         let filter = set_log_filter(
             &socket,
@@ -872,6 +1053,9 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
-        replica.shutdown().await.unwrap();
+        replica
+            .shutdown(Instant::now() + Duration::from_secs(1))
+            .await
+            .unwrap();
     }
 }

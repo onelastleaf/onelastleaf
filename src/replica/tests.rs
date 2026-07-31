@@ -155,6 +155,90 @@ async fn wait_for_path(runtime: &ReplicaRuntime, namespace: &str) {
     panic!("{namespace} was not reconciled before the test deadline");
 }
 
+async fn shutdown_runtime(runtime: &ReplicaRuntime) {
+    runtime
+        .shutdown(tokio::time::Instant::now() + Duration::from_secs(5))
+        .await
+        .unwrap();
+}
+
+fn reconciliation_start_count(path: &Path) -> usize {
+    fs::read_to_string(path)
+        .unwrap()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|record| record["event"] == "working_tree_reconciliation_started")
+        .count()
+}
+
+async fn wait_for_reconciliation_start_count(path: &Path, expected: usize) {
+    for _ in 0..100 {
+        if reconciliation_start_count(path) >= expected {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    panic!("watcher did not start the expected reconciliation");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn shutdown_finishes_in_flight_watcher_work_without_starting_queued_work() {
+    let deployment = Deployment::new();
+    let runtime = deployment.start().await;
+    let log_path = deployment.log_dir.join("oll.log");
+    let initial_starts = reconciliation_start_count(&log_path);
+    let coordinator = runtime.coordinator.lock().await;
+
+    fs::write(deployment.native("/first.md"), "first").unwrap();
+    wait_for_reconciliation_start_count(&log_path, initial_starts + 1).await;
+    fs::write(deployment.native("/second.md"), "second").unwrap();
+    tokio::time::sleep(Duration::from_millis(350)).await;
+
+    let shutdown_runtime = Arc::clone(&runtime);
+    let shutdown = tokio::spawn(async move {
+        shutdown_runtime
+            .shutdown(tokio::time::Instant::now() + Duration::from_secs(2))
+            .await
+    });
+    tokio::time::sleep(Duration::from_millis(20)).await;
+    drop(coordinator);
+    shutdown.await.unwrap().unwrap();
+
+    assert_eq!(reconciliation_start_count(&log_path), initial_starts + 1);
+    assert!(
+        runtime
+            .inspect_document(&deployment.native("/first.md"))
+            .await
+            .is_ok()
+    );
+    assert!(
+        runtime
+            .inspect_document(&deployment.native("/second.md"))
+            .await
+            .is_ok()
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn watcher_shutdown_aborts_in_flight_work_at_its_absolute_deadline() {
+    let deployment = Deployment::new();
+    let runtime = deployment.start().await;
+    let log_path = deployment.log_dir.join("oll.log");
+    let initial_starts = reconciliation_start_count(&log_path);
+    let coordinator = runtime.coordinator.lock().await;
+
+    fs::write(deployment.native("/blocked.md"), "blocked").unwrap();
+    wait_for_reconciliation_start_count(&log_path, initial_starts + 1).await;
+    let started = tokio::time::Instant::now();
+    let result = runtime
+        .shutdown(tokio::time::Instant::now() + Duration::from_millis(100))
+        .await;
+
+    assert!(matches!(result, Err(ReplicaError::Internal(_))));
+    assert!(started.elapsed() < Duration::from_secs(1));
+    drop(coordinator);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn watcher_initializes_once_deduplicates_final_state_and_survives_restart() {
     let deployment = Deployment::new();
@@ -230,7 +314,7 @@ async fn watcher_initializes_once_deduplicates_final_state_and_survives_restart(
         assert_eq!(replica.lamport_clock, lamport_before);
     }
 
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     drop(runtime);
     let restarted = deployment.start().await;
     assert_eq!(
@@ -244,7 +328,7 @@ async fn watcher_initializes_once_deduplicates_final_state_and_survives_restart(
     assert_eq!(after_restart.catalog_node_id, first.catalog_node_id);
     assert_eq!(after_restart.document_id, first.document_id);
     assert_eq!(after_restart.document_revision, first.document_revision);
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -275,7 +359,7 @@ async fn watcher_registration_closes_the_startup_scan_race() {
         fs::read_to_string(deployment.native("/arrived-during-startup.md")).unwrap(),
         "not lost"
     );
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -319,7 +403,7 @@ async fn live_rename_and_editor_replacement_preserve_identity_but_offline_move_d
         "editor replacement"
     );
 
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     drop(runtime);
     fs::rename(
         deployment.native("/renamed.md"),
@@ -333,7 +417,7 @@ async fn live_rename_and_editor_replacement_preserve_identity_but_offline_move_d
         .unwrap();
     assert_ne!(offline.catalog_node_id, original.catalog_node_id);
     assert_ne!(offline.document_id, original.document_id);
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -585,7 +669,7 @@ async fn commits_are_atomic_revision_guarded_idempotent_and_persistent() {
             .documents
             .contains_key(&created.document_id)
     );
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     drop(runtime);
 
     let restarted = deployment.start().await;
@@ -626,7 +710,7 @@ async fn commits_are_atomic_revision_guarded_idempotent_and_persistent() {
             .documents
             .contains_key(&created.document_id)
     );
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 
     let log = fs::read_to_string(deployment.log_dir.join("oll.log")).unwrap();
     assert!(log.contains("\"event\":\"document_commit_started\""));
@@ -684,7 +768,7 @@ async fn concurrent_writers_with_one_revision_allow_exactly_one_commit() {
     );
     let content = fs::read_to_string(deployment.native("/race.md")).unwrap();
     assert!(matches!(content.as_str(), "first" | "second"));
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -724,7 +808,7 @@ async fn an_older_watcher_trigger_cannot_overwrite_a_completed_host_commit() {
         ),
         "api-authoritative"
     );
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 }
 
 fn scalar_string(value: &str) -> oll::CrdtScalar {
@@ -1042,7 +1126,7 @@ async fn abstract_crdt_operations_round_trip_without_changing_file_content() {
         panic!("expected root map")
     };
     assert!(!root.entries.contains_key("rolled_back"));
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1079,7 +1163,7 @@ async fn unrepresentable_legacy_text_is_durably_promoted_to_utf8() {
         fs::read(deployment.native("/legacy.txt")).unwrap(),
         "café \u{1f343}".as_bytes()
     );
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     let log = fs::read_to_string(deployment.log_dir.join("oll.log")).unwrap();
     assert!(log.contains("\"event\":\"document_encoding_promoted\""));
     assert!(log.contains("\"correlation_id\":\"encoding-promotion-correlation\""));
@@ -1087,11 +1171,106 @@ async fn unrepresentable_legacy_text_is_durably_promoted_to_utf8() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn extended_text_encodings_survive_commit_snapshot_and_restart() {
+    let deployment = Deployment::new();
+    let mut utf32 = vec![0xFF, 0xFE, 0x00, 0x00];
+    for character in "UTF-32 叶子\n".chars() {
+        utf32.extend_from_slice(&u32::from(character).to_le_bytes());
+    }
+    fs::write(deployment.native("/utf32.txt"), utf32).unwrap();
+    fs::write(
+        deployment.native("/page.html"),
+        "<!DOCTYPE HTML><title>oll</title>\n",
+    )
+    .unwrap();
+    fs::write(
+        deployment.native("/ebcdic.txt"),
+        [0x88, 0x85, 0x93, 0x93, 0x96],
+    )
+    .unwrap();
+
+    let runtime = deployment.start().await;
+    let utf32_before = runtime
+        .inspect_document(&deployment.native("/utf32.txt"))
+        .await
+        .unwrap();
+    assert_eq!(utf32_before.encoding, "UTF-32LE");
+    assert!(utf32_before.has_byte_order_mark);
+    assert_eq!(
+        runtime
+            .inspect_document(&deployment.native("/page.html"))
+            .await
+            .unwrap()
+            .media_type,
+        "text/html"
+    );
+    assert_eq!(
+        runtime
+            .inspect_document(&deployment.native("/ebcdic.txt"))
+            .await
+            .unwrap()
+            .encoding,
+        "IBM037"
+    );
+
+    runtime
+        .commit_documents(
+            oll::CommitDocumentsRequest {
+                operation_id: "replace-utf32-content".to_owned(),
+                preconditions: vec![document_revision_precondition(&utf32_before)],
+                mutations: vec![replace_mutation("/utf32.txt", "updated UTF-32 🍃\n")],
+            },
+            OperationSource::Plugin,
+            "utf32-replacement-correlation",
+        )
+        .await
+        .unwrap();
+    let super::classification::ClassifiedFile::Text(projected) =
+        super::classification::classify_bytes(fs::read(deployment.native("/utf32.txt")).unwrap())
+            .unwrap()
+    else {
+        panic!("projected UTF-32 document became binary")
+    };
+    assert_eq!(projected.text, "updated UTF-32 🍃\n");
+    assert_eq!(projected.encoding, "UTF-32LE");
+
+    let snapshot = deployment._directory.path().join("encodings.ollsnap");
+    runtime
+        .export_snapshot(&snapshot, "encoding-snapshot-correlation")
+        .await
+        .unwrap();
+    super::verify_snapshot(&snapshot).unwrap();
+    shutdown_runtime(&runtime).await;
+    drop(runtime);
+
+    let restarted = deployment.start().await;
+    let utf32_after = restarted
+        .inspect_document(&deployment.native("/utf32.txt"))
+        .await
+        .unwrap();
+    assert_eq!(utf32_after.encoding, "UTF-32LE");
+    assert!(utf32_after.has_byte_order_mark);
+    assert_eq!(
+        read_content(
+            restarted
+                .read_document(oll::ReadDocumentRequest {
+                    path: document_path("/utf32.txt"),
+                    projection: oll::DocumentProjection::Content as i32,
+                })
+                .await
+                .unwrap()
+        ),
+        "updated UTF-32 🍃\n"
+    );
+    shutdown_runtime(&restarted).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn projection_markers_win_over_stale_working_tree_after_restart() {
     let deployment = Deployment::new();
     fs::write(deployment.native("/a.md"), "store-wins").unwrap();
     let runtime = deployment.start().await;
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 
     let active = runtime.state.read().await.clone().unwrap();
     fs::write(deployment.native("/a.md"), "stale-disk").unwrap();
@@ -1115,7 +1294,7 @@ async fn projection_markers_win_over_stale_working_tree_after_restart() {
             .unwrap()
             .is_empty()
     );
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1123,7 +1302,7 @@ async fn targeted_projection_retries_a_transient_failure_before_acknowledging_th
     let deployment = Deployment::new();
     fs::write(deployment.native("/a.md"), "before").unwrap();
     let runtime = deployment.start().await;
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 
     let displaced_root = deployment._directory.path().join("working-displaced");
     fs::rename(&deployment.root, &displaced_root).unwrap();
@@ -1178,7 +1357,7 @@ async fn unrelated_commit_cannot_forget_an_exhausted_projection_marker() {
     fs::write(deployment.native("/a.md"), "old A").unwrap();
     fs::write(deployment.native("/b.md"), "old B").unwrap();
     let runtime = deployment.start().await;
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 
     let displaced_root = deployment._directory.path().join("working-displaced");
     fs::rename(&deployment.root, &displaced_root).unwrap();
@@ -1274,7 +1453,7 @@ async fn unrelated_commit_cannot_forget_an_exhausted_projection_marker() {
             .unwrap()
             .is_empty()
     );
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1295,7 +1474,7 @@ async fn idempotent_commit_retry_completes_its_pending_projection() {
         )
         .await
         .unwrap();
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     let active = runtime.state.read().await.clone().unwrap();
     fs::write(deployment.native("/a.md"), "stale").unwrap();
     runtime
@@ -1331,7 +1510,7 @@ async fn targeted_projection_never_follows_a_parent_symlink_outside_replica_root
     let outside = deployment._directory.path().join("outside");
     fs::create_dir(&outside).unwrap();
     let runtime = deployment.start().await;
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 
     fs::remove_dir_all(deployment.native("/dir")).unwrap();
     symlink(&outside, deployment.native("/dir")).unwrap();
@@ -1365,7 +1544,7 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
     let deployment = Deployment::new();
     fs::write(deployment.native("/a.md"), "authoritative").unwrap();
     let runtime = deployment.start().await;
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
     let active = runtime.state.read().await.clone().unwrap();
 
     let mut uncommitted = active.clone();
@@ -1414,7 +1593,7 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
             replica_id: active.replica_id
         }
     );
-    before_switch_restart.shutdown().await.unwrap();
+    shutdown_runtime(&before_switch_restart).await;
     before_switch_restart
         .store
         .activate_generation(Some(active.generation_id), inactive.generation_id)
@@ -1443,7 +1622,7 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
             .await
             .unwrap()
     );
-    after_switch_restart.shutdown().await.unwrap();
+    shutdown_runtime(&after_switch_restart).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1523,20 +1702,25 @@ async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica(
         (replica.replica_id, replica.loro_peer_id)
     };
     let snapshot = source._directory.path().join("backup.ollsnap");
-    let (_, exported_replica_id) = source_runtime.export_snapshot(&snapshot).await.unwrap();
+    let (_, exported_replica_id) = source_runtime
+        .export_snapshot(&snapshot, "snapshot-export-correlation")
+        .await
+        .unwrap();
     assert_eq!(exported_replica_id, source_replica_id);
     let inspection = super::verify_snapshot(&snapshot).unwrap();
     assert_eq!(inspection.live_documents, 1);
     assert_eq!(inspection.tombstoned_documents, 1);
     assert_eq!(inspection.blobs, 2);
     assert!(matches!(
-        source_runtime.export_snapshot(&snapshot).await,
+        source_runtime
+            .export_snapshot(&snapshot, "snapshot-existing-export-correlation")
+            .await,
         Err(ReplicaError::AlreadyExists(_))
     ));
     let racing_destination = source._directory.path().join("racing-backup.ollsnap");
     let (left, right) = tokio::join!(
-        source_runtime.export_snapshot(&racing_destination),
-        source_runtime.export_snapshot(&racing_destination)
+        source_runtime.export_snapshot(&racing_destination, "snapshot-race-left-correlation"),
+        source_runtime.export_snapshot(&racing_destination, "snapshot-race-right-correlation")
     );
     assert_eq!(usize::from(left.is_ok()) + usize::from(right.is_ok()), 1);
     assert_eq!(
@@ -1553,7 +1737,10 @@ async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica(
         state => panic!("unexpected state: {state:?}"),
     };
     assert_ne!(old_replica_id, source_replica_id);
-    let (_, imported_replica_id) = target_runtime.import_snapshot(&snapshot).await.unwrap();
+    let (_, imported_replica_id) = target_runtime
+        .import_snapshot(&snapshot, "snapshot-target-import-correlation")
+        .await
+        .unwrap();
     assert_eq!(imported_replica_id, source_replica_id);
     assert!(!target.native("/old.md").exists());
     assert_eq!(
@@ -1611,7 +1798,7 @@ async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica(
     }
     assert!(!target.native("/removed.md").exists());
 
-    target_runtime.shutdown().await.unwrap();
+    shutdown_runtime(&target_runtime).await;
     drop(target_runtime);
     let restarted = target.start().await;
     assert_eq!(
@@ -1628,9 +1815,12 @@ async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica(
             .document_id,
         source_document.document_id
     );
-    restarted.shutdown().await.unwrap();
+    shutdown_runtime(&restarted).await;
 
-    let (_, same_replica_id) = source_runtime.import_snapshot(&snapshot).await.unwrap();
+    let (_, same_replica_id) = source_runtime
+        .import_snapshot(&snapshot, "snapshot-source-import-correlation")
+        .await
+        .unwrap();
     assert_eq!(same_replica_id, source_replica_id);
     assert_eq!(
         source_runtime.status().await,
@@ -1648,14 +1838,43 @@ async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica(
             .loro_peer_id,
         source_peer
     );
-    source_runtime.shutdown().await.unwrap();
+    shutdown_runtime(&source_runtime).await;
     let source_log = fs::read_to_string(source.log_dir.join("oll.log")).unwrap();
-    assert!(source_log.contains("\"event\":\"snapshot_export_started\""));
-    assert!(source_log.contains("\"event\":\"snapshot_export_completed\""));
-    assert!(source_log.contains("\"event\":\"snapshot_export_failed\""));
+    let source_events = source_log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for (event, correlation_id) in [
+        ("snapshot_export_started", "snapshot-export-correlation"),
+        ("snapshot_export_completed", "snapshot-export-correlation"),
+        (
+            "snapshot_export_failed",
+            "snapshot-existing-export-correlation",
+        ),
+        (
+            "snapshot_import_started",
+            "snapshot-source-import-correlation",
+        ),
+        (
+            "snapshot_import_completed",
+            "snapshot-source-import-correlation",
+        ),
+    ] {
+        assert!(source_events.iter().any(|record| {
+            record["event"] == event && record["correlation_id"] == correlation_id
+        }));
+    }
     let target_log = fs::read_to_string(target.log_dir.join("oll.log")).unwrap();
-    assert!(target_log.contains("\"event\":\"snapshot_import_started\""));
-    assert!(target_log.contains("\"event\":\"snapshot_import_completed\""));
+    let target_events = target_log
+        .lines()
+        .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    for event in ["snapshot_import_started", "snapshot_import_completed"] {
+        assert!(target_events.iter().any(|record| {
+            record["event"] == event
+                && record["correlation_id"] == "snapshot-target-import-correlation"
+        }));
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1691,7 +1910,10 @@ async fn initialized_empty_snapshot_round_trips_into_an_uninitialized_slot() {
         state => panic!("unexpected state: {state:?}"),
     };
     let snapshot = source._directory.path().join("empty.ollsnap");
-    source_runtime.export_snapshot(&snapshot).await.unwrap();
+    source_runtime
+        .export_snapshot(&snapshot, "empty-snapshot-export-correlation")
+        .await
+        .unwrap();
     let inspection = super::verify_snapshot(&snapshot).unwrap();
     assert_eq!(inspection.live_documents, 0);
     assert_eq!(inspection.tombstoned_documents, 1);
@@ -1699,7 +1921,10 @@ async fn initialized_empty_snapshot_round_trips_into_an_uninitialized_slot() {
     let target = Deployment::new();
     let target_runtime = target.start().await;
     assert_eq!(target_runtime.status().await, ReplicaStatus::Uninitialized);
-    let (_, imported_replica_id) = target_runtime.import_snapshot(&snapshot).await.unwrap();
+    let (_, imported_replica_id) = target_runtime
+        .import_snapshot(&snapshot, "empty-snapshot-import-correlation")
+        .await
+        .unwrap();
     assert_eq!(imported_replica_id, replica_id);
     assert_eq!(
         target_runtime.status().await,
@@ -1717,8 +1942,8 @@ async fn initialized_empty_snapshot_round_trips_into_an_uninitialized_slot() {
             .contains_key(&document.document_id)
     );
 
-    target_runtime.shutdown().await.unwrap();
-    source_runtime.shutdown().await.unwrap();
+    shutdown_runtime(&target_runtime).await;
+    shutdown_runtime(&source_runtime).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -1771,5 +1996,5 @@ async fn filesystem_kind_replacement_allocates_new_stable_identity() {
             .is_some_and(|binary| binary.binary_id == binary_identity)
     }));
     drop(state);
-    runtime.shutdown().await.unwrap();
+    shutdown_runtime(&runtime).await;
 }
