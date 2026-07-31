@@ -247,7 +247,7 @@ impl ReplicaStore {
         write_projection_paths(&mut transaction, replica.generation_id, projection_paths).await?;
         sqlx::query(
             "UPDATE oll_meta
-             SET active_generation = ?, projection_pending = 0
+             SET active_generation = $1, projection_pending = 0
              WHERE singleton = 1 AND active_generation IS NULL",
         )
         .bind(replica.generation_id.to_string())
@@ -296,7 +296,7 @@ impl ReplicaStore {
             sqlx::query(
                 "INSERT INTO retained_commits (
                     generation_id, operation_id, request, response
-                 ) VALUES (?, ?, ?, ?)",
+                 ) VALUES ($1, $2, $3, $4)",
             )
             .bind(replica.generation_id.to_string())
             .bind(&commit.operation_id)
@@ -317,7 +317,7 @@ impl ReplicaStore {
         let row = sqlx::query(
             "SELECT request, response
              FROM retained_commits
-             WHERE generation_id = ? AND operation_id = ?",
+             WHERE generation_id = $1 AND operation_id = $2",
         )
         .bind(generation_id.to_string())
         .bind(operation_id)
@@ -363,7 +363,7 @@ impl ReplicaStore {
             ));
         }
         let exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM replica_generations WHERE generation_id = ?")
+            sqlx::query_scalar("SELECT COUNT(*) FROM replica_generations WHERE generation_id = $1")
                 .bind(generation_id.to_string())
                 .fetch_one(&mut *transaction)
                 .await
@@ -375,7 +375,7 @@ impl ReplicaStore {
         }
         sqlx::query(
             "UPDATE oll_meta
-             SET active_generation = ?, projection_pending = 1
+             SET active_generation = $1, projection_pending = 1
              WHERE singleton = 1",
         )
         .bind(generation_id.to_string())
@@ -395,7 +395,7 @@ impl ReplicaStore {
         .execute(&mut *transaction)
         .await
         .map_err(store_error)?;
-        sqlx::query("DELETE FROM projection_paths WHERE generation_id = ?")
+        sqlx::query("DELETE FROM projection_paths WHERE generation_id = $1")
             .bind(generation_id.to_string())
             .execute(&mut *transaction)
             .await
@@ -406,7 +406,7 @@ impl ReplicaStore {
     pub async fn projection_paths(&self, generation_id: Uuid) -> Result<Vec<String>, ReplicaError> {
         sqlx::query_scalar(
             "SELECT path FROM projection_paths
-             WHERE generation_id = ? ORDER BY path",
+             WHERE generation_id = $1 ORDER BY path",
         )
         .bind(generation_id.to_string())
         .fetch_all(&self.pool)
@@ -417,7 +417,7 @@ impl ReplicaStore {
     pub async fn clear_projection_paths(&self, generation_id: Uuid) -> Result<(), ReplicaError> {
         let mut transaction = self.pool.begin().await.map_err(store_error)?;
         require_active_generation(&mut transaction, generation_id).await?;
-        sqlx::query("DELETE FROM projection_paths WHERE generation_id = ?")
+        sqlx::query("DELETE FROM projection_paths WHERE generation_id = $1")
             .bind(generation_id.to_string())
             .execute(&mut *transaction)
             .await
@@ -431,7 +431,7 @@ impl ReplicaStore {
                     root_catalog_node_id, catalog_loro, lamport_clock,
                     projection_generation
              FROM replica_generations
-             WHERE generation_id = ?",
+             WHERE generation_id = $1",
         )
         .bind(generation)
         .fetch_optional(&self.pool)
@@ -485,7 +485,7 @@ impl ReplicaStore {
                     name, kind, deleted, catalog_revision, document_id,
                     binary_id, media_type, encoding, has_bom, size_bytes
              FROM catalog_entries
-             WHERE generation_id = ?",
+             WHERE generation_id = $1",
         )
         .bind(generation)
         .fetch_all(&self.pool)
@@ -602,7 +602,7 @@ impl ReplicaStore {
             "SELECT binary_id, lamport_clock, writer_node_id, sha256,
                     size_bytes, media_type
              FROM binary_versions
-             WHERE generation_id = ?",
+             WHERE generation_id = $1",
         )
         .bind(generation)
         .fetch_all(&self.pool)
@@ -661,7 +661,7 @@ impl ReplicaStore {
         let rows = sqlx::query(
             "SELECT document_id, loro, revision
              FROM document_objects
-             WHERE generation_id = ?",
+             WHERE generation_id = $1",
         )
         .bind(generation)
         .fetch_all(&self.pool)
@@ -735,7 +735,7 @@ impl ReplicaStore {
         let declared = self.blob_size(sha256).await?;
         let rows = sqlx::query(
             "SELECT chunk_index, data FROM blob_chunks
-             WHERE sha256 = ? ORDER BY chunk_index",
+             WHERE sha256 = $1 ORDER BY chunk_index",
         )
         .bind(sha256)
         .fetch_all(&self.pool)
@@ -780,7 +780,7 @@ impl ReplicaStore {
         let mut output = tokio::fs::File::from_std(output);
         let mut rows = sqlx::query(
             "SELECT chunk_index, data FROM blob_chunks
-             WHERE sha256 = ? ORDER BY chunk_index",
+             WHERE sha256 = $1 ORDER BY chunk_index",
         )
         .bind(sha256)
         .fetch(&self.pool);
@@ -830,7 +830,7 @@ impl ReplicaStore {
 
     pub async fn blob_size(&self, sha256: &str) -> Result<u64, ReplicaError> {
         let value: Option<String> =
-            sqlx::query_scalar("SELECT size_bytes FROM blobs WHERE sha256 = ?")
+            sqlx::query_scalar("SELECT size_bytes FROM blobs WHERE sha256 = $1")
                 .bind(sha256)
                 .fetch_optional(&self.pool)
                 .await
@@ -854,9 +854,9 @@ impl ReplicaStore {
             "SELECT timestamp, operation_id, source, kind, catalog_node_id,
                     document_id, path_before, path_after, correlation_id
              FROM replica_operations
-             WHERE generation_id = ? AND document_id = ?
+             WHERE generation_id = $1 AND document_id = $2
              ORDER BY timestamp DESC, operation_id DESC
-             LIMIT ?",
+             LIMIT $3",
         )
         .bind(generation_id.to_string())
         .bind(document_id.to_string())
@@ -879,7 +879,7 @@ async fn write_generation(
         "INSERT INTO replica_generations (
             generation_id, replica_id, loro_peer_id, root_catalog_node_id,
             catalog_loro, lamport_clock, projection_generation
-         ) VALUES (?, ?, ?, ?, ?, ?, ?)
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7)
          ON CONFLICT (generation_id) DO UPDATE SET
             replica_id = excluded.replica_id,
             loro_peer_id = excluded.loro_peer_id,
@@ -900,7 +900,7 @@ async fn write_generation(
     .map_err(store_error)?;
 
     for table in ["catalog_entries", "document_objects", "binary_versions"] {
-        sqlx::query(&format!("DELETE FROM {table} WHERE generation_id = ?"))
+        sqlx::query(&format!("DELETE FROM {table} WHERE generation_id = $1"))
             .bind(&generation)
             .execute(&mut **transaction)
             .await
@@ -941,7 +941,10 @@ async fn write_generation(
                 loro_tree_id, name, kind, deleted, catalog_revision,
                 document_id, binary_id, media_type, encoding, has_bom,
                 size_bytes
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+             ) VALUES (
+                $1, $2, $3, $4, $5, $6, $7,
+                $8, $9, $10, $11, $12, $13, $14
+             )",
         )
         .bind(&generation)
         .bind(entry.catalog_node_id.to_string())
@@ -967,7 +970,7 @@ async fn write_generation(
                     "INSERT INTO binary_versions (
                         generation_id, binary_id, lamport_clock,
                         writer_node_id, sha256, size_bytes, media_type
-                     ) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                     ) VALUES ($1, $2, $3, $4, $5, $6, $7)",
                 )
                 .bind(&generation)
                 .bind(binary.binary_id.to_string())
@@ -987,7 +990,7 @@ async fn write_generation(
         sqlx::query(
             "INSERT INTO document_objects (
                 generation_id, document_id, loro, revision
-             ) VALUES (?, ?, ?, ?)",
+             ) VALUES ($1, $2, $3, $4)",
         )
         .bind(&generation)
         .bind(document.document_id.to_string())
@@ -1002,7 +1005,7 @@ async fn write_generation(
         validate_blob_hash(&blob.sha256)?;
         let size = blob.size_bytes()?;
         let existing: Option<String> =
-            sqlx::query_scalar("SELECT size_bytes FROM blobs WHERE sha256 = ?")
+            sqlx::query_scalar("SELECT size_bytes FROM blobs WHERE sha256 = $1")
                 .bind(&blob.sha256)
                 .fetch_optional(&mut **transaction)
                 .await
@@ -1015,7 +1018,7 @@ async fn write_generation(
             }
             continue;
         }
-        sqlx::query("INSERT INTO blobs (sha256, size_bytes) VALUES (?, ?)")
+        sqlx::query("INSERT INTO blobs (sha256, size_bytes) VALUES ($1, $2)")
             .bind(&blob.sha256)
             .bind(size.to_string())
             .execute(&mut **transaction)
@@ -1079,7 +1082,7 @@ async fn write_generation(
                 generation_id, timestamp, operation_id, source, kind,
                 catalog_node_id, document_id, path_before, path_after,
                 correlation_id
-             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              ON CONFLICT (generation_id, operation_id, document_id) DO NOTHING",
         )
         .bind(&generation)
@@ -1112,7 +1115,7 @@ async fn insert_blob_chunk(
 ) -> Result<(), ReplicaError> {
     sqlx::query(
         "INSERT INTO blob_chunks (sha256, chunk_index, data)
-         VALUES (?, ?, ?)",
+         VALUES ($1, $2, $3)",
     )
     .bind(sha256)
     .bind(i64::try_from(index).unwrap_or(i64::MAX))
@@ -1149,7 +1152,7 @@ async fn write_projection_paths(
     for path in paths {
         sqlx::query(
             "INSERT INTO projection_paths (generation_id, path)
-             VALUES (?, ?)
+             VALUES ($1, $2)
              ON CONFLICT (generation_id, path) DO NOTHING",
         )
         .bind(generation_id.to_string())
@@ -1306,6 +1309,9 @@ mod tests {
             let directory = TempDir::new().map_err(|error| error.to_string())?;
             fs::write(directory.path().join("a.md"), "postgres")
                 .map_err(|error| error.to_string())?;
+            let binary = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
+            fs::write(directory.path().join("image.gif"), &binary)
+                .map_err(|error| error.to_string())?;
             let disk = scan_working_tree(directory.path()).map_err(|error| error.to_string())?;
             let change = initialize_from_disk(&disk, Uuid::new_v4(), "postgres-test-correlation")
                 .map_err(|error| error.to_string())?;
@@ -1317,7 +1323,7 @@ mod tests {
                     &change.replica,
                     &change.blobs,
                     &change.operations,
-                    &change.projection_paths,
+                    &["/initial-projection-marker".to_owned()],
                 )
                 .await
                 .map_err(|error| error.to_string())?;
@@ -1328,20 +1334,118 @@ mod tests {
                 .ok_or_else(|| "PostgreSQL active generation is missing".to_owned())?;
             if loaded.replica_id != change.replica.replica_id
                 || loaded.documents.len() != change.replica.documents.len()
+                || loaded.entries.len() != change.replica.entries.len()
             {
                 return Err("PostgreSQL logical round trip changed replica state".to_owned());
             }
+
+            let document_id = *loaded
+                .documents
+                .keys()
+                .next()
+                .ok_or_else(|| "PostgreSQL document object is missing".to_owned())?;
+            let operations = store
+                .list_operations(loaded.generation_id, document_id, 10)
+                .await
+                .map_err(|error| error.to_string())?;
+            if operations.len() != 1 {
+                return Err("PostgreSQL operation history did not round trip".to_owned());
+            }
+
+            let blob_hash = loaded
+                .entries
+                .values()
+                .find_map(|entry| {
+                    entry
+                        .binary()
+                        .and_then(|binary| binary.winning_version())
+                        .map(|(_, version)| version.sha256.clone())
+                })
+                .ok_or_else(|| "PostgreSQL binary version is missing".to_owned())?;
+            if store
+                .read_blob(&blob_hash)
+                .await
+                .map_err(|error| error.to_string())?
+                != binary
+            {
+                return Err("PostgreSQL blob chunks did not round trip".to_owned());
+            }
+            let projected_blob = directory.path().join("projected.gif");
             store
-                .clear_projection_paths(loaded.generation_id)
+                .write_blob_to_path(&blob_hash, &projected_blob)
+                .await
+                .map_err(|error| error.to_string())?;
+            if fs::read(projected_blob).map_err(|error| error.to_string())? != binary {
+                return Err("PostgreSQL streamed blob projection changed bytes".to_owned());
+            }
+
+            let retained = RetainedCommit {
+                operation_id: "postgres-retained-commit".to_owned(),
+                request: vec![1, 2, 3],
+                response: vec![4, 5, 6],
+            };
+            store
+                .save_active_commit(
+                    &loaded,
+                    &[],
+                    &[],
+                    &["/saved-projection-marker".to_owned()],
+                    &retained,
+                )
+                .await
+                .map_err(|error| error.to_string())?;
+            let restored = store
+                .retained_commit(loaded.generation_id, &retained.operation_id)
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "PostgreSQL retained commit is missing".to_owned())?;
+            if restored.request != retained.request || restored.response != retained.response {
+                return Err("PostgreSQL retained commit changed bytes".to_owned());
+            }
+
+            let mut candidate = loaded.clone();
+            candidate.generation_id = Uuid::new_v4();
+            store
+                .build_inactive_generation(&candidate, &[], &[])
+                .await
+                .map_err(|error| error.to_string())?;
+            store
+                .activate_generation(Some(loaded.generation_id), candidate.generation_id)
                 .await
                 .map_err(|error| error.to_string())?;
             if !store
-                .projection_paths(loaded.generation_id)
+                .projection_pending()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err("PostgreSQL generation switch omitted projection_pending".to_owned());
+            }
+            let switched = store
+                .load_active()
+                .await
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "PostgreSQL switched generation is missing".to_owned())?;
+            if switched.generation_id != candidate.generation_id {
+                return Err("PostgreSQL generation switch selected the wrong state".to_owned());
+            }
+            store
+                .clear_projection_pending(candidate.generation_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            if store
+                .projection_pending()
+                .await
+                .map_err(|error| error.to_string())?
+            {
+                return Err("PostgreSQL projection_pending did not clear".to_owned());
+            }
+            if !store
+                .projection_paths(candidate.generation_id)
                 .await
                 .map_err(|error| error.to_string())?
                 .is_empty()
             {
-                return Err("PostgreSQL projection marker did not clear".to_owned());
+                return Err("PostgreSQL projection paths did not clear".to_owned());
             }
             drop(store);
             Ok::<(), String>(())
