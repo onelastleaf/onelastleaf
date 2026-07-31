@@ -6,7 +6,7 @@ use std::{
 
 use clap::CommandFactory;
 
-use crate::configuration::ResolvedNodeConfig;
+use crate::configuration::{ReplicaStoreConfig, ResolvedNodeConfig};
 
 use super::*;
 
@@ -56,6 +56,10 @@ fn resolves_path_precedence() {
     let environment = Environment {
         home: Some("/home/test".into()),
         state_home: Some("/state/test".into()),
+        platform_config_root: None,
+        platform_data_dir: None,
+        platform_documents_dir: None,
+        platform_state_dir: None,
         config: Some("/env/config".into()),
         replica: Some("/env/replica".into()),
         log_dir: Some("/env/log".into()),
@@ -673,6 +677,9 @@ fn prepares_run_overrides_without_evaluating_config() {
 fn run_overrides_apply_after_configuration_load() {
     let mut config = ResolvedNodeConfig {
         replica_root: PathBuf::from("/persisted/replica"),
+        replica_store: ReplicaStoreConfig::Sqlite {
+            path: PathBuf::from("/persisted/store.sqlite3"),
+        },
         log_dir: PathBuf::from("/persisted/log"),
         listen: Some("127.0.0.1:7000".parse().unwrap()),
         connect: vec!["https://persisted.example.com".parse().unwrap()],
@@ -787,13 +794,20 @@ fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
         "--log-dir",
         "deployment/log",
     ])
-    .prepare(&Environment::default(), cwd)
+    .prepare(
+        &Environment {
+            platform_data_dir: Some(cwd.join("platform/data/oll")),
+            ..Environment::default()
+        },
+        cwd,
+    )
     .unwrap();
     let PreparedCliIntent::Init(prepared) = prepared else {
         panic!()
     };
     assert_eq!(prepared.config_root, cwd.join("deployment/config"));
     assert_eq!(prepared.replica_root, cwd.join("deployment/replica"));
+    assert_eq!(prepared.replica_store_base, cwd.join("platform/data/oll"));
     assert_eq!(prepared.log_dir, cwd.join("deployment/log"));
 }
 

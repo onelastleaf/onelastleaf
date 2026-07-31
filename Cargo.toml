@@ -16,33 +16,43 @@ name = "oll"
 path = "src/main.rs"
 
 [dependencies]
+chardetng = "1"
 clap = { version = "4.6", features = ["derive", "env"] }
+directories = "6"
+encoding_rs = "0.8"
 flate2 = "1"
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
 gix-url = "0.37"
 hyper-util = { version = "0.1", features = ["tokio"] }
+infer = "0.22"
 libc = "0.2"
 loro = "1.13"
 mlua = { version = "0.12", features = ["luajit", "vendored", "send"] }
+notify-debouncer-full = "0.6"
 prost = "0.14"
 prost-types = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
-time = { version = "0.3", features = ["formatting"] }
-tokio = { version = "1", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+sqlx = { version = "0.8", default-features = false, features = ["any", "runtime-tokio", "sqlite", "postgres"] }
+tar = "0.4"
+tempfile = "3"
+time = { version = "0.3", features = ["formatting", "parsing", "serde"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 tokio-stream = { version = "0.1", features = ["net"] }
 tonic = { version = "0.14", features = ["transport"] }
 tonic-prost = "0.14"
 tonic-reflection = "0.14"
 tower = "0.5"
+unicode-casefold = "0.2"
+unicode-normalization = "0.1"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
+walkdir = "2"
+zstd = "0.13"
 
 [build-dependencies]
 protoc-bin-vendored = "3"
 sha2 = "0.11"
 tonic-prost-build = "0.14"
-
-[dev-dependencies]
-tempfile = "3"

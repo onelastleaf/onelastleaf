@@ -4,6 +4,7 @@ package oll.protocol;
 
 import "google/protobuf/timestamp.proto";
 import "oll/common.proto";
+import "oll/document.proto";
 
 // Local administration is served only over the daemon's Unix domain socket.
 // This service is extended stage by stage; it must not grow stringly typed
@@ -12,6 +13,12 @@ service Admin {
   rpc GetStatus(GetStatusRequest) returns (GetStatusResponse);
   rpc Shutdown(AdminShutdownRequest) returns (AdminShutdownResponse);
   rpc SetLogFilter(SetLogFilterRequest) returns (SetLogFilterResponse);
+  rpc InspectReplicaDocument(InspectReplicaDocumentRequest)
+      returns (InspectReplicaDocumentResponse);
+  rpc ListReplicaOperations(ListReplicaOperationsRequest)
+      returns (ListReplicaOperationsResponse);
+  rpc ExportReplica(ExportReplicaRequest) returns (ExportReplicaResponse);
+  rpc ImportReplica(ImportReplicaRequest) returns (ImportReplicaResponse);
 }
 
 // Every unary Admin request carries this context. Exact fingerprint equality is
@@ -36,6 +43,17 @@ enum PeerConnectionState {
   PEER_CONNECTION_STATE_BACKOFF = 4;
 }
 
+enum ReplicaState {
+  REPLICA_STATE_UNSPECIFIED = 0;
+  REPLICA_STATE_UNINITIALIZED = 1;
+  REPLICA_STATE_INITIALIZED_EMPTY = 2;
+  REPLICA_STATE_INITIALIZED_POPULATED = 3;
+}
+
+// Native Unix pathname bytes used only by the local Admin UDS. Values must be
+// non-empty absolute paths with no NUL byte.
+message NativePath { bytes unix_path = 1; }
+
 message PeerStatus {
   string connect_url = 1;
   // Absent until a successful SyncHello establishes the remote identity.
@@ -54,6 +72,9 @@ message GetStatusResponse {
   // The effective deployment configuration, not a claim that a later sync
   // listener has already bound the address.
   optional string configured_listen_address = 6;
+  ReplicaState replica_state = 7;
+  // Present only for initialized replica states.
+  optional ReplicaId replica_id = 8;
 }
 
 message AdminShutdownRequest {
@@ -76,4 +97,80 @@ message SetLogFilterRequest {
 message SetLogFilterResponse {
   string target = 1;
   LogLevel level = 2;
+}
+
+message InspectReplicaDocumentRequest {
+  AdminCallContext context = 1;
+  NativePath document_path = 2;
+}
+
+message InspectReplicaDocumentResponse {
+  CatalogNodeId catalog_node_id = 1;
+  CatalogRevision catalog_revision = 2;
+  DocumentId document_id = 3;
+  DocumentRevision document_revision = 4;
+  DocumentPath path = 5;
+  string media_type = 6;
+  string encoding = 7;
+  bool has_byte_order_mark = 8;
+  uint64 size_bytes = 9;
+}
+
+enum ReplicaOperationSource {
+  REPLICA_OPERATION_SOURCE_UNSPECIFIED = 0;
+  REPLICA_OPERATION_SOURCE_FILESYSTEM = 1;
+  REPLICA_OPERATION_SOURCE_PLUGIN = 2;
+  REPLICA_OPERATION_SOURCE_SYNC = 3;
+  REPLICA_OPERATION_SOURCE_SNAPSHOT_IMPORT = 4;
+}
+
+enum ReplicaOperationKind {
+  REPLICA_OPERATION_KIND_UNSPECIFIED = 0;
+  REPLICA_OPERATION_KIND_CREATE = 1;
+  REPLICA_OPERATION_KIND_UPDATE = 2;
+  REPLICA_OPERATION_KIND_MOVE = 3;
+  REPLICA_OPERATION_KIND_DELETE = 4;
+  REPLICA_OPERATION_KIND_REPLACE = 5;
+}
+
+message ReplicaOperation {
+  google.protobuf.Timestamp timestamp = 1;
+  string operation_id = 2;
+  ReplicaOperationSource source = 3;
+  ReplicaOperationKind kind = 4;
+  CatalogNodeId catalog_node_id = 5;
+  DocumentId document_id = 6;
+  optional DocumentPath path_before = 7;
+  optional DocumentPath path_after = 8;
+  string correlation_id = 9;
+}
+
+message ListReplicaOperationsRequest {
+  AdminCallContext context = 1;
+  NativePath document_path = 2;
+  uint64 limit = 3;
+}
+
+message ListReplicaOperationsResponse {
+  repeated ReplicaOperation operations = 1;
+}
+
+message ExportReplicaRequest {
+  AdminCallContext context = 1;
+  NativePath snapshot_path = 2;
+}
+
+message ExportReplicaResponse {
+  string snapshot_id = 1;
+  ReplicaId replica_id = 2;
+}
+
+message ImportReplicaRequest {
+  AdminCallContext context = 1;
+  NativePath snapshot_path = 2;
+}
+
+message ImportReplicaResponse {
+  string snapshot_id = 1;
+  ReplicaId replica_id = 2;
 }

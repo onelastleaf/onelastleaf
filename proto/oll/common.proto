@@ -36,10 +36,19 @@ message DocumentId { string value = 1; }
 
 message CatalogNodeId { string value = 1; }
 
-message Revision {
-  // An opaque, stable token representing the observed state of one catalog or
-  // document object.
-  // This intentionally does not expose Loro's frontier or version-vector API.
+message BinaryId { string value = 1; }
+
+message CatalogRevision {
+  // An opaque token representing the observed catalog state of one
+  // CatalogNodeId. This intentionally does not expose Loro's frontier or
+  // version-vector API.
+  bytes token = 1;
+}
+
+message DocumentRevision {
+  // An opaque token representing the observed content and abstract CRDT state
+  // of one DocumentId. This intentionally does not expose Loro's frontier or
+  // version-vector API.
   bytes token = 1;
 }
 

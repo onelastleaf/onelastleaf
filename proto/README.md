@@ -60,7 +60,7 @@ The node stage initially implements `GetStatus`, `Shutdown`, and
 only in their respective implementation stages. Future CLI arguments must not
 be tunneled as generic strings to avoid extending this schema.
 
-The replica-stage protocol change adds three explicit status states
+The replica protocol defines three explicit status states
 (`uninitialized`, `initialized_empty`, and `initialized_populated`) plus
 `InspectReplicaDocument`, `ListReplicaOperations`, `ExportReplica`, and
 `ImportReplica`. The first two are document-scoped because the existing CLI
@@ -103,12 +103,9 @@ If any check fails, oll returns `REVISION_CONFLICT` with
 separate LoroDocs, so local atomic visibility requires the replica write
 coordinator and crash-recovery journal; it is not one Loro transaction.
 
-The same replica contract adds UUID-v4 `BinaryId` and `NODE_KIND_BINARY` for
+The same replica contract defines UUID-v4 `BinaryId` and `NODE_KIND_BINARY` for
 working-tree files whose bytes follow binary LWW rather than document CRDT
 semantics. A binary has catalog and blob metadata but no `DocumentRevision`.
-The pre-replica descriptor still contains its older generic `Revision` shape;
-the replica protocol change must replace it with these explicit types before
-replica handlers are implemented.
 
 Mutations in one commit are evaluated in order. Indexes used by later mutations
 observe earlier mutations in that commit. Text offsets count Unicode scalar
@@ -170,8 +167,8 @@ so their structured logs can be aggregated into one distributed operation.
 Only the replication protocol carries Loro version vectors, frontiers, and
 encoded update/snapshot bytes. Applications and plugins use catalog/document
 revisions. Loro compatibility is determined by actual decode/import of a
-verified payload, not by a separate encoding fingerprint. The current unused
-`SyncHello` placeholder field is removed with the sync protocol implementation.
+verified payload, not by a separate encoding fingerprint. `SyncHello`
+therefore has no Loro encoding-fingerprint field.
 
 ## Plugin stream
 

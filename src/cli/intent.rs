@@ -9,10 +9,7 @@ use clap::{CommandFactory, error::ErrorKind};
 
 use crate::configuration::ResolvedNodeConfig;
 
-use super::environment::{
-    DEFAULT_CONFIG_SUFFIX, DEFAULT_REPLICA_SUFFIX, ensure_persistable_path, resolve_log_dir,
-    resolve_path,
-};
+use super::environment::{ensure_persistable_path, resolve_log_dir};
 use super::{
     Cli, CliError, Command, ConnectUrl, Environment, GitRemote, JobCommand, LogCommand,
     LogFilterLevel, LogTarget, LoopbackAddr, NodeName, OutputFormat, PluginArgs, PluginCommand,
@@ -108,23 +105,11 @@ pub struct InitIntent {
 
 impl InitIntent {
     pub(super) fn replica_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.replica_root.as_ref(),
-            environment.replica.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_REPLICA_SUFFIX,
-            "replica root",
-        )
+        environment.replica_root(self.replica_root.as_ref())
     }
 
     pub(super) fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.config_root.as_ref(),
-            environment.config.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_CONFIG_SUFFIX,
-            "config root",
-        )
+        environment.config_root_with_cli(self.config_root.as_ref())
     }
 
     pub(super) fn log_dir(&self, environment: &Environment) -> Result<PathBuf, CliError> {
@@ -144,13 +129,7 @@ pub struct RunIntent {
 
 impl RunIntent {
     pub(super) fn config_root(&self, environment: &Environment) -> Result<PathBuf, CliError> {
-        resolve_path(
-            self.config_root.as_ref(),
-            environment.config.as_ref(),
-            environment.home.as_ref(),
-            DEFAULT_CONFIG_SUFFIX,
-            "config root",
-        )
+        environment.config_root_with_cli(self.config_root.as_ref())
     }
 }
 
@@ -167,6 +146,7 @@ pub struct PreparedInitIntent {
     pub connect: Vec<ConnectUrl>,
     pub listen: Option<SocketAddr>,
     pub replica_root: PathBuf,
+    pub replica_store_base: PathBuf,
     pub config_root: PathBuf,
     pub log_dir: PathBuf,
 }
@@ -458,15 +438,19 @@ impl CliIntent {
         match self {
             Self::Init(args) => {
                 let replica_root = resolve_client_path(&args.replica_root(environment)?, cwd);
+                let replica_store_base =
+                    resolve_client_path(&environment.replica_store_base()?, cwd);
                 let config_root = resolve_client_path(&args.config_root(environment)?, cwd);
                 let log_dir = resolve_client_path(&args.log_dir(environment)?, cwd);
                 ensure_persistable_path(&replica_root, "replica root")?;
+                ensure_persistable_path(&replica_store_base, "replica store")?;
                 ensure_persistable_path(&log_dir, "log directory")?;
                 Ok(PreparedCliIntent::Init(PreparedInitIntent {
                     node_name: args.node_name,
                     connect: args.connect,
                     listen: args.listen,
                     replica_root,
+                    replica_store_base,
                     config_root,
                     log_dir,
                 }))

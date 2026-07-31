@@ -122,7 +122,7 @@ pub struct ReplicaArgs {
 pub enum ReplicaCommand {
     /// Inspect one document's current state.
     Inspect { document: PathBuf },
-    /// Show one document's CRDT operation history.
+    /// Show one document's high-level operation history.
     Ops {
         document: PathBuf,
         #[arg(long)]

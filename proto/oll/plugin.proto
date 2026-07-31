@@ -61,17 +61,24 @@ message ActionInvocation {
 
 message DocumentChangedEvent {
   DocumentPath path = 1;
-  Revision revision = 2;
-  optional string originating_operation_id = 3;
+  CatalogNodeId catalog_node_id = 2;
+  CatalogRevision catalog_revision = 3;
+  DocumentId document_id = 4;
+  DocumentRevision document_revision = 5;
+  optional string originating_operation_id = 6;
 }
 
 message NodeMovedEvent {
   DocumentPath source = 1;
   DocumentPath destination = 2;
-  Revision revision = 3;
+  CatalogNodeId catalog_node_id = 3;
+  CatalogRevision catalog_revision = 4;
 }
 
-message NodeDeletedEvent { DocumentPath path = 1; }
+message NodeDeletedEvent {
+  DocumentPath path = 1;
+  CatalogNodeId catalog_node_id = 2;
+}
 
 message HostEvent {
   string event_id = 1;

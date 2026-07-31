@@ -1,5 +1,7 @@
 use std::{
     convert::TryFrom,
+    ffi::OsString,
+    os::unix::ffi::{OsStrExt, OsStringExt},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -26,12 +28,22 @@ use crate::{
     protocol::{
         PROTOCOL_SCHEMA_SHA256,
         oll::{
-            AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, GetStatusRequest,
-            GetStatusResponse, LogLevel as ProtoLogLevel, NodeLifecycleState, PeerConnectionState,
-            PeerStatus, SetLogFilterRequest, SetLogFilterResponse, TraceContext,
+            AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, CatalogNodeId,
+            CatalogRevision, DocumentId, DocumentPath, DocumentRevision, ExportReplicaRequest,
+            ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
+            ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
+            ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
+            NativePath, NodeLifecycleState, PeerConnectionState, PeerStatus, ReplicaId,
+            ReplicaOperation, ReplicaOperationKind, ReplicaOperationSource,
+            ReplicaState as ProtoReplicaState, SetLogFilterRequest, SetLogFilterResponse,
+            TraceContext,
             admin_client::AdminClient,
             admin_server::{Admin, AdminServer},
         },
+    },
+    replica::{
+        OperationKind, OperationRecord, OperationSource, ReplicaError, ReplicaRuntime,
+        ReplicaStatus,
     },
 };
 
@@ -73,6 +85,7 @@ pub struct AdminState {
     started_at: SystemTime,
     lifecycle: AtomicU8,
     logger: Arc<NodeLogger>,
+    replica: Arc<ReplicaRuntime>,
     shutdown: watch::Sender<ShutdownNotice>,
 }
 
@@ -81,6 +94,7 @@ impl AdminState {
         identity: NodeIdentity,
         config: ResolvedNodeConfig,
         logger: Arc<NodeLogger>,
+        replica: Arc<ReplicaRuntime>,
         shutdown: watch::Sender<ShutdownNotice>,
     ) -> Self {
         Self {
@@ -89,6 +103,7 @@ impl AdminState {
             started_at: SystemTime::now(),
             lifecycle: AtomicU8::new(LIFECYCLE_STARTING),
             logger,
+            replica,
             shutdown,
         }
     }
@@ -170,6 +185,30 @@ impl AdminService {
             }),
         );
     }
+
+    #[allow(clippy::result_large_err)]
+    fn native_path(path: Option<NativePath>, field: &'static str) -> Result<PathBuf, Status> {
+        let bytes = path
+            .ok_or_else(|| Status::invalid_argument(format!("missing {field}")))?
+            .unix_path;
+        if bytes.is_empty() {
+            return Err(Status::invalid_argument(format!(
+                "{field} must not be empty"
+            )));
+        }
+        if bytes.contains(&0) {
+            return Err(Status::invalid_argument(format!(
+                "{field} must not contain NUL"
+            )));
+        }
+        let path = PathBuf::from(OsString::from_vec(bytes));
+        if !path.is_absolute() {
+            return Err(Status::invalid_argument(format!(
+                "{field} must be absolute"
+            )));
+        }
+        Ok(path)
+    }
 }
 
 #[tonic::async_trait]
@@ -181,8 +220,6 @@ impl Admin for AdminService {
         let started = Instant::now();
         let correlation_id = self.validate_context(request.into_inner().context)?;
         self.require_serving()?;
-        self.log_rpc(&correlation_id, "GetStatus", "ok", started);
-
         let peers = self
             .state
             .config
@@ -194,6 +231,22 @@ impl Admin for AdminService {
                 connection_state: PeerConnectionState::Pending as i32,
             })
             .collect();
+        let (replica_state, replica_id) = match self.state.replica.status().await {
+            ReplicaStatus::Uninitialized => (ProtoReplicaState::Uninitialized, None),
+            ReplicaStatus::InitializedEmpty { replica_id } => (
+                ProtoReplicaState::InitializedEmpty,
+                Some(ReplicaId {
+                    value: replica_id.to_string(),
+                }),
+            ),
+            ReplicaStatus::InitializedPopulated { replica_id } => (
+                ProtoReplicaState::InitializedPopulated,
+                Some(ReplicaId {
+                    value: replica_id.to_string(),
+                }),
+            ),
+        };
+        self.log_rpc(&correlation_id, "GetStatus", "ok", started);
         Ok(Response::new(GetStatusResponse {
             node: Some(self.state.identity.to_proto()),
             lifecycle: self.state.lifecycle() as i32,
@@ -201,6 +254,8 @@ impl Admin for AdminService {
             process_id: std::process::id(),
             peers,
             configured_listen_address: self.state.config.listen.map(|address| address.to_string()),
+            replica_state: replica_state as i32,
+            replica_id,
         }))
     }
 
@@ -255,6 +310,175 @@ impl Admin for AdminService {
             target: target.as_str().to_owned(),
             level: level.to_proto() as i32,
         }))
+    }
+
+    async fn inspect_replica_document(
+        &self,
+        request: Request<InspectReplicaDocumentRequest>,
+    ) -> Result<Response<InspectReplicaDocumentResponse>, Status> {
+        let started = Instant::now();
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
+        self.require_serving()?;
+        let path = Self::native_path(request.document_path, "document_path")?;
+        let inspection = match self.state.replica.inspect_document(&path).await {
+            Ok(inspection) => inspection,
+            Err(error) => {
+                self.log_rpc(&correlation_id, "InspectReplicaDocument", "error", started);
+                return Err(replica_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "InspectReplicaDocument", "ok", started);
+        Ok(Response::new(InspectReplicaDocumentResponse {
+            catalog_node_id: Some(CatalogNodeId {
+                value: inspection.catalog_node_id.to_string(),
+            }),
+            catalog_revision: Some(CatalogRevision {
+                token: inspection.catalog_revision.to_vec(),
+            }),
+            document_id: Some(DocumentId {
+                value: inspection.document_id.to_string(),
+            }),
+            document_revision: Some(DocumentRevision {
+                token: inspection.document_revision.to_vec(),
+            }),
+            path: Some(DocumentPath {
+                value: inspection.path,
+            }),
+            media_type: inspection.media_type,
+            encoding: inspection.encoding,
+            has_byte_order_mark: inspection.has_byte_order_mark,
+            size_bytes: inspection.size_bytes,
+        }))
+    }
+
+    async fn list_replica_operations(
+        &self,
+        request: Request<ListReplicaOperationsRequest>,
+    ) -> Result<Response<ListReplicaOperationsResponse>, Status> {
+        let started = Instant::now();
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
+        self.require_serving()?;
+        let path = Self::native_path(request.document_path, "document_path")?;
+        let limit = if request.limit == 0 {
+            usize::try_from(i64::MAX).unwrap_or(usize::MAX)
+        } else {
+            usize::try_from(request.limit)
+                .map_err(|_| Status::invalid_argument("operation limit is too large"))?
+        };
+        let operations = match self.state.replica.list_operations(&path, limit).await {
+            Ok(operations) => operations.into_iter().map(operation_to_proto).collect(),
+            Err(error) => {
+                self.log_rpc(&correlation_id, "ListReplicaOperations", "error", started);
+                return Err(replica_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "ListReplicaOperations", "ok", started);
+        Ok(Response::new(ListReplicaOperationsResponse { operations }))
+    }
+
+    async fn export_replica(
+        &self,
+        request: Request<ExportReplicaRequest>,
+    ) -> Result<Response<ExportReplicaResponse>, Status> {
+        let started = Instant::now();
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
+        self.require_serving()?;
+        let path = Self::native_path(request.snapshot_path, "snapshot_path")?;
+        let (snapshot_id, replica_id) = match self.state.replica.export_snapshot(&path).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.log_rpc(&correlation_id, "ExportReplica", "error", started);
+                return Err(replica_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "ExportReplica", "ok", started);
+        Ok(Response::new(ExportReplicaResponse {
+            snapshot_id: snapshot_id.to_string(),
+            replica_id: Some(ReplicaId {
+                value: replica_id.to_string(),
+            }),
+        }))
+    }
+
+    async fn import_replica(
+        &self,
+        request: Request<ImportReplicaRequest>,
+    ) -> Result<Response<ImportReplicaResponse>, Status> {
+        let started = Instant::now();
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
+        self.require_serving()?;
+        let path = Self::native_path(request.snapshot_path, "snapshot_path")?;
+        let (snapshot_id, replica_id) = match self.state.replica.import_snapshot(&path).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.log_rpc(&correlation_id, "ImportReplica", "error", started);
+                return Err(replica_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "ImportReplica", "ok", started);
+        Ok(Response::new(ImportReplicaResponse {
+            snapshot_id: snapshot_id.to_string(),
+            replica_id: Some(ReplicaId {
+                value: replica_id.to_string(),
+            }),
+        }))
+    }
+}
+
+fn operation_to_proto(operation: OperationRecord) -> ReplicaOperation {
+    let source = match operation.source {
+        OperationSource::Filesystem => ReplicaOperationSource::Filesystem,
+        OperationSource::Plugin => ReplicaOperationSource::Plugin,
+        OperationSource::Sync => ReplicaOperationSource::Sync,
+        OperationSource::SnapshotImport => ReplicaOperationSource::SnapshotImport,
+    };
+    let kind = match operation.kind {
+        OperationKind::Create => ReplicaOperationKind::Create,
+        OperationKind::Update => ReplicaOperationKind::Update,
+        OperationKind::Move => ReplicaOperationKind::Move,
+        OperationKind::Delete => ReplicaOperationKind::Delete,
+        OperationKind::Replace => ReplicaOperationKind::Replace,
+    };
+    ReplicaOperation {
+        timestamp: Some(prost_types::Timestamp {
+            seconds: operation.timestamp.unix_timestamp(),
+            nanos: operation.timestamp.nanosecond() as i32,
+        }),
+        operation_id: operation.operation_id,
+        source: source as i32,
+        kind: kind as i32,
+        catalog_node_id: Some(CatalogNodeId {
+            value: operation.catalog_node_id.to_string(),
+        }),
+        document_id: Some(DocumentId {
+            value: operation.document_id.to_string(),
+        }),
+        path_before: operation.path_before.map(|value| DocumentPath { value }),
+        path_after: operation.path_after.map(|value| DocumentPath { value }),
+        correlation_id: operation.correlation_id,
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn replica_status(error: ReplicaError) -> Status {
+    match error {
+        ReplicaError::Uninitialized => Status::failed_precondition("no local replica yet"),
+        ReplicaError::InvalidArgument(message) | ReplicaError::InvalidSnapshot(message) => {
+            Status::invalid_argument(message)
+        }
+        ReplicaError::NotFound(message) => Status::not_found(message),
+        ReplicaError::AlreadyExists(message) => Status::already_exists(message),
+        ReplicaError::RevisionConflict(message) => Status::aborted(message),
+        ReplicaError::CorruptStore(_)
+        | ReplicaError::Io { .. }
+        | ReplicaError::Store(_)
+        | ReplicaError::Internal(_) => {
+            Status::internal("replica operation failed; inspect the correlated daemon log")
+        }
     }
 }
 
@@ -381,12 +605,92 @@ pub async fn set_log_filter(
         .map_err(status_error)
 }
 
+pub async fn inspect_replica_document(
+    socket: &Path,
+    document_path: &Path,
+    correlation_id: String,
+) -> Result<InspectReplicaDocumentResponse, NodeError> {
+    let mut client = connect(socket).await?;
+    client
+        .inspect_replica_document(InspectReplicaDocumentRequest {
+            context: Some(call_context(correlation_id)),
+            document_path: Some(native_path(document_path)),
+        })
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
+pub async fn list_replica_operations(
+    socket: &Path,
+    document_path: &Path,
+    limit: Option<usize>,
+    correlation_id: String,
+) -> Result<ListReplicaOperationsResponse, NodeError> {
+    let limit = limit
+        .map(u64::try_from)
+        .transpose()
+        .map_err(|_| NodeError::Config("operation limit is too large".to_owned()))?
+        .unwrap_or(0);
+    let mut client = connect(socket).await?;
+    client
+        .list_replica_operations(ListReplicaOperationsRequest {
+            context: Some(call_context(correlation_id)),
+            document_path: Some(native_path(document_path)),
+            limit,
+        })
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
+pub async fn export_replica(
+    socket: &Path,
+    snapshot_path: &Path,
+    correlation_id: String,
+) -> Result<ExportReplicaResponse, NodeError> {
+    let mut client = connect(socket).await?;
+    client
+        .export_replica(ExportReplicaRequest {
+            context: Some(call_context(correlation_id)),
+            snapshot_path: Some(native_path(snapshot_path)),
+        })
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
+pub async fn import_replica(
+    socket: &Path,
+    snapshot_path: &Path,
+    correlation_id: String,
+) -> Result<ImportReplicaResponse, NodeError> {
+    let mut client = connect(socket).await?;
+    client
+        .import_replica(ImportReplicaRequest {
+            context: Some(call_context(correlation_id)),
+            snapshot_path: Some(native_path(snapshot_path)),
+        })
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
+fn native_path(path: &Path) -> NativePath {
+    NativePath {
+        unix_path: path.as_os_str().as_bytes().to_vec(),
+    }
+}
+
 fn status_error(status: Status) -> NodeError {
     match status.code() {
         tonic::Code::FailedPrecondition | tonic::Code::Unavailable => {
             NodeError::Unavailable(status.message().to_owned())
         }
-        tonic::Code::InvalidArgument => NodeError::Config(status.message().to_owned()),
+        tonic::Code::InvalidArgument
+        | tonic::Code::NotFound
+        | tonic::Code::AlreadyExists
+        | tonic::Code::Aborted => NodeError::Operation(status.message().to_owned()),
         _ => NodeError::Internal(status.message().to_owned()),
     }
 }
@@ -411,7 +715,10 @@ mod tests {
     use tempfile::TempDir;
     use tokio::{net::UnixListener, sync::watch, time::timeout};
 
-    use crate::{configuration::ResolvedNodeConfig, protocol::oll::GetStatusRequest};
+    use crate::{
+        configuration::{ReplicaStoreConfig, ResolvedNodeConfig},
+        protocol::oll::GetStatusRequest,
+    };
 
     use super::*;
     use crate::node::{identity::NodeIdentity, logging::NodeLogger};
@@ -423,10 +730,24 @@ mod tests {
         let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
         let config = ResolvedNodeConfig {
             replica_root: directory.path().join("replica"),
+            replica_store: ReplicaStoreConfig::Sqlite {
+                path: directory.path().join("replica.sqlite3"),
+            },
             log_dir: directory.path().join("log"),
             listen: Some("127.0.0.1:7443".parse().unwrap()),
             connect: vec!["https://peer.example".parse().unwrap()],
         };
+        std::fs::create_dir(&config.replica_root).unwrap();
+        let document_path = config.replica_root.join("admin.md");
+        std::fs::write(&document_path, "admin protocol").unwrap();
+        let replica = ReplicaRuntime::start(
+            config.replica_root.clone(),
+            &config.replica_store,
+            identity.node_id(),
+            Arc::clone(&logger),
+        )
+        .await
+        .unwrap();
         let socket = directory.path().join("admin.sock");
         let listener = match UnixListener::bind(&socket) {
             Ok(listener) => listener,
@@ -434,7 +755,13 @@ mod tests {
             Err(error) => panic!("cannot bind test Admin socket: {error}"),
         };
         let (shutdown, receiver) = watch::channel(ShutdownNotice::default());
-        let state = Arc::new(AdminState::new(identity.clone(), config, logger, shutdown));
+        let state = Arc::new(AdminState::new(
+            identity.clone(),
+            config,
+            logger,
+            Arc::clone(&replica),
+            shutdown,
+        ));
         state.mark_running();
         let task = tokio::spawn(serve(listener, state, receiver));
 
@@ -454,6 +781,45 @@ mod tests {
         );
         assert_eq!(status.peers.len(), 1);
         assert_eq!(status.lifecycle, NodeLifecycleState::Running as i32);
+        assert_eq!(
+            status.replica_state,
+            ProtoReplicaState::InitializedPopulated as i32
+        );
+        assert!(status.replica_id.is_some());
+
+        let inspection =
+            inspect_replica_document(&socket, &document_path, "inspect-correlation".to_owned())
+                .await
+                .unwrap();
+        assert_eq!(inspection.path.unwrap().value, "/admin.md");
+        assert_eq!(inspection.encoding, "UTF-8");
+        assert!(inspection.document_id.is_some());
+        assert!(inspection.catalog_revision.is_some());
+        assert!(inspection.document_revision.is_some());
+
+        let operations = list_replica_operations(
+            &socket,
+            &document_path,
+            Some(10),
+            "operations-correlation".to_owned(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(operations.operations.len(), 1);
+        assert_eq!(
+            operations.operations[0].source,
+            ReplicaOperationSource::Filesystem as i32
+        );
+
+        let snapshot_path = directory.path().join("admin.ollsnap");
+        let exported = export_replica(&socket, &snapshot_path, "export-correlation".to_owned())
+            .await
+            .unwrap();
+        let imported = import_replica(&socket, &snapshot_path, "import-correlation".to_owned())
+            .await
+            .unwrap();
+        assert_eq!(imported.snapshot_id, exported.snapshot_id);
+        assert_eq!(imported.replica_id, exported.replica_id);
 
         let filter = set_log_filter(
             &socket,
@@ -466,6 +832,17 @@ mod tests {
         assert_eq!(filter.level, ProtoLogLevel::Trace as i32);
 
         let mut client = connect(&socket).await.unwrap();
+        let error = client
+            .inspect_replica_document(InspectReplicaDocumentRequest {
+                context: Some(call_context("invalid-path-correlation".to_owned())),
+                document_path: Some(NativePath {
+                    unix_path: b"relative.md".to_vec(),
+                }),
+            })
+            .await
+            .unwrap_err();
+        assert_eq!(error.code(), tonic::Code::InvalidArgument);
+
         let error = client
             .get_status(GetStatusRequest {
                 context: Some(AdminCallContext {
@@ -495,5 +872,6 @@ mod tests {
             .unwrap()
             .unwrap()
             .unwrap();
+        replica.shutdown().await.unwrap();
     }
 }

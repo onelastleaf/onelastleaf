@@ -33,15 +33,25 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     ensure_directory(&intent.replica_root, 0o700, "replica root")?;
     ensure_log_directory(&intent.log_dir)?;
 
+    let identity = NodeIdentity::generate(intent.node_name);
+    let replica_store = intent
+        .replica_store_base
+        .join("stores")
+        .join(identity.node_id().to_string())
+        .join("replica.sqlite3");
+    let store_parent = replica_store.parent().ok_or_else(|| {
+        NodeError::Internal("generated replica store path has no parent".to_owned())
+    })?;
+    ensure_directory(store_parent, 0o700, "replica store directory")?;
     let source = initial_config(
         &intent.replica_root,
+        &replica_store,
         &intent.log_dir,
         intent.listen,
         &intent.connect,
     )?;
     atomic_write(&config_path, source.as_bytes())?;
 
-    let identity = NodeIdentity::generate(intent.node_name);
     NodeIdentity::write(&intent.config_root, &identity)?;
     Ok(InitResult::Initialized(identity))
 }
@@ -97,12 +107,16 @@ fn ensure_directory(path: &Path, mode: u32, name: &'static str) -> Result<(), No
 
 fn initial_config(
     replica_root: &Path,
+    replica_store: &Path,
     log_dir: &Path,
     listen: Option<std::net::SocketAddr>,
     connect: &[ConnectUrl],
 ) -> Result<String, NodeError> {
     let replica_root = lua_string(replica_root.to_str().ok_or_else(|| {
         NodeError::Config("cannot persist replica root: path is not valid UTF-8".to_owned())
+    })?);
+    let replica_store = lua_string(replica_store.to_str().ok_or_else(|| {
+        NodeError::Config("cannot persist replica store: path is not valid UTF-8".to_owned())
     })?);
     let log_dir = lua_string(log_dir.to_str().ok_or_else(|| {
         NodeError::Config("cannot persist log directory: path is not valid UTF-8".to_owned())
@@ -112,7 +126,7 @@ fn initial_config(
         |address| lua_string(&address.to_string()),
     );
     let mut source = format!(
-        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n        log_dir = {log_dir},\n        listen = {listen},\n        connect = {{"
+        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n        replica_store = {{\n            driver = \"sqlite\",\n            path = {replica_store},\n        }},\n        log_dir = {log_dir},\n        listen = {listen},\n        connect = {{"
     );
     if !connect.is_empty() {
         source.push('\n');
@@ -161,6 +175,7 @@ mod tests {
             connect: vec!["https://peer.example".parse().unwrap()],
             listen: Some("127.0.0.1:7443".parse::<SocketAddr>().unwrap()),
             replica_root: directory.path().join("replica"),
+            replica_store_base: directory.path().join("data"),
             config_root: directory.path().join("config"),
             log_dir: directory.path().join("log"),
         }
@@ -181,6 +196,8 @@ mod tests {
         assert!(replica_root.is_dir());
         let config = fs::read_to_string(config_root.join(CONFIG_FILENAME)).unwrap();
         assert!(config.contains("format_version = 1"));
+        assert!(config.contains("driver = \"sqlite\""));
+        assert!(config.contains(&identity.node_id().to_string()));
         assert!(config.contains("https://peer.example/"));
     }
 

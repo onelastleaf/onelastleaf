@@ -42,6 +42,10 @@ impl TestDeployment {
                 format_version = 1,
                 node = {
                     replica_root = "replica",
+                    replica_store = {
+                        driver = "sqlite",
+                        path = "store/replica.sqlite3",
+                    },
                     log_dir = "log",
                     listen = nil,
                     connect = {},
@@ -230,6 +234,10 @@ fn explicit_and_environment_paths_do_not_require_home() {
     let explicit = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
+        .env(
+            "XDG_DATA_HOME",
+            explicit_deployment.root().join("platform-data"),
+        )
         .env_remove("OLL_CONFIG")
         .env_remove("OLL_REPLICA")
         .env_remove("OLL_LOG_DIR")
@@ -249,6 +257,10 @@ fn explicit_and_environment_paths_do_not_require_home() {
     let from_environment = oll()
         .env_remove("HOME")
         .env_remove("XDG_STATE_HOME")
+        .env(
+            "XDG_DATA_HOME",
+            environment_deployment.root().join("platform-data"),
+        )
         .env("OLL_CONFIG", environment_deployment.config())
         .env("OLL_REPLICA", &environment_replica)
         .env("OLL_LOG_DIR", &environment_log)
@@ -310,6 +322,7 @@ fn init_creates_and_refuses_to_replace_a_deployment_without_confirmation() {
     let replica = deployment.root().join("replica");
     let log = deployment.root().join("log");
     let first = oll()
+        .env("XDG_DATA_HOME", deployment.root().join("platform-data"))
         .args(["init", "home-node", "--config"])
         .arg(deployment.config())
         .arg("--replica")
@@ -324,6 +337,7 @@ fn init_creates_and_refuses_to_replace_a_deployment_without_confirmation() {
     assert!(log.is_dir());
 
     let second = oll()
+        .env("XDG_DATA_HOME", deployment.root().join("platform-data"))
         .args(["init", "other-node", "--config"])
         .arg(deployment.config())
         .arg("--replica")
@@ -363,10 +377,13 @@ fn log_set_is_a_typed_admin_command() {
 }
 
 #[test]
-fn missing_home_is_a_configuration_error_when_default_is_needed() {
+fn platform_defaults_do_not_require_home() {
+    let deployment = TestDeployment::empty();
     let output = oll()
         .env_remove("HOME")
-        .env_remove("XDG_STATE_HOME")
+        .env("XDG_CONFIG_HOME", deployment.root().join("platform-config"))
+        .env("XDG_DATA_HOME", deployment.root().join("platform-data"))
+        .env("XDG_STATE_HOME", deployment.root().join("platform-state"))
         .env_remove("OLL_CONFIG")
         .env_remove("OLL_REPLICA")
         .env_remove("OLL_LOG_DIR")
@@ -375,11 +392,9 @@ fn missing_home_is_a_configuration_error_when_default_is_needed() {
         .unwrap();
 
     assert_eq!(output.status.code(), Some(EXIT_CONFIG));
-    assert!(
-        String::from_utf8(output.stderr)
-            .unwrap()
-            .contains("set HOME")
-    );
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("platform-config"));
+    assert!(!stderr.contains("set HOME"));
 }
 
 #[test]
@@ -398,32 +413,32 @@ fn local_snapshot_intents_do_not_require_directory_configuration() {
             .output()
             .unwrap();
 
-        assert_eq!(
-            output.status.code(),
-            Some(EXIT_UNAVAILABLE),
-            "unexpected result for {arguments:?}: {}",
-            String::from_utf8_lossy(&output.stderr)
-        );
+        assert_eq!(output.status.code(), Some(1));
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(stderr.contains("replica snapshot"));
+        assert!(!stderr.contains("HOME"));
+        assert!(!stderr.contains("configuration"));
     }
 }
 
 #[test]
-fn log_intents_require_only_the_user_log_directory() {
+fn log_intents_use_platform_or_explicit_log_directory_without_other_configuration() {
+    let deployment = TestDeployment::empty();
     for arguments in [
         vec!["sync", "--log"],
         vec!["plugin", "--log"],
         vec!["plugin", "--log", "__all__"],
     ] {
-        let missing = oll()
+        let platform_default = oll()
             .env_remove("HOME")
-            .env_remove("XDG_STATE_HOME")
+            .env("XDG_STATE_HOME", deployment.root().join("platform-state"))
             .env_remove("OLL_CONFIG")
             .env_remove("OLL_REPLICA")
             .env_remove("OLL_LOG_DIR")
             .args(&arguments)
             .output()
             .unwrap();
-        assert_eq!(missing.status.code(), Some(EXIT_CONFIG));
+        assert_eq!(platform_default.status.code(), Some(EXIT_UNAVAILABLE));
 
         let configured = oll()
             .env_remove("HOME")
@@ -440,26 +455,26 @@ fn log_intents_require_only_the_user_log_directory() {
 
 #[test]
 fn admin_intents_require_config_but_not_a_client_replica_root() {
+    let deployment = TestDeployment::empty();
     for arguments in [
         vec!["replica", "inspect", "/note.md"],
         vec!["replica", "export", "--output", "file.ollsnap"],
-        vec!["replica", "import", "file.ollsnap"],
     ] {
-        let missing_config = oll()
+        let platform_config = oll()
             .env_remove("HOME")
-            .env_remove("XDG_STATE_HOME")
+            .env("XDG_CONFIG_HOME", deployment.root().join("platform-config"))
             .env_remove("OLL_CONFIG")
             .env_remove("OLL_REPLICA")
             .env_remove("OLL_LOG_DIR")
             .args(&arguments)
             .output()
             .unwrap();
-        assert_eq!(missing_config.status.code(), Some(EXIT_CONFIG));
+        assert_eq!(platform_config.status.code(), Some(EXIT_UNAVAILABLE));
 
         let configured = oll()
             .env_remove("HOME")
             .env_remove("XDG_STATE_HOME")
-            .env("OLL_CONFIG", "/tmp/oll-config")
+            .env("OLL_CONFIG", deployment.config())
             .env_remove("OLL_REPLICA")
             .env_remove("OLL_LOG_DIR")
             .args(&arguments)

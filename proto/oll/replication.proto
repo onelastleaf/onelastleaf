@@ -17,9 +17,7 @@ message SyncHello {
   bytes protocol_schema_sha256 = 3;
   uint64 max_chunk_bytes = 4;
   repeated Compression supported_compressions = 5;
-  // Opaque hash of the Loro export-format implementation and oll's encoding
-  // policy. The first protocol requires exact equality.
-  bytes loro_encoding_fingerprint = 6;
+  reserved 6;
 }
 
 message SyncReady {
@@ -66,7 +64,7 @@ message ReplicaObjectRef {
 message ReplicaObjectSummary {
   ReplicaObjectRef object = 1;
   // These fields belong only to the replication wire protocol. Plugins never
-  // receive them and must use Revision tokens from document.proto instead.
+  // receive them and must use catalog/document revision tokens instead.
   LoroVersionVector loro_version_vector = 2;
   LoroFrontier loro_frontier = 3;
 }

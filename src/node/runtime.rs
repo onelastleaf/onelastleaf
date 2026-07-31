@@ -1,7 +1,7 @@
 use std::{
     fmt,
     future::Future,
-    io::{self, Read},
+    io::{self, BufRead, Read, Write},
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     process::Stdio,
@@ -22,11 +22,17 @@ use tokio::{
 
 use crate::{
     cli::{
-        CliIntent, ClientDependency, LogIntent, PreparedCliIntent, PreparedClientIntent,
-        PreparedRunIntent,
+        CliIntent, ClientDependency, ConfirmationRequirement, LogIntent, OutputFormat,
+        PreparedCliIntent, PreparedClientIntent, PreparedRunIntent, ReplicaIntent,
     },
     configuration::ConfigRuntime,
-    protocol::oll::{GetStatusResponse, NodeLifecycleState, PeerConnectionState},
+    protocol::oll::{
+        GetStatusResponse, InspectReplicaDocumentResponse, NodeLifecycleState, PeerConnectionState,
+        ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
+    },
+    replica::{
+        ReplicaError, ReplicaRuntime, SnapshotInspection, inspect_snapshot, verify_snapshot,
+    },
 };
 
 use super::{
@@ -46,6 +52,7 @@ const LAUNCHER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
 pub enum NodeError {
     Config(String),
     Unavailable(String),
+    Operation(String),
     Io {
         operation: &'static str,
         source: io::Error,
@@ -76,7 +83,7 @@ impl NodeError {
         match self {
             Self::Config(_) | Self::ConfigIo { .. } => crate::cli::EXIT_CONFIG,
             Self::Unavailable(_) | Self::NotImplemented => crate::cli::EXIT_UNAVAILABLE,
-            Self::Io { .. } | Self::Internal(_) => 1,
+            Self::Operation(_) | Self::Io { .. } | Self::Internal(_) => 1,
         }
     }
 }
@@ -84,9 +91,10 @@ impl NodeError {
 impl fmt::Display for NodeError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Config(message) | Self::Unavailable(message) | Self::Internal(message) => {
-                formatter.write_str(message)
-            }
+            Self::Config(message)
+            | Self::Unavailable(message)
+            | Self::Operation(message)
+            | Self::Internal(message) => formatter.write_str(message),
             Self::Io { operation, source } => write!(formatter, "cannot {operation}: {source}"),
             Self::ConfigIo {
                 operation,
@@ -121,15 +129,55 @@ pub fn execute(intent: PreparedCliIntent) -> Result<(), NodeError> {
 }
 
 fn execute_client(intent: PreparedClientIntent) -> Result<(), NodeError> {
-    let ClientDependency::ConfigRoot(config_root) = intent.dependency else {
-        return Err(NodeError::NotImplemented);
-    };
-    match intent.intent {
-        CliIntent::Start => start(&config_root),
-        CliIntent::Stop => in_runtime(stop(&config_root)),
-        CliIntent::Status { json } => in_runtime(show_status(&config_root, json)),
-        CliIntent::Log(LogIntent::Set { target, level }) => {
-            in_runtime(set_log_filter(&config_root, target, level))
+    match (intent.intent, intent.dependency) {
+        (
+            CliIntent::Replica(ReplicaIntent::SnapshotInspect { snapshot, json }),
+            ClientDependency::None,
+        ) => show_snapshot_inspection(&snapshot, json),
+        (
+            CliIntent::Replica(ReplicaIntent::SnapshotVerify { snapshot }),
+            ClientDependency::None,
+        ) => verify_local_snapshot(&snapshot),
+        (CliIntent::Start, ClientDependency::ConfigRoot(config_root)) => start(&config_root),
+        (CliIntent::Stop, ClientDependency::ConfigRoot(config_root)) => {
+            in_runtime(stop(&config_root))
+        }
+        (CliIntent::Status { json }, ClientDependency::ConfigRoot(config_root)) => {
+            in_runtime(show_status(&config_root, json))
+        }
+        (
+            CliIntent::Log(LogIntent::Set { target, level }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => in_runtime(set_log_filter(&config_root, target, level)),
+        (
+            CliIntent::Replica(ReplicaIntent::Inspect { document }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => in_runtime(inspect_replica_document(&config_root, &document)),
+        (
+            CliIntent::Replica(ReplicaIntent::Ops {
+                document,
+                limit,
+                format,
+            }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => in_runtime(show_replica_operations(
+            &config_root,
+            &document,
+            limit.map(|limit| limit.get()),
+            format,
+        )),
+        (
+            CliIntent::Replica(ReplicaIntent::Export { output }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => in_runtime(export_replica(&config_root, &output)),
+        (
+            CliIntent::Replica(ReplicaIntent::Import { snapshot }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => {
+            if !confirm_replica_import()? {
+                return Ok(());
+            }
+            in_runtime(import_replica(&config_root, &snapshot))
         }
         _ => Err(NodeError::NotImplemented),
     }
@@ -158,6 +206,27 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         json!({ "config_root": intent.config_root.display().to_string() }),
     )?;
 
+    let replica = match ReplicaRuntime::start(
+        config.replica_root.clone(),
+        &config.replica_store,
+        identity.node_id(),
+        Arc::clone(&logger),
+    )
+    .await
+    {
+        Ok(replica) => replica,
+        Err(error) => {
+            let _ = logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "replica_runtime" }),
+            );
+            return Err(replica_node_error(error));
+        }
+    };
+
     let (listener, socket_guard) = match bind_admin_socket(&intent.config_root) {
         Ok(result) => result,
         Err(error) => {
@@ -168,6 +237,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
                 &startup_correlation,
                 json!({ "reason": "admin_socket" }),
             );
+            let _ = replica.shutdown().await;
             return Err(error);
         }
     };
@@ -176,6 +246,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         identity,
         config.clone(),
         Arc::clone(&logger),
+        Arc::clone(&replica),
         shutdown_tx.clone(),
     ));
     state.mark_running();
@@ -194,6 +265,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
         let _ = admin_task.await;
         signal_task.abort();
+        let _ = replica.shutdown().await;
         return Err(error);
     }
     if let Some(pingback) = intent.pingback
@@ -202,6 +274,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
         let _ = admin_task.await;
         signal_task.abort();
+        let _ = replica.shutdown().await;
         return Err(error);
     }
 
@@ -216,8 +289,13 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }),
     )?;
 
-    let server_result = wait_for_shutdown(&mut admin_task, &mut shutdown_rx).await;
+    let mut server_result = wait_for_shutdown(&mut admin_task, &mut shutdown_rx).await;
     signal_task.abort();
+    if let Err(error) = replica.shutdown().await
+        && server_result.is_ok()
+    {
+        server_result = Err(replica_node_error(error));
+    }
 
     let shutdown_correlation = server_result
         .as_ref()
@@ -372,10 +450,10 @@ async fn complete_pingback(address: std::net::SocketAddr) -> Result<(), NodeErro
 }
 
 fn ensure_replica_slot(path: &Path) -> Result<(), NodeError> {
-    match std::fs::metadata(path) {
+    match std::fs::symlink_metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
         Ok(_) => Err(NodeError::Config(format!(
-            "replica root {} is not a directory",
+            "replica root {} is not a real directory",
             path.display()
         ))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
@@ -612,6 +690,248 @@ fn process_has_exited(process_id: u32) -> bool {
     result == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH)
 }
 
+fn show_snapshot_inspection(path: &Path, as_json: bool) -> Result<(), NodeError> {
+    let inspection = inspect_snapshot(path).map_err(replica_node_error)?;
+    if as_json {
+        println!(
+            "{}",
+            serde_json::to_string(&inspection).map_err(|_| {
+                NodeError::Internal("cannot serialize snapshot inspection".to_owned())
+            })?
+        );
+    } else {
+        print_snapshot_inspection(&inspection);
+    }
+    Ok(())
+}
+
+fn print_snapshot_inspection(inspection: &SnapshotInspection) {
+    println!("format: {}", inspection.format);
+    println!("format_version: {}", inspection.format_version);
+    println!("snapshot_id: {}", inspection.snapshot_id);
+    println!("replica_id: {}", inspection.replica_id);
+    println!("created_at: {}", inspection.created_at);
+    println!("live_documents: {}", inspection.live_documents);
+    println!("tombstoned_documents: {}", inspection.tombstoned_documents);
+    println!("blobs: {}", inspection.blobs);
+    println!("catalog_bytes: {}", inspection.catalog_bytes);
+    println!("document_bytes: {}", inspection.document_bytes);
+    println!("blob_bytes: {}", inspection.blob_bytes);
+}
+
+fn verify_local_snapshot(path: &Path) -> Result<(), NodeError> {
+    let inspection = verify_snapshot(path).map_err(replica_node_error)?;
+    println!("verified snapshot {}", inspection.snapshot_id);
+    Ok(())
+}
+
+async fn inspect_replica_document(config_root: &Path, document: &Path) -> Result<(), NodeError> {
+    let response = admin::inspect_replica_document(
+        &admin_socket_path(config_root),
+        document,
+        new_correlation_id(),
+    )
+    .await?;
+    print_document_inspection(&response)
+}
+
+fn print_document_inspection(response: &InspectReplicaDocumentResponse) -> Result<(), NodeError> {
+    let catalog_node_id = response
+        .catalog_node_id
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted catalog_node_id".to_owned()))?;
+    let catalog_revision = response
+        .catalog_revision
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted catalog_revision".to_owned()))?;
+    let document_id = response
+        .document_id
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted document_id".to_owned()))?;
+    let document_revision = response
+        .document_revision
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted document_revision".to_owned()))?;
+    let path = response
+        .path
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted document path".to_owned()))?;
+    println!("catalog_node_id: {}", catalog_node_id.value);
+    println!("catalog_revision: {}", encode_hex(&catalog_revision.token));
+    println!("document_id: {}", document_id.value);
+    println!(
+        "document_revision: {}",
+        encode_hex(&document_revision.token)
+    );
+    println!("path: {}", path.value);
+    println!("media_type: {}", response.media_type);
+    println!("encoding: {}", response.encoding);
+    println!("has_byte_order_mark: {}", response.has_byte_order_mark);
+    println!("size_bytes: {}", response.size_bytes);
+    Ok(())
+}
+
+async fn show_replica_operations(
+    config_root: &Path,
+    document: &Path,
+    limit: Option<usize>,
+    format: OutputFormat,
+) -> Result<(), NodeError> {
+    let response = admin::list_replica_operations(
+        &admin_socket_path(config_root),
+        document,
+        limit,
+        new_correlation_id(),
+    )
+    .await?;
+    let operations = response
+        .operations
+        .iter()
+        .map(operation_json)
+        .collect::<Result<Vec<_>, _>>()?;
+    match format {
+        OutputFormat::Json => {
+            println!(
+                "{}",
+                serde_json::to_string(&json!({ "operations": operations })).map_err(|_| {
+                    NodeError::Internal("cannot serialize replica operation history".to_owned())
+                })?
+            );
+        }
+        OutputFormat::Text => {
+            for operation in operations {
+                println!(
+                    "{} {} {} catalog_node_id={} document_id={} path_before={} path_after={} correlation_id={}",
+                    operation["timestamp"].as_str().unwrap_or(""),
+                    operation["source"].as_str().unwrap_or("unknown"),
+                    operation["kind"].as_str().unwrap_or("unknown"),
+                    operation["catalog_node_id"].as_str().unwrap_or(""),
+                    operation["document_id"].as_str().unwrap_or(""),
+                    operation["path_before"].as_str().unwrap_or("-"),
+                    operation["path_after"].as_str().unwrap_or("-"),
+                    operation["correlation_id"].as_str().unwrap_or(""),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn operation_json(
+    operation: &crate::protocol::oll::ReplicaOperation,
+) -> Result<serde_json::Value, NodeError> {
+    let timestamp = operation
+        .timestamp
+        .as_ref()
+        .map(format_timestamp)
+        .ok_or_else(|| NodeError::Internal("daemon omitted operation timestamp".to_owned()))?;
+    let source = match ReplicaOperationSource::try_from(operation.source)
+        .unwrap_or(ReplicaOperationSource::Unspecified)
+    {
+        ReplicaOperationSource::Filesystem => "filesystem",
+        ReplicaOperationSource::Plugin => "plugin",
+        ReplicaOperationSource::Sync => "sync",
+        ReplicaOperationSource::SnapshotImport => "snapshot_import",
+        ReplicaOperationSource::Unspecified => {
+            return Err(NodeError::Internal(
+                "daemon returned an unspecified operation source".to_owned(),
+            ));
+        }
+    };
+    let kind = match ReplicaOperationKind::try_from(operation.kind)
+        .unwrap_or(ReplicaOperationKind::Unspecified)
+    {
+        ReplicaOperationKind::Create => "create",
+        ReplicaOperationKind::Update => "update",
+        ReplicaOperationKind::Move => "move",
+        ReplicaOperationKind::Delete => "delete",
+        ReplicaOperationKind::Replace => "replace",
+        ReplicaOperationKind::Unspecified => {
+            return Err(NodeError::Internal(
+                "daemon returned an unspecified operation kind".to_owned(),
+            ));
+        }
+    };
+    let catalog_node_id = operation
+        .catalog_node_id
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted operation CatalogNodeId".to_owned()))?;
+    let document_id = operation
+        .document_id
+        .as_ref()
+        .ok_or_else(|| NodeError::Internal("daemon omitted operation DocumentId".to_owned()))?;
+    Ok(json!({
+        "timestamp": timestamp,
+        "operation_id": operation.operation_id,
+        "source": source,
+        "kind": kind,
+        "catalog_node_id": catalog_node_id.value,
+        "document_id": document_id.value,
+        "path_before": operation.path_before.as_ref().map(|path| &path.value),
+        "path_after": operation.path_after.as_ref().map(|path| &path.value),
+        "correlation_id": operation.correlation_id,
+    }))
+}
+
+async fn export_replica(config_root: &Path, output: &Path) -> Result<(), NodeError> {
+    let response = admin::export_replica(
+        &admin_socket_path(config_root),
+        output,
+        new_correlation_id(),
+    )
+    .await?;
+    let replica_id = response
+        .replica_id
+        .ok_or_else(|| NodeError::Internal("daemon omitted exported ReplicaId".to_owned()))?;
+    println!(
+        "exported snapshot {} for replica {}",
+        response.snapshot_id, replica_id.value
+    );
+    Ok(())
+}
+
+async fn import_replica(config_root: &Path, snapshot: &Path) -> Result<(), NodeError> {
+    let response = admin::import_replica(
+        &admin_socket_path(config_root),
+        snapshot,
+        new_correlation_id(),
+    )
+    .await?;
+    let replica_id = response
+        .replica_id
+        .ok_or_else(|| NodeError::Internal("daemon omitted imported ReplicaId".to_owned()))?;
+    println!(
+        "imported snapshot {} as replica {}",
+        response.snapshot_id, replica_id.value
+    );
+    Ok(())
+}
+
+fn confirm_replica_import() -> Result<bool, NodeError> {
+    for requirement in [
+        ConfirmationRequirement::ReplicaBackupCreated,
+        ConfirmationRequirement::ReplicaReplacementApproved,
+    ] {
+        let mut stderr = io::stderr().lock();
+        write!(stderr, "oll: {} [y/N] ", requirement.prompt())
+            .map_err(|error| NodeError::io("write replica import confirmation", error))?;
+        stderr
+            .flush()
+            .map_err(|error| NodeError::io("flush replica import confirmation", error))?;
+        drop(stderr);
+
+        let mut answer = String::new();
+        let count = io::stdin()
+            .lock()
+            .read_line(&mut answer)
+            .map_err(|error| NodeError::io("read replica import confirmation", error))?;
+        if count == 0 || !matches!(answer.trim(), "y" | "yes") {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 async fn show_status(config_root: &Path, as_json: bool) -> Result<(), NodeError> {
     let status = admin::get_status(&admin_socket_path(config_root), new_correlation_id()).await?;
     if as_json {
@@ -620,6 +940,16 @@ async fn show_status(config_root: &Path, as_json: bool) -> Result<(), NodeError>
         print_status(&status)?;
     }
     Ok(())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        write!(&mut encoded, "{byte:02x}").expect("writing to String cannot fail");
+    }
+    encoded
 }
 
 fn status_json(status: &GetStatusResponse) -> Result<serde_json::Value, NodeError> {
@@ -646,6 +976,7 @@ fn status_json(status: &GetStatusResponse) -> Result<serde_json::Value, NodeErro
             })
         })
         .collect::<Vec<_>>();
+    let (replica_state, replica_id) = replica_status_fields(status)?;
     Ok(json!({
         "node_id": node_id.value,
         "node_name": node_name.value,
@@ -653,6 +984,8 @@ fn status_json(status: &GetStatusResponse) -> Result<serde_json::Value, NodeErro
         "started_at": status.started_at.as_ref().map(format_timestamp),
         "process_id": status.process_id,
         "configured_listen_address": status.configured_listen_address,
+        "replica_state": replica_state,
+        "replica_id": replica_id,
         "peers": peers,
     }))
 }
@@ -670,6 +1003,11 @@ fn print_status(status: &GetStatusResponse) -> Result<(), NodeError> {
     println!("Node: {}", node_name.value);
     println!("Node ID: {}", node_id.value);
     println!("Lifecycle: {}", lifecycle_name(status.lifecycle));
+    let (replica_state, replica_id) = replica_status_fields(status)?;
+    println!("Replica: {replica_state}");
+    if let Some(replica_id) = replica_id {
+        println!("Replica ID: {replica_id}");
+    }
     if let Some(started_at) = status.started_at.as_ref() {
         println!("Started: {}", format_timestamp(started_at));
     }
@@ -694,6 +1032,25 @@ fn print_status(status: &GetStatusResponse) -> Result<(), NodeError> {
         }
     }
     Ok(())
+}
+
+fn replica_status_fields(
+    status: &GetStatusResponse,
+) -> Result<(&'static str, Option<&str>), NodeError> {
+    let state =
+        ProtoReplicaState::try_from(status.replica_state).unwrap_or(ProtoReplicaState::Unspecified);
+    match (state, status.replica_id.as_ref()) {
+        (ProtoReplicaState::Uninitialized, None) => Ok(("uninitialized", None)),
+        (ProtoReplicaState::InitializedEmpty, Some(replica_id)) => {
+            Ok(("initialized_empty", Some(replica_id.value.as_str())))
+        }
+        (ProtoReplicaState::InitializedPopulated, Some(replica_id)) => {
+            Ok(("initialized_populated", Some(replica_id.value.as_str())))
+        }
+        _ => Err(NodeError::Internal(
+            "daemon returned an inconsistent replica status".to_owned(),
+        )),
+    }
 }
 
 async fn set_log_filter(
@@ -757,4 +1114,42 @@ fn in_runtime<T>(future: impl Future<Output = Result<T, NodeError>>) -> Result<T
         .build()
         .map_err(|error| NodeError::Internal(format!("cannot initialize Tokio runtime: {error}")))?
         .block_on(future)
+}
+
+fn replica_node_error(error: ReplicaError) -> NodeError {
+    match error {
+        ReplicaError::Uninitialized => NodeError::Unavailable("no local replica yet".to_owned()),
+        ReplicaError::InvalidArgument(message)
+        | ReplicaError::NotFound(message)
+        | ReplicaError::AlreadyExists(message)
+        | ReplicaError::RevisionConflict(message)
+        | ReplicaError::InvalidSnapshot(message) => NodeError::Operation(message),
+        ReplicaError::Io { operation, source } => NodeError::io(operation, source),
+        ReplicaError::CorruptStore(_) | ReplicaError::Store(_) | ReplicaError::Internal(_) => {
+            NodeError::Internal(error.to_string())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::symlink};
+
+    use tempfile::TempDir;
+
+    use super::*;
+
+    #[test]
+    fn replica_slot_must_be_a_real_directory() {
+        let directory = TempDir::new().unwrap();
+        let target = directory.path().join("target");
+        let link = directory.path().join("replica");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert!(matches!(
+            ensure_replica_slot(&link),
+            Err(NodeError::Config(_))
+        ));
+    }
 }

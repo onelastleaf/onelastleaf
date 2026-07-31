@@ -5,8 +5,10 @@ mod identity;
 mod init;
 mod liveness;
 mod lock;
-mod logging;
+pub(crate) mod logging;
 mod runtime;
 
+#[cfg(test)]
+pub(crate) use identity::NodeIdentity;
 pub use liveness::{ParentLivenessPipe, wait_for_parent_exit};
 pub use runtime::{NodeError, execute};

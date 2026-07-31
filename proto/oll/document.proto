@@ -14,17 +14,26 @@ enum NodeKind {
   NODE_KIND_UNSPECIFIED = 0;
   NODE_KIND_DOCUMENT = 1;
   NODE_KIND_DIRECTORY = 2;
+  NODE_KIND_BINARY = 3;
 }
 
 message NodeMetadata {
   DocumentPath path = 1;
   NodeKind kind = 2;
-  Revision revision = 3;
+  CatalogRevision catalog_revision = 3;
   optional string media_type = 4;
   uint64 size_bytes = 5;
   CatalogNodeId node_id = 6;
   // Present only when kind is NODE_KIND_DOCUMENT.
   optional DocumentId document_id = 7;
+  // Present only when kind is NODE_KIND_BINARY.
+  optional BinaryId binary_id = 8;
+  // Present only when kind is NODE_KIND_DOCUMENT.
+  optional DocumentRevision document_revision = 9;
+  // Present only when kind is NODE_KIND_DOCUMENT.
+  optional string encoding = 10;
+  // Meaningful only when kind is NODE_KIND_DOCUMENT.
+  bool has_byte_order_mark = 11;
 }
 
 message CrdtScalar {
@@ -96,7 +105,7 @@ message ReadDocumentRequest {
 message DocumentSnapshot {
   NodeMetadata metadata = 1;
   oneof representation {
-    bytes content = 2;
+    string content = 2;
     CrdtValue crdt = 3;
   }
 }
@@ -138,7 +147,7 @@ message ReadCrdtRequest {
 }
 
 message ReadCrdtResponse {
-  Revision revision = 1;
+  DocumentRevision revision = 1;
   CrdtValue value = 2;
 }
 
@@ -251,12 +260,24 @@ message CrdtOperation {
   }
 }
 
-message NodePrecondition {
-  DocumentPath path = 1;
+message CatalogRevisionPrecondition {
+  CatalogNodeId catalog_node_id = 1;
+  CatalogRevision unchanged_since = 2;
+}
+
+message DocumentRevisionPrecondition {
+  DocumentId document_id = 1;
+  DocumentRevision unchanged_since = 2;
+}
+
+message CommitPrecondition {
+  // Revision checks name their stable target IDs explicitly. Existence checks
+  // remain path-based because the entry being checked may not have an ID.
   oneof condition {
-    Revision unchanged_since = 2;
-    bool must_exist = 3;
-    bool must_not_exist = 4;
+    CatalogRevisionPrecondition catalog_unchanged = 1;
+    DocumentRevisionPrecondition document_unchanged = 2;
+    DocumentPath must_exist = 3;
+    DocumentPath must_not_exist = 4;
   }
 }
 
@@ -265,12 +286,12 @@ message CreateDirectory { DocumentPath path = 1; }
 message CreateDocument {
   DocumentPath path = 1;
   string media_type = 2;
-  bytes content = 3;
+  string content = 3;
 }
 
 message ReplaceDocument {
   DocumentPath path = 1;
-  bytes content = 2;
+  string content = 2;
   optional string media_type = 3;
 }
 
@@ -315,14 +336,18 @@ message DocumentMutation {
 // transaction.
 message CommitDocumentsRequest {
   string operation_id = 1;
-  repeated NodePrecondition preconditions = 2;
+  repeated CommitPrecondition preconditions = 2;
   repeated DocumentMutation mutations = 3;
 }
 
 message UpdatedNode {
   DocumentPath path = 1;
-  optional Revision revision = 2;
-  bool deleted = 3;
+  CatalogNodeId catalog_node_id = 2;
+  optional CatalogRevision catalog_revision = 3;
+  optional DocumentId document_id = 4;
+  optional DocumentRevision document_revision = 5;
+  optional BinaryId binary_id = 6;
+  bool deleted = 7;
 }
 
 message CommitDocumentsResponse {
@@ -330,9 +355,23 @@ message CommitDocumentsResponse {
   repeated UpdatedNode updated_nodes = 2;
 }
 
-message RevisionConflictDetail {
-  DocumentPath path = 1;
-  optional Revision expected = 2;
-  optional Revision actual = 3;
+message CatalogRevisionConflict {
+  CatalogNodeId catalog_node_id = 1;
+  CatalogRevision expected = 2;
+  optional CatalogRevision actual = 3;
   bool exists = 4;
+}
+
+message DocumentRevisionConflict {
+  DocumentId document_id = 1;
+  DocumentRevision expected = 2;
+  optional DocumentRevision actual = 3;
+  bool exists = 4;
+}
+
+message RevisionConflictDetail {
+  oneof conflict {
+    CatalogRevisionConflict catalog = 1;
+    DocumentRevisionConflict document = 2;
+  }
 }

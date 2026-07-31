@@ -17,7 +17,11 @@ const PROTO_FILES: &[&str] = &[
     "proto/oll/replication.proto",
 ];
 
-const NODE_PROTO_FILES: &[&str] = &["proto/oll/admin.proto", "proto/oll/common.proto"];
+const RUNTIME_PROTO_FILES: &[&str] = &[
+    "proto/oll/admin.proto",
+    "proto/oll/common.proto",
+    "proto/oll/document.proto",
+];
 
 fn main() -> Result<(), Box<dyn Error>> {
     for path in PROTO_FILES {
@@ -35,7 +39,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
-        .compile_protos(NODE_PROTO_FILES, &["proto"])?;
+        .compile_protos(RUNTIME_PROTO_FILES, &["proto"])?;
 
     let descriptor = out_dir.join("oll-protocol.pb");
     let status = Command::new(protoc)

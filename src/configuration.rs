@@ -44,9 +44,43 @@ impl FromStr for ConnectUrl {
     }
 }
 
+#[derive(Clone, Eq, PartialEq)]
+pub struct PostgresUrl(Url);
+
+impl PostgresUrl {
+    pub fn expose(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Debug for PostgresUrl {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("PostgresUrl(REDACTED)")
+    }
+}
+
+impl FromStr for PostgresUrl {
+    type Err = String;
+
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        let url = Url::parse(input).map_err(|error| error.to_string())?;
+        if !matches!(url.scheme(), "postgres" | "postgresql") {
+            return Err("replica store URL scheme must be postgres or postgresql".to_owned());
+        }
+        Ok(Self(url))
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReplicaStoreConfig {
+    Sqlite { path: PathBuf },
+    Postgres { url: PostgresUrl },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedNodeConfig {
     pub replica_root: PathBuf,
+    pub replica_store: ReplicaStoreConfig,
     pub log_dir: PathBuf,
     pub listen: Option<SocketAddr>,
     pub connect: Vec<ConnectUrl>,
@@ -284,7 +318,13 @@ fn decode_root(
     ensure_plain_table(&node, config_path, "node")?;
     ensure_fields(
         &node,
-        &["replica_root", "log_dir", "listen", "connect"],
+        &[
+            "replica_root",
+            "replica_store",
+            "log_dir",
+            "listen",
+            "connect",
+        ],
         config_path,
         "node",
     )?;
@@ -296,12 +336,14 @@ fn decode_root(
         config_root,
         config_path,
     )?;
+    let replica_store = replica_store(&node, config_root, config_path)?;
     let log_dir = required_path(&node, "log_dir", "node.log_dir", config_root, config_path)?;
     let listen = optional_listen(&node, config_path)?;
     let connect = connect_urls(&node, config_path)?;
 
     Ok(ResolvedNodeConfig {
         replica_root,
+        replica_store,
         log_dir,
         listen,
         connect,
@@ -409,6 +451,80 @@ fn required_path(
         Ok(path)
     } else {
         Ok(config_root.join(path))
+    }
+}
+
+fn replica_store(
+    node: &Table,
+    config_root: &Path,
+    config_path: &Path,
+) -> Result<ReplicaStoreConfig, ConfigError> {
+    let store = match raw_value(node, "replica_store", config_path, "node.replica_store")? {
+        Value::Table(table) => table,
+        _ => {
+            return Err(schema_error(
+                config_path,
+                "node.replica_store",
+                "must be a table",
+            ));
+        }
+    };
+    ensure_plain_table(&store, config_path, "node.replica_store")?;
+    ensure_fields(
+        &store,
+        &["driver", "path", "url"],
+        config_path,
+        "node.replica_store",
+    )?;
+
+    let driver = required_string(&store, "driver", "node.replica_store.driver", config_path)?;
+    match driver.as_str() {
+        "sqlite" => {
+            if !matches!(
+                raw_value(&store, "url", config_path, "node.replica_store.url")?,
+                Value::Nil
+            ) {
+                return Err(schema_error(
+                    config_path,
+                    "node.replica_store.url",
+                    "is not valid for the sqlite driver",
+                ));
+            }
+            let path = required_path(
+                &store,
+                "path",
+                "node.replica_store.path",
+                config_root,
+                config_path,
+            )?;
+            Ok(ReplicaStoreConfig::Sqlite { path })
+        }
+        "postgres" => {
+            if !matches!(
+                raw_value(&store, "path", config_path, "node.replica_store.path")?,
+                Value::Nil
+            ) {
+                return Err(schema_error(
+                    config_path,
+                    "node.replica_store.path",
+                    "is not valid for the postgres driver",
+                ));
+            }
+            let value = required_string(&store, "url", "node.replica_store.url", config_path)?;
+            let url = value.parse().map_err(|_| {
+                schema_error(
+                    config_path,
+                    "node.replica_store.url",
+                    "must be a PostgreSQL connection URL",
+                )
+            })?;
+            Ok(ReplicaStoreConfig::Postgres { url })
+        }
+        _ => Err(schema_error(
+            config_path,
+            "node.replica_store.driver",
+            "must be sqlite or postgres",
+        )),
     }
 }
 
@@ -606,7 +722,28 @@ mod tests {
                 format_version = 1,
                 node = {{
                     replica_root = "{replica}",
+                    replica_store = {{
+                        driver = "sqlite",
+                        path = "store/replica.sqlite3",
+                    }},
                     log_dir = "{log}",
+                    listen = nil,
+                    connect = {{}},
+                }},
+            }}
+            "#
+        )
+    }
+
+    fn config_with_store(store: &str) -> String {
+        format!(
+            r#"
+            return {{
+                format_version = 1,
+                node = {{
+                    replica_root = "replica",
+                    replica_store = {store},
+                    log_dir = "log",
                     listen = nil,
                     connect = {{}},
                 }},
@@ -646,6 +783,10 @@ mod tests {
                 format_version = 1,
                 node = {
                     replica_root = paths.replica,
+                    replica_store = {
+                        driver = "postgres",
+                        url = oll.getenv("OLL_TEST_POSTGRES"),
+                    },
                     log_dir = oll.getenv("OLL_TEST_LOG"),
                     listen = "127.0.0.1:7443",
                     connect = { paths.endpoint, "https://node-b.example.com" },
@@ -654,13 +795,18 @@ mod tests {
             "#,
         );
 
-        let (runtime, config) = load_with_environment(&directory, |name| {
-            assert_eq!(name, "OLL_TEST_LOG");
-            Ok(Some("state/log".to_owned()))
+        let (runtime, config) = load_with_environment(&directory, |name| match name {
+            "OLL_TEST_POSTGRES" => Ok(Some("postgresql://user:secret@localhost/oll".to_owned())),
+            "OLL_TEST_LOG" => Ok(Some("state/log".to_owned())),
+            _ => panic!("unexpected environment lookup: {name}"),
         })
         .unwrap();
 
         assert_eq!(config.replica_root, directory.path().join("data/replica"));
+        assert!(matches!(
+            config.replica_store,
+            ReplicaStoreConfig::Postgres { .. }
+        ));
         assert_eq!(config.log_dir, directory.path().join("state/log"));
         assert_eq!(config.listen, Some("127.0.0.1:7443".parse().unwrap()));
         assert_eq!(
@@ -727,6 +873,27 @@ mod tests {
     }
 
     #[test]
+    fn replica_store_is_a_strict_tagged_configuration() {
+        for store in [
+            r#"{ driver = "sqlite" }"#,
+            r#"{ driver = "sqlite", path = "store.sqlite3", url = "postgresql://secret@host/db" }"#,
+            r#"{ driver = "sqlite", path = "store.sqlite3", extra = true }"#,
+            r#"{ driver = "postgres" }"#,
+            r#"{ driver = "postgres", url = "postgresql://secret@host/db", path = "store.sqlite3" }"#,
+            r#"{ driver = "postgres", url = "not-a-postgres-url" }"#,
+            r#"{ driver = "unknown", path = "store.sqlite3" }"#,
+        ] {
+            let directory = TestDirectory::new();
+            directory.write(CONFIG_FILENAME, &config_with_store(store));
+            let error = ConfigRuntime::load(directory.path()).unwrap_err();
+            let diagnostic = error.to_string();
+            assert!(diagnostic.contains("node.replica_store"));
+            assert!(!diagnostic.contains("secret"));
+            assert!(!diagnostic.contains("not-a-postgres-url"));
+        }
+    }
+
+    #[test]
     fn rejects_invalid_module_names_cycles_and_symlink_escapes() {
         let invalid = TestDirectory::new();
         invalid.write(CONFIG_FILENAME, "return require('../outside')");
@@ -785,6 +952,10 @@ mod tests {
                 format_version = 1,
                 node = {
                     replica_root = "replica",
+                    replica_store = {
+                        driver = "sqlite",
+                        path = "store/replica.sqlite3",
+                    },
                     log_dir = oll.getenv("NON_UTF8"),
                     listen = nil,
                     connect = {},
