@@ -55,10 +55,23 @@ decision that also updates the architecture documentation.
 
 - Inspect the existing code and working tree before editing.
 - Preserve unrelated user changes and keep edits scoped to the active stage.
+- Minimize new semantics. When an existing function, type, or module owns the
+  incorrect behavior, fix that owner directly instead of adding a parallel
+  path, wrapper, adapter, or compensating abstraction around it.
+- Add a new production function, type, module, or state concept only when it
+  has a distinct semantic responsibility or meaningful reuse. Be especially
+  cautious with single-call helpers and glue code: keep the logic in its
+  existing owner unless extraction isolates a genuinely non-trivial algorithm,
+  invariant, or error boundary. Remove the obsolete path when a replacement is
+  introduced, and audit newly added production symbols for dead or redundant
+  code before considering the change complete.
 - Prefer existing repository patterns and standard structured formats over ad
   hoc parsing.
-- Add tests in proportion to the behavior being introduced. Distributed and
-  persistence behavior requires failure, restart, and concurrency coverage.
+- Treat tests as the executable guarantee of program correctness. Every bug fix
+  needs a regression test that fails for the original defect and passes after
+  the fix; do not rely on code review or reasoning alone. Add tests in
+  proportion to the behavior being introduced. Distributed and persistence
+  behavior requires failure, restart, and concurrency coverage.
 - Do not claim cross-`LoroDoc` operations are one Loro transaction. Follow the
   documented host-level commit and recovery boundary.
 - Do not treat oll replica snapshots (`.ollsnap`) as Loro object snapshots; they
