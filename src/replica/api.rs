@@ -175,23 +175,21 @@ impl ReplicaRuntime {
         let started = std::time::Instant::now();
         let operation_id = request.operation_id.clone();
         let mutation_count = request.mutations.len();
-        self.logger
-            .emit(
-                LogLevel::Info,
-                "oll::replica",
-                "document_commit_started",
-                correlation_id,
-                serde_json::json!({
-                    "operation_id": &operation_id,
-                    "source": source.as_str(),
-                    "mutation_count": mutation_count,
-                }),
-            )
-            .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+        self.logger.emit(
+            LogLevel::Info,
+            "oll::replica",
+            "document_commit_started",
+            correlation_id,
+            serde_json::json!({
+                "operation_id": &operation_id,
+                "source": source.as_str(),
+                "mutation_count": mutation_count,
+            }),
+        );
         let result = self
             .commit_documents_inner(request, source, correlation_id)
             .await;
-        let log_result = match &result {
+        match &result {
             Ok(response) => self.logger.emit(
                 LogLevel::Info,
                 "oll::replica",
@@ -228,9 +226,6 @@ impl ReplicaRuntime {
                     "duration_ms": api_elapsed_ms(started),
                 }),
             ),
-        };
-        if result.is_ok() {
-            log_result.map_err(|error| ReplicaError::Internal(error.to_string()))?;
         }
         result
     }
@@ -405,20 +400,18 @@ impl ReplicaRuntime {
             .await?;
         *self.state.write().await = Some(replica.clone());
         for (catalog_node_id, document_id) in encoding_promotions {
-            self.logger
-                .emit(
-                    LogLevel::Info,
-                    "oll::replica",
-                    "document_encoding_promoted",
-                    correlation_id,
-                    serde_json::json!({
-                        "operation_id": &retained.operation_id,
-                        "catalog_node_id": catalog_node_id.to_string(),
-                        "document_id": document_id.to_string(),
-                        "encoding": "UTF-8",
-                    }),
-                )
-                .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+            self.logger.emit(
+                LogLevel::Info,
+                "oll::replica",
+                "document_encoding_promoted",
+                correlation_id,
+                serde_json::json!({
+                    "operation_id": &retained.operation_id,
+                    "catalog_node_id": catalog_node_id.to_string(),
+                    "document_id": document_id.to_string(),
+                    "encoding": "UTF-8",
+                }),
+            );
         }
         if !projection_paths.is_empty() {
             self.project_targeted(&replica, &projection_paths, correlation_id)

@@ -133,6 +133,17 @@ sink failures are reported on stderr because logging a sink failure back into
 the same sink would recurse. Startup still fails if the required directory and
 files cannot be safely opened.
 
+After startup, `NodeLogger::emit` is an infallible best-effort operation. A log
+event describes a business result but never determines that result: once an
+authoritative store commit, snapshot publication, projection, or other operation
+has succeeded, failure to validate, encode, enqueue, write, or flush its
+completion event MUST NOT turn the operation into an error response. Caller-side
+logging defects are reported once on stderr and counted as dropped events.
+Empty correlation IDs remain programmer errors covered by tests, but runtime
+logging drops such an invalid event rather than changing already committed state
+into an apparent failure. Opening and validating the required sinks remains
+fallible because it occurs before the daemon begins serving work.
+
 ## Event format
 
 Every file is UTF-8 JSON Lines: exactly one JSON object per line, no ANSI escape
@@ -299,6 +310,7 @@ Tests must verify:
 - JSON validity and one-event-per-line output;
 - non-blocking bounded-queue behavior and a structured dropped-event summary;
 - batch/periodic visibility and deadline-bounded final draining;
+- logging failures cannot replace a successful business-operation result;
 - required field presence and stable event names;
 - correlation propagation through async tasks, sync envelopes, plugin calls,
   jobs, and scheduler callbacks;

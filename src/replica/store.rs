@@ -1288,13 +1288,10 @@ mod tests {
     use crate::replica::model::{initialize_from_disk, scan_working_tree};
 
     #[tokio::test]
+    #[ignore = "requires OLL_TEST_POSTGRES_URL and an externally managed PostgreSQL database"]
     async fn postgres_implements_the_logical_store_contract_when_configured() {
-        let Some(base_url) = std::env::var_os("OLL_TEST_POSTGRES_URL") else {
-            return;
-        };
-        let base_url = base_url
-            .into_string()
-            .expect("OLL_TEST_POSTGRES_URL must be UTF-8");
+        let base_url = std::env::var("OLL_TEST_POSTGRES_URL")
+            .expect("explicit PostgreSQL contract test requires UTF-8 OLL_TEST_POSTGRES_URL");
         let admin = sqlx::postgres::PgPoolOptions::new()
             .max_connections(1)
             .connect(&base_url)

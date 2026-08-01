@@ -145,18 +145,15 @@ pub(crate) async fn export_runtime(
     correlation_id: &str,
 ) -> Result<(Uuid, Uuid), ReplicaError> {
     let started = std::time::Instant::now();
-    runtime
-        .logger
-        .emit(
-            LogLevel::Info,
-            "oll::replica",
-            "snapshot_export_started",
-            correlation_id,
-            serde_json::json!({}),
-        )
-        .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+    runtime.logger.emit(
+        LogLevel::Info,
+        "oll::replica",
+        "snapshot_export_started",
+        correlation_id,
+        serde_json::json!({}),
+    );
     let result = export_runtime_inner(runtime, destination).await;
-    let log_result = match &result {
+    match &result {
         Ok((snapshot_id, replica_id)) => runtime.logger.emit(
             LogLevel::Info,
             "oll::replica",
@@ -178,9 +175,6 @@ pub(crate) async fn export_runtime(
                 "duration_ms": elapsed_ms(started),
             }),
         ),
-    };
-    if result.is_ok() {
-        log_result.map_err(|error| ReplicaError::Internal(error.to_string()))?;
     }
     result
 }
@@ -366,18 +360,15 @@ pub(crate) async fn import_runtime(
     correlation_id: &str,
 ) -> Result<(Uuid, Uuid), ReplicaError> {
     let started = std::time::Instant::now();
-    runtime
-        .logger
-        .emit(
-            LogLevel::Info,
-            "oll::replica",
-            "snapshot_import_started",
-            correlation_id,
-            serde_json::json!({}),
-        )
-        .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+    runtime.logger.emit(
+        LogLevel::Info,
+        "oll::replica",
+        "snapshot_import_started",
+        correlation_id,
+        serde_json::json!({}),
+    );
     let result = import_runtime_inner(runtime, source, correlation_id).await;
-    let log_result = match &result {
+    match &result {
         Ok((snapshot_id, replica_id)) => runtime.logger.emit(
             LogLevel::Info,
             "oll::replica",
@@ -399,9 +390,6 @@ pub(crate) async fn import_runtime(
                 "duration_ms": elapsed_ms(started),
             }),
         ),
-    };
-    if result.is_ok() {
-        log_result.map_err(|error| ReplicaError::Internal(error.to_string()))?;
     }
     result
 }

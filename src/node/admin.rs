@@ -181,7 +181,7 @@ impl AdminService {
     }
 
     fn log_rpc(&self, correlation_id: &str, method: &str, outcome: &str, started: Instant) {
-        let _ = self.state.logger.emit(
+        self.state.logger.emit(
             LogLevel::Trace,
             "oll::admin",
             "admin_request",
@@ -276,7 +276,7 @@ impl Admin for AdminService {
         let first_shutdown = self.state.begin_shutdown();
         self.log_rpc(&correlation_id, "Shutdown", "accepted", started);
         if first_shutdown {
-            let _ = self.state.logger.emit(
+            self.state.logger.emit(
                 LogLevel::Info,
                 "oll::node",
                 "node_shutdown_requested",

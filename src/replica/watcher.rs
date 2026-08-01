@@ -293,11 +293,7 @@ impl ReplicaRuntime {
                             None
                         };
                         if let Some(error) = rename_error {
-                            let _ = self.log_failure(
-                                "working_tree_rename_failed",
-                                &correlation_id,
-                                &error,
-                            );
+                            self.log_failure("working_tree_rename_failed", &correlation_id, &error);
                         }
                     }
                     if !reconcile_final_state {
@@ -305,7 +301,7 @@ impl ReplicaRuntime {
                     }
                 }
                 Err(errors) => {
-                    let _ = self.logger.emit(
+                    self.logger.emit(
                         LogLevel::Warn,
                         "oll::replica",
                         "working_tree_watcher_error",
@@ -315,7 +311,7 @@ impl ReplicaRuntime {
                 }
             }
             if let Err(error) = self.reconcile(&correlation_id).await {
-                let _ = self.log_failure(
+                self.log_failure(
                     "working_tree_reconciliation_failed",
                     &correlation_id,
                     &error,
@@ -326,15 +322,13 @@ impl ReplicaRuntime {
 
     async fn reconcile(&self, correlation_id: &str) -> Result<(), ReplicaError> {
         let started = std::time::Instant::now();
-        self.logger
-            .emit(
-                LogLevel::Info,
-                "oll::replica",
-                "working_tree_reconciliation_started",
-                correlation_id,
-                json!({}),
-            )
-            .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+        self.logger.emit(
+            LogLevel::Info,
+            "oll::replica",
+            "working_tree_reconciliation_started",
+            correlation_id,
+            json!({}),
+        );
         let _coordinator = self.coordinator.lock().await;
         self.recover_projection(Some(correlation_id)).await?;
         let root = self.root.clone();
@@ -347,38 +341,34 @@ impl ReplicaRuntime {
         let was_uninitialized = current.is_none();
         let change = match current.as_ref() {
             None if disk.is_empty() => {
-                self.logger
-                    .emit(
-                        LogLevel::Info,
-                        "oll::replica",
-                        "working_tree_reconciliation_completed",
-                        correlation_id,
-                        json!({
-                            "replica_state": "uninitialized",
-                            "duration_ms": elapsed_ms(started),
-                            "changed": false,
-                        }),
-                    )
-                    .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+                self.logger.emit(
+                    LogLevel::Info,
+                    "oll::replica",
+                    "working_tree_reconciliation_completed",
+                    correlation_id,
+                    json!({
+                        "replica_state": "uninitialized",
+                        "duration_ms": elapsed_ms(started),
+                        "changed": false,
+                    }),
+                );
                 return Ok(());
             }
             None => initialize_from_disk(&disk, self.writer_node_id, correlation_id)?,
             Some(replica) => reconcile_disk(replica, &disk, self.writer_node_id, correlation_id)?,
         };
         if !change.changed {
-            self.logger
-                .emit(
-                    LogLevel::Info,
-                    "oll::replica",
-                    "working_tree_reconciliation_completed",
-                    correlation_id,
-                    json!({
-                        "replica_id": change.replica.replica_id.to_string(),
-                        "duration_ms": elapsed_ms(started),
-                        "changed": false,
-                    }),
-                )
-                .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+            self.logger.emit(
+                LogLevel::Info,
+                "oll::replica",
+                "working_tree_reconciliation_completed",
+                correlation_id,
+                json!({
+                    "replica_id": change.replica.replica_id.to_string(),
+                    "duration_ms": elapsed_ms(started),
+                    "changed": false,
+                }),
+            );
             return Ok(());
         }
         if was_uninitialized {
@@ -405,20 +395,19 @@ impl ReplicaRuntime {
             self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;
         }
-        self.logger
-            .emit(
-                LogLevel::Info,
-                "oll::replica",
-                "working_tree_reconciliation_completed",
-                correlation_id,
-                json!({
-                    "replica_id": change.replica.replica_id.to_string(),
-                    "object_count": change.replica.visible_count(),
-                    "duration_ms": elapsed_ms(started),
-                    "changed": true,
-                }),
-            )
-            .map_err(|error| ReplicaError::Internal(error.to_string()))
+        self.logger.emit(
+            LogLevel::Info,
+            "oll::replica",
+            "working_tree_reconciliation_completed",
+            correlation_id,
+            json!({
+                "replica_id": change.replica.replica_id.to_string(),
+                "object_count": change.replica.visible_count(),
+                "duration_ms": elapsed_ms(started),
+                "changed": true,
+            }),
+        );
+        Ok(())
     }
 
     async fn reconcile_rename(
@@ -451,19 +440,18 @@ impl ReplicaRuntime {
             self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;
         }
-        self.logger
-            .emit(
-                LogLevel::Info,
-                "oll::replica",
-                "working_tree_entry_moved",
-                correlation_id,
-                json!({
-                    "path_before": source,
-                    "path_after": destination,
-                    "replica_id": change.replica.replica_id.to_string(),
-                }),
-            )
-            .map_err(|error| ReplicaError::Internal(error.to_string()))
+        self.logger.emit(
+            LogLevel::Info,
+            "oll::replica",
+            "working_tree_entry_moved",
+            correlation_id,
+            json!({
+                "path_before": source,
+                "path_after": destination,
+                "replica_id": change.replica.replica_id.to_string(),
+            }),
+        );
+        Ok(())
     }
 
     pub(crate) async fn recover_projection(
@@ -488,18 +476,16 @@ impl ReplicaRuntime {
             &generated_correlation_id
         };
         if whole_pending {
-            self.logger
-                .emit(
-                    LogLevel::Warn,
-                    "oll::replica",
-                    "replica_projection_recovery_started",
-                    correlation_id,
-                    json!({
-                        "replica_id": replica.replica_id.to_string(),
-                        "scope": "complete",
-                    }),
-                )
-                .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+            self.logger.emit(
+                LogLevel::Warn,
+                "oll::replica",
+                "replica_projection_recovery_started",
+                correlation_id,
+                json!({
+                    "replica_id": replica.replica_id.to_string(),
+                    "scope": "complete",
+                }),
+            );
             let started = std::time::Instant::now();
             let recovery = async {
                 self.project_complete(&replica).await?;
@@ -509,7 +495,7 @@ impl ReplicaRuntime {
             }
             .await;
             if let Err(error) = recovery {
-                let _ = self.logger.emit(
+                self.logger.emit(
                     LogLevel::Error,
                     "oll::replica",
                     "replica_projection_recovery_failed",
@@ -523,43 +509,39 @@ impl ReplicaRuntime {
                 );
                 return Err(error);
             }
-            self.logger
-                .emit(
-                    LogLevel::Info,
-                    "oll::replica",
-                    "replica_projection_recovery_completed",
-                    correlation_id,
-                    json!({
-                        "replica_id": replica.replica_id.to_string(),
-                        "scope": "complete",
-                        "duration_ms": elapsed_ms(started),
-                    }),
-                )
-                .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+            self.logger.emit(
+                LogLevel::Info,
+                "oll::replica",
+                "replica_projection_recovery_completed",
+                correlation_id,
+                json!({
+                    "replica_id": replica.replica_id.to_string(),
+                    "scope": "complete",
+                    "duration_ms": elapsed_ms(started),
+                }),
+            );
         } else {
             let paths = self.store.projection_paths(replica.generation_id).await?;
             if !paths.is_empty() {
                 let started = std::time::Instant::now();
-                self.logger
-                    .emit(
-                        LogLevel::Warn,
-                        "oll::replica",
-                        "replica_projection_recovery_started",
-                        correlation_id,
-                        json!({
-                            "replica_id": replica.replica_id.to_string(),
-                            "scope": "targeted",
-                            "path_count": paths.len(),
-                        }),
-                    )
-                    .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+                self.logger.emit(
+                    LogLevel::Warn,
+                    "oll::replica",
+                    "replica_projection_recovery_started",
+                    correlation_id,
+                    json!({
+                        "replica_id": replica.replica_id.to_string(),
+                        "scope": "targeted",
+                        "path_count": paths.len(),
+                    }),
+                );
                 let recovery = async {
                     self.project_targeted(&replica, &paths, correlation_id)
                         .await
                 }
                 .await;
                 if let Err(error) = recovery {
-                    let _ = self.logger.emit(
+                    self.logger.emit(
                         LogLevel::Error,
                         "oll::replica",
                         "replica_projection_recovery_failed",
@@ -574,20 +556,18 @@ impl ReplicaRuntime {
                     );
                     return Err(error);
                 }
-                self.logger
-                    .emit(
-                        LogLevel::Info,
-                        "oll::replica",
-                        "replica_projection_recovery_completed",
-                        correlation_id,
-                        json!({
-                            "replica_id": replica.replica_id.to_string(),
-                            "scope": "targeted",
-                            "path_count": paths.len(),
-                            "duration_ms": elapsed_ms(started),
-                        }),
-                    )
-                    .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+                self.logger.emit(
+                    LogLevel::Info,
+                    "oll::replica",
+                    "replica_projection_recovery_completed",
+                    correlation_id,
+                    json!({
+                        "replica_id": replica.replica_id.to_string(),
+                        "scope": "targeted",
+                        "path_count": paths.len(),
+                        "duration_ms": elapsed_ms(started),
+                    }),
+                );
             }
         }
         Ok(())
@@ -656,7 +636,7 @@ impl ReplicaRuntime {
                     match result {
                         Ok(()) => break 'attempts Ok(()),
                         Err(error) if attempt < PROJECTION_ATTEMPTS => {
-                            let _ = self.logger.emit(
+                            self.logger.emit(
                                 LogLevel::Warn,
                                 "oll::replica",
                                 "working_tree_projection_retrying",
@@ -790,12 +770,7 @@ impl ReplicaRuntime {
         }
     }
 
-    fn log_failure(
-        &self,
-        event: &str,
-        correlation_id: &str,
-        error: &ReplicaError,
-    ) -> Result<(), crate::node::NodeError> {
+    fn log_failure(&self, event: &str, correlation_id: &str, error: &ReplicaError) {
         self.logger.emit(
             LogLevel::Error,
             "oll::replica",

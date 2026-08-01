@@ -211,7 +211,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         "node_starting",
         &startup_correlation,
         json!({ "config_root": intent.config_root.display().to_string() }),
-    )?;
+    );
 
     let replica = match ReplicaRuntime::start(
         config.replica_root.clone(),
@@ -223,7 +223,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     {
         Ok(replica) => replica,
         Err(error) => {
-            let _ = logger.emit(
+            logger.emit(
                 LogLevel::Error,
                 "oll::node",
                 "node_start_failed",
@@ -237,7 +237,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     let (listener, socket_guard) = match bind_admin_socket(&intent.config_root) {
         Ok(result) => result,
         Err(error) => {
-            let _ = logger.emit(
+            logger.emit(
                 LogLevel::Error,
                 "oll::node",
                 "node_start_failed",
@@ -296,13 +296,13 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
             "process_id": std::process::id(),
             "configured_listen_address": config.listen.map(|address| address.to_string()),
         }),
-    )?;
+    );
 
     let (shutdown_correlation, server_result, shutdown_deadline) =
         wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
     signal_task.abort();
     let _ = signal_task.await;
-    let _ = logger.emit(
+    logger.emit(
         if server_result.is_ok() {
             LogLevel::Info
         } else {
@@ -410,7 +410,7 @@ async fn wait_for_signal(
     };
     if state.begin_shutdown() {
         let correlation_id = new_correlation_id();
-        let _ = logger.emit(
+        logger.emit(
             LogLevel::Info,
             "oll::node",
             "node_shutdown_requested",

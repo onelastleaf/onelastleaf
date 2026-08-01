@@ -251,7 +251,7 @@ pub struct NodeLogger {
     sender: SyncSender<LogCommand>,
     filters: RwLock<BTreeMap<String, LogLevel>>,
     dropped_events: Arc<AtomicU64>,
-    writer_disconnected_reported: AtomicBool,
+    emit_failure_reported: AtomicBool,
 }
 
 impl NodeLogger {
@@ -283,7 +283,7 @@ impl NodeLogger {
             sender,
             filters: RwLock::new(BTreeMap::new()),
             dropped_events,
-            writer_disconnected_reported: AtomicBool::new(false),
+            emit_failure_reported: AtomicBool::new(false),
         }))
     }
 
@@ -302,18 +302,30 @@ impl NodeLogger {
         event: &str,
         correlation_id: &str,
         fields: Value,
-    ) -> Result<(), NodeError> {
+    ) {
         if correlation_id.is_empty() {
-            return Err(NodeError::Internal(
-                "structured log event is missing a correlation ID".to_owned(),
-            ));
+            self.dropped_events.fetch_add(1, Ordering::Relaxed);
+            self.report_emit_failure(
+                "oll structured logger rejected an event without a correlation ID",
+            );
+            return;
         }
-        if !self.enabled(target, level)? {
-            return Ok(());
+        let enabled = match self.enabled(target, level) {
+            Ok(enabled) => enabled,
+            Err(error) => {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                self.report_emit_failure(&format!(
+                    "oll structured logger could not evaluate its filter: {error}"
+                ));
+                return;
+            }
+        };
+        if !enabled {
+            return;
         }
 
         let emitted_at = OffsetDateTime::now_utc();
-        let encoded = encode_log_event(
+        let encoded = match encode_log_event(
             &self.identity,
             level,
             target,
@@ -321,7 +333,16 @@ impl NodeLogger {
             correlation_id,
             fields,
             emitted_at,
-        )?;
+        ) {
+            Ok(encoded) => encoded,
+            Err(error) => {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                self.report_emit_failure(&format!(
+                    "oll structured logger could not encode an event: {error}"
+                ));
+                return;
+            }
+        };
         let route = if target.starts_with("oll::sync") {
             if level >= LogLevel::Info {
                 LogRoute::SyncAndOll
@@ -342,15 +363,11 @@ impl NodeLogger {
             }
             Err(TrySendError::Disconnected(_)) => {
                 self.dropped_events.fetch_add(1, Ordering::Relaxed);
-                if !self
-                    .writer_disconnected_reported
-                    .swap(true, Ordering::Relaxed)
-                {
-                    eprintln!("oll structured log writer stopped; subsequent events will be lost");
-                }
+                self.report_emit_failure(
+                    "oll structured log writer stopped; subsequent events will be lost",
+                );
             }
         }
-        Ok(())
     }
 
     pub fn flush_until(&self, deadline: Instant) -> Result<(), NodeError> {
@@ -400,6 +417,12 @@ impl NodeLogger {
             .map(|(_, level)| *level)
             .unwrap_or(LogLevel::Info);
         Ok(level >= filter)
+    }
+
+    fn report_emit_failure(&self, message: &str) {
+        if !self.emit_failure_reported.swap(true, Ordering::Relaxed) {
+            eprintln!("{message}");
+        }
     }
 }
 
@@ -800,15 +823,13 @@ mod tests {
             NodeIdentity::generate("home".parse().unwrap()),
         )
         .unwrap();
-        logger
-            .emit(
-                LogLevel::Info,
-                "oll::node",
-                "node_started",
-                "corr-1",
-                json!({ "process_id": 42 }),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Info,
+            "oll::node",
+            "node_started",
+            "corr-1",
+            json!({ "process_id": 42 }),
+        );
         logger
             .flush_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
@@ -834,15 +855,13 @@ mod tests {
         let logs = directory.path().join("logs");
         let logger =
             NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
-        logger
-            .emit(
-                LogLevel::Trace,
-                "oll::sync",
-                "frame_received",
-                "corr-1",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Trace,
+            "oll::sync",
+            "frame_received",
+            "corr-1",
+            json!({}),
+        );
         logger
             .flush_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
@@ -855,15 +874,13 @@ mod tests {
         logger
             .set_filter("oll::sync".to_owned(), LogLevel::Trace)
             .unwrap();
-        logger
-            .emit(
-                LogLevel::Trace,
-                "oll::sync",
-                "frame_received",
-                "corr-2",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Trace,
+            "oll::sync",
+            "frame_received",
+            "corr-2",
+            json!({}),
+        );
         logger
             .flush_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
@@ -877,34 +894,30 @@ mod tests {
     #[test]
     fn emit_does_not_block_when_the_bounded_queue_is_full() {
         let identity = NodeIdentity::generate("home".parse().unwrap());
-        let (sender, _receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
         let logger = NodeLogger {
             identity,
             sender,
             filters: RwLock::new(BTreeMap::new()),
             dropped_events: Arc::new(AtomicU64::new(0)),
-            writer_disconnected_reported: AtomicBool::new(false),
+            emit_failure_reported: AtomicBool::new(false),
         };
-        logger
-            .emit(
-                LogLevel::Info,
-                "oll::node",
-                "first_event",
-                "corr-1",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Info,
+            "oll::node",
+            "first_event",
+            "corr-1",
+            json!({}),
+        );
 
         let started = Instant::now();
-        logger
-            .emit(
-                LogLevel::Error,
-                "oll::node",
-                "queue_is_full",
-                "corr-2",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Error,
+            "oll::node",
+            "queue_is_full",
+            "corr-2",
+            json!({}),
+        );
 
         assert!(started.elapsed() < Duration::from_millis(50));
         assert_eq!(logger.dropped_events.load(Ordering::Relaxed), 1);
@@ -915,6 +928,25 @@ mod tests {
             Err(NodeError::Unavailable(_))
         ));
         assert!(flush_started.elapsed() < Duration::from_millis(200));
+
+        drop(receiver);
+        let _: () = logger.emit(
+            LogLevel::Error,
+            "oll::node",
+            "writer_disconnected",
+            "corr-3",
+            json!({}),
+        );
+        assert_eq!(logger.dropped_events.load(Ordering::Relaxed), 2);
+
+        let _: () = logger.emit(
+            LogLevel::Error,
+            "oll::node",
+            "invalid_correlation",
+            "",
+            json!({}),
+        );
+        assert_eq!(logger.dropped_events.load(Ordering::Relaxed), 3);
     }
 
     #[test]
@@ -924,15 +956,13 @@ mod tests {
         let logger =
             NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
         logger.dropped_events.store(7, Ordering::Relaxed);
-        logger
-            .emit(
-                LogLevel::Info,
-                "oll::node",
-                "retained_event",
-                "corr-retained",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Info,
+            "oll::node",
+            "retained_event",
+            "corr-retained",
+            json!({}),
+        );
         logger
             .flush_until(Instant::now() + Duration::from_secs(2))
             .unwrap();
@@ -953,15 +983,13 @@ mod tests {
         let logs = directory.path().join("logs");
         let logger =
             NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
-        logger
-            .emit(
-                LogLevel::Info,
-                "oll::node",
-                "partial_batch",
-                "corr-periodic",
-                json!({}),
-            )
-            .unwrap();
+        logger.emit(
+            LogLevel::Info,
+            "oll::node",
+            "partial_batch",
+            "corr-periodic",
+            json!({}),
+        );
 
         let deadline = Instant::now() + Duration::from_secs(2);
         loop {

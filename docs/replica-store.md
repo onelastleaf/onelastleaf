@@ -389,3 +389,20 @@ Replica persistence tests cover both SQLite and PostgreSQL logical behavior:
   active-generation switch, and each restart selects the documented generation
   without importing the old working tree;
 - rebuilding a pending complete-tree projection is idempotent.
+
+The live PostgreSQL contract test is marked ignored by default because it
+requires an externally managed database. A normal `cargo test` run therefore
+reports it as `ignored`, never as a successful test that silently returned
+without exercising PostgreSQL. Complete validation runs it explicitly:
+
+```sh
+OLL_TEST_POSTGRES_URL='postgresql://user@%2Frun%2Fpostgresql/database' \
+  cargo test \
+  replica::store::tests::postgres_implements_the_logical_store_contract_when_configured \
+  --lib -- --ignored --exact
+```
+
+When explicitly selected, a missing or non-UTF-8 `OLL_TEST_POSTGRES_URL`, a
+connection failure, or any contract violation fails the test. CI treats this
+explicit PostgreSQL invocation as a required job rather than inferring coverage
+from the ordinary test suite.
