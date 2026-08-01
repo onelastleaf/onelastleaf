@@ -965,6 +965,9 @@ mod tests {
                 && operation.correlation_id == "import-correlation"
         }));
 
+        logger
+            .flush_until(std::time::Instant::now() + Duration::from_secs(2))
+            .unwrap();
         let events = std::fs::read_to_string(directory.path().join("log/oll.log"))
             .unwrap()
             .lines()

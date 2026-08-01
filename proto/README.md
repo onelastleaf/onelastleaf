@@ -149,9 +149,10 @@ machine:
    receiver verifies chunk count, size, and SHA-256 before importing it.
 5. After a successful Loro import, the receiver sends `ReplicaTransferAck` and
    advertises its new summary when it changes.
-6. Catalog-referenced binary blobs use separate hash-addressed streaming
-   transfer messages. They are verified by SHA-256 and never modeled as Loro
-   objects.
+6. The sync stage will add separate hash-addressed streaming messages for
+   catalog-referenced binary blobs. They will be verified by SHA-256 and will
+   never be modeled as Loro objects. Those blob-transfer messages are not part
+   of the current replica-stage descriptor in `replication.proto`.
 
 The sender must not have more unacknowledged transfer bytes in flight than the
 receiver granted through `FlowControl`. A Loro object snapshot is only a

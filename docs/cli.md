@@ -200,7 +200,8 @@ CLI does not enforce a snapshot file extension; the format itself is defined in
 `create`, `update`, `move`, `delete`, or `replace`. `path_before` and
 `path_after` are nullable strings when that side of the operation does not
 exist. No other field is nullable. The default text format presents the same
-fields for a human but is not a parsing interface; scripts use JSON.
+fields, including both `operation_id` and `correlation_id`, for a human but is
+not a parsing interface; scripts use JSON.
 
 Before the first scan or snapshot import has initialized the replica, `inspect`,
 `ops`, and `export` return `FAILED_PRECONDITION`; `import` remains available so

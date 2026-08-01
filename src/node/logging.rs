@@ -1,14 +1,16 @@
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
-    io::{self, Write},
+    io::{self, BufWriter, Write},
     os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::{
-        Arc, Mutex, RwLock,
+        Arc, RwLock,
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc::{self, SyncSender, TrySendError},
     },
     thread,
+    time::{Duration, Instant},
 };
 
 use flate2::{Compression, write::GzEncoder};
@@ -24,6 +26,10 @@ const OLL_LOG_FILENAME: &str = "oll.log";
 const SYNC_LOG_FILENAME: &str = "sync.log";
 const MEBIBYTE: u64 = 1024 * 1024;
 const COMPRESSION_QUEUE_CAPACITY: usize = 4;
+const LOG_QUEUE_CAPACITY: usize = 4096;
+const LOG_BUFFER_CAPACITY: usize = 64 * 1024;
+const LOG_BATCH_SIZE: usize = 256;
+const LOG_FLUSH_INTERVAL: Duration = Duration::from_millis(250);
 
 const OLL_ROTATION: RotationPolicy = RotationPolicy {
     maximum_bytes: 25 * MEBIBYTE,
@@ -98,10 +104,11 @@ struct LogSinks {
 }
 
 struct RotatingLogSink {
-    file: File,
+    file: BufWriter<File>,
     path: PathBuf,
     filename: String,
     active_date: Date,
+    active_size: u64,
     policy: RotationPolicy,
 }
 
@@ -115,11 +122,16 @@ impl RotatingLogSink {
             .to_owned();
         let now = OffsetDateTime::now_utc();
         let active_date = file_date(&file).unwrap_or_else(|| now.date());
+        let active_size = file
+            .metadata()
+            .map_err(|error| NodeError::io("inspect active log file", error))?
+            .len();
         Ok(Self {
-            file,
+            file: BufWriter::with_capacity(LOG_BUFFER_CAPACITY, file),
             path,
             filename,
             active_date,
+            active_size,
             policy,
         })
     }
@@ -131,6 +143,7 @@ impl RotatingLogSink {
     ) -> Result<Option<RotationJob>, NodeError> {
         let rotation = self.rotate_if_needed(encoded.len() as u64, now)?;
         write_event(&mut self.file, encoded)?;
+        self.active_size = self.active_size.saturating_add(encoded.len() as u64);
         Ok(rotation)
     }
 
@@ -139,37 +152,43 @@ impl RotatingLogSink {
         incoming_bytes: u64,
         now: OffsetDateTime,
     ) -> Result<Option<RotationJob>, NodeError> {
-        let size = self
-            .file
-            .metadata()
-            .map_err(|error| NodeError::io("inspect active log file", error))?
-            .len();
         if self.active_date == now.date()
-            && size.saturating_add(incoming_bytes) <= self.policy.maximum_bytes
+            && self.active_size.saturating_add(incoming_bytes) <= self.policy.maximum_bytes
         {
             return Ok(None);
         }
 
-        self.file
-            .flush()
-            .and_then(|_| self.file.sync_data())
-            .map_err(|error| NodeError::io("flush active log before rotation", error))?;
+        self.flush(true)?;
         let rotated = rotation_path(&self.path, &self.filename, now)?;
         fs::rename(&self.path, &rotated)
             .map_err(|error| NodeError::io("rotate structured log", error))?;
         match open_log_file(&self.path) {
-            Ok(file) => self.file = file,
+            Ok(file) => self.file = BufWriter::with_capacity(LOG_BUFFER_CAPACITY, file),
             Err(error) => {
                 let _ = fs::rename(&rotated, &self.path);
                 return Err(error);
             }
         }
         self.active_date = now.date();
+        self.active_size = 0;
         Ok(Some(RotationJob {
             source: rotated,
             filename: self.filename.clone(),
             policy: self.policy,
         }))
+    }
+
+    fn flush(&mut self, durable: bool) -> Result<(), NodeError> {
+        self.file
+            .flush()
+            .map_err(|error| NodeError::io("flush structured log", error))?;
+        if durable {
+            self.file
+                .get_ref()
+                .sync_data()
+                .map_err(|error| NodeError::io("synchronize structured log", error))?;
+        }
+        Ok(())
     }
 }
 
@@ -208,12 +227,31 @@ impl CompressionWorker {
     }
 }
 
+#[derive(Clone, Copy)]
+enum LogRoute {
+    Oll,
+    Sync,
+    SyncAndOll,
+}
+
+struct QueuedLogEvent {
+    encoded: Vec<u8>,
+    emitted_at: OffsetDateTime,
+    route: LogRoute,
+}
+
+enum LogCommand {
+    Event(QueuedLogEvent),
+    Flush(mpsc::Sender<Result<(), String>>),
+}
+
 /// The user-owned JSONL logging sink for one node deployment.
 pub struct NodeLogger {
     identity: NodeIdentity,
-    sinks: Mutex<LogSinks>,
+    sender: SyncSender<LogCommand>,
     filters: RwLock<BTreeMap<String, LogLevel>>,
-    compression: CompressionWorker,
+    dropped_events: Arc<AtomicU64>,
+    writer_disconnected_reported: AtomicBool,
 }
 
 impl NodeLogger {
@@ -224,11 +262,28 @@ impl NodeLogger {
         queue_pending_rotations(log_dir, SYNC_LOG_FILENAME, SYNC_ROTATION, &compression)?;
         let oll = RotatingLogSink::open(log_dir.join(OLL_LOG_FILENAME), OLL_ROTATION)?;
         let sync = RotatingLogSink::open(log_dir.join(SYNC_LOG_FILENAME), SYNC_ROTATION)?;
+        let (sender, receiver) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
+        let dropped_events = Arc::new(AtomicU64::new(0));
+        let writer_dropped_events = Arc::clone(&dropped_events);
+        let writer_identity = identity.clone();
+        thread::Builder::new()
+            .name("oll-log-writer".to_owned())
+            .spawn(move || {
+                run_log_writer(
+                    LogSinks { oll, sync },
+                    compression,
+                    receiver,
+                    writer_dropped_events,
+                    writer_identity,
+                );
+            })
+            .map_err(|error| NodeError::io("start structured log writer", error))?;
         Ok(Arc::new(Self {
             identity,
-            sinks: Mutex::new(LogSinks { oll, sync }),
+            sender,
             filters: RwLock::new(BTreeMap::new()),
-            compression,
+            dropped_events,
+            writer_disconnected_reported: AtomicBool::new(false),
         }))
     }
 
@@ -257,70 +312,78 @@ impl NodeLogger {
             return Ok(());
         }
 
-        let now = OffsetDateTime::now_utc();
-        let mut record = Map::new();
-        record.insert("timestamp".to_owned(), Value::String(format_timestamp(now)));
-        record.insert("level".to_owned(), Value::String(level.as_str().to_owned()));
-        record.insert("target".to_owned(), Value::String(target.to_owned()));
-        record.insert("event".to_owned(), Value::String(event.to_owned()));
-        record.insert(
-            "correlation_id".to_owned(),
-            Value::String(correlation_id.to_owned()),
-        );
-        record.insert(
-            "node_id".to_owned(),
-            Value::String(self.identity.node_id().to_string()),
-        );
-        record.insert(
-            "node_name".to_owned(),
-            Value::String(self.identity.node_name().as_str().to_owned()),
-        );
-        if let Value::Object(fields) = fields {
-            for (key, value) in fields {
-                record.entry(key).or_insert(value);
+        let emitted_at = OffsetDateTime::now_utc();
+        let encoded = encode_log_event(
+            &self.identity,
+            level,
+            target,
+            event,
+            correlation_id,
+            fields,
+            emitted_at,
+        )?;
+        let route = if target.starts_with("oll::sync") {
+            if level >= LogLevel::Info {
+                LogRoute::SyncAndOll
+            } else {
+                LogRoute::Sync
             }
-        }
-
-        let mut encoded = serde_json::to_vec(&Value::Object(record))
-            .map_err(|_| NodeError::Internal("cannot encode structured log event".to_owned()))?;
-        encoded.push(b'\n');
-
-        let mut sinks = self
-            .sinks
-            .lock()
-            .map_err(|_| NodeError::Internal("log sink lock is poisoned".to_owned()))?;
-        if target.starts_with("oll::sync") {
-            if let Some(job) = sinks.sync.write(&encoded, now)? {
-                self.compression.enqueue(job);
+        } else {
+            LogRoute::Oll
+        };
+        match self.sender.try_send(LogCommand::Event(QueuedLogEvent {
+            encoded,
+            emitted_at,
+            route,
+        })) {
+            Ok(()) => {}
+            Err(TrySendError::Full(_)) => {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
             }
-            if level >= LogLevel::Info
-                && let Some(job) = sinks.oll.write(&encoded, now)?
-            {
-                self.compression.enqueue(job);
+            Err(TrySendError::Disconnected(_)) => {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                if !self
+                    .writer_disconnected_reported
+                    .swap(true, Ordering::Relaxed)
+                {
+                    eprintln!("oll structured log writer stopped; subsequent events will be lost");
+                }
             }
-        } else if let Some(job) = sinks.oll.write(&encoded, now)? {
-            self.compression.enqueue(job);
         }
         Ok(())
     }
 
-    pub fn flush(&self) -> Result<(), NodeError> {
-        let mut sinks = self
-            .sinks
-            .lock()
-            .map_err(|_| NodeError::Internal("log sink lock is poisoned".to_owned()))?;
-        sinks
-            .oll
-            .file
-            .flush()
-            .and_then(|_| sinks.oll.file.sync_data())
-            .map_err(|error| NodeError::io("flush oll log", error))?;
-        sinks
-            .sync
-            .file
-            .flush()
-            .and_then(|_| sinks.sync.file.sync_data())
-            .map_err(|error| NodeError::io("flush sync log", error))
+    pub fn flush_until(&self, deadline: Instant) -> Result<(), NodeError> {
+        let (result_sender, result_receiver) = mpsc::channel();
+        let mut command = LogCommand::Flush(result_sender);
+        loop {
+            match self.sender.try_send(command) {
+                Ok(()) => break,
+                Err(TrySendError::Full(returned)) => {
+                    if Instant::now() >= deadline {
+                        return Err(NodeError::Unavailable(
+                            "structured log flush exceeded its shutdown deadline".to_owned(),
+                        ));
+                    }
+                    command = returned;
+                    thread::sleep(Duration::from_millis(1));
+                }
+                Err(TrySendError::Disconnected(_)) => {
+                    return Err(NodeError::Internal(
+                        "structured log writer stopped before flush".to_owned(),
+                    ));
+                }
+            }
+        }
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        result_receiver
+            .recv_timeout(remaining)
+            .map_err(|_| {
+                NodeError::Unavailable(
+                    "structured log flush exceeded its shutdown deadline".to_owned(),
+                )
+            })?
+            .map_err(NodeError::Internal)
     }
 
     fn enabled(&self, target: &str, level: LogLevel) -> Result<bool, NodeError> {
@@ -338,6 +401,175 @@ impl NodeLogger {
             .unwrap_or(LogLevel::Info);
         Ok(level >= filter)
     }
+}
+
+fn encode_log_event(
+    identity: &NodeIdentity,
+    level: LogLevel,
+    target: &str,
+    event: &str,
+    correlation_id: &str,
+    fields: Value,
+    timestamp: OffsetDateTime,
+) -> Result<Vec<u8>, NodeError> {
+    let mut record = Map::new();
+    record.insert(
+        "timestamp".to_owned(),
+        Value::String(format_timestamp(timestamp)),
+    );
+    record.insert("level".to_owned(), Value::String(level.as_str().to_owned()));
+    record.insert("target".to_owned(), Value::String(target.to_owned()));
+    record.insert("event".to_owned(), Value::String(event.to_owned()));
+    record.insert(
+        "correlation_id".to_owned(),
+        Value::String(correlation_id.to_owned()),
+    );
+    record.insert(
+        "node_id".to_owned(),
+        Value::String(identity.node_id().to_string()),
+    );
+    record.insert(
+        "node_name".to_owned(),
+        Value::String(identity.node_name().as_str().to_owned()),
+    );
+    if let Value::Object(fields) = fields {
+        for (key, value) in fields {
+            record.entry(key).or_insert(value);
+        }
+    }
+    let mut encoded = serde_json::to_vec(&Value::Object(record))
+        .map_err(|_| NodeError::Internal("cannot encode structured log event".to_owned()))?;
+    encoded.push(b'\n');
+    Ok(encoded)
+}
+
+fn run_log_writer(
+    mut sinks: LogSinks,
+    compression: CompressionWorker,
+    receiver: mpsc::Receiver<LogCommand>,
+    dropped_events: Arc<AtomicU64>,
+    identity: NodeIdentity,
+) {
+    let mut commands_since_flush = 0_usize;
+    let mut next_flush = Instant::now() + LOG_FLUSH_INTERVAL;
+    let mut failure_reported = false;
+    loop {
+        let command = receiver.recv_timeout(next_flush.saturating_duration_since(Instant::now()));
+        let result = match command {
+            Ok(LogCommand::Event(event)) => {
+                commands_since_flush += 1;
+                write_queued_event(&mut sinks, &compression, &event)
+                    .and_then(|_| {
+                        write_dropped_summary(&mut sinks, &compression, &dropped_events, &identity)
+                    })
+                    .and_then(|_| {
+                        if commands_since_flush >= LOG_BATCH_SIZE {
+                            commands_since_flush = 0;
+                            next_flush = Instant::now() + LOG_FLUSH_INTERVAL;
+                            flush_log_sinks(&mut sinks, false)
+                        } else {
+                            Ok(())
+                        }
+                    })
+            }
+            Ok(LogCommand::Flush(result_sender)) => {
+                commands_since_flush = 0;
+                next_flush = Instant::now() + LOG_FLUSH_INTERVAL;
+                let result =
+                    write_dropped_summary(&mut sinks, &compression, &dropped_events, &identity)
+                        .and_then(|_| flush_log_sinks(&mut sinks, true));
+                let reply = result.as_ref().map(|_| ()).map_err(ToString::to_string);
+                let _ = result_sender.send(reply);
+                result
+            }
+            Err(mpsc::RecvTimeoutError::Timeout) => {
+                commands_since_flush = 0;
+                next_flush = Instant::now() + LOG_FLUSH_INTERVAL;
+                write_dropped_summary(&mut sinks, &compression, &dropped_events, &identity)
+                    .and_then(|_| flush_log_sinks(&mut sinks, false))
+            }
+            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                let result =
+                    write_dropped_summary(&mut sinks, &compression, &dropped_events, &identity)
+                        .and_then(|_| flush_log_sinks(&mut sinks, true));
+                if let Err(error) = result {
+                    eprintln!("oll structured log writer failed during close: {error}");
+                }
+                break;
+            }
+        };
+        match result {
+            Ok(()) => failure_reported = false,
+            Err(error) if !failure_reported => {
+                eprintln!("oll structured log writer failed: {error}");
+                failure_reported = true;
+            }
+            Err(_) => {}
+        }
+    }
+}
+
+fn write_queued_event(
+    sinks: &mut LogSinks,
+    compression: &CompressionWorker,
+    event: &QueuedLogEvent,
+) -> Result<(), NodeError> {
+    if matches!(event.route, LogRoute::Sync | LogRoute::SyncAndOll)
+        && let Some(job) = sinks.sync.write(&event.encoded, event.emitted_at)?
+    {
+        compression.enqueue(job);
+    }
+    if matches!(event.route, LogRoute::Oll | LogRoute::SyncAndOll)
+        && let Some(job) = sinks.oll.write(&event.encoded, event.emitted_at)?
+    {
+        compression.enqueue(job);
+    }
+    Ok(())
+}
+
+fn write_dropped_summary(
+    sinks: &mut LogSinks,
+    compression: &CompressionWorker,
+    dropped_events: &AtomicU64,
+    identity: &NodeIdentity,
+) -> Result<(), NodeError> {
+    let dropped = dropped_events.swap(0, Ordering::Relaxed);
+    if dropped == 0 {
+        return Ok(());
+    }
+    let emitted_at = OffsetDateTime::now_utc();
+    let encoded = match encode_log_event(
+        identity,
+        LogLevel::Warn,
+        "oll::node",
+        "log_events_dropped",
+        &new_correlation_id(),
+        serde_json::json!({
+            "dropped_event_count": dropped,
+            "queue_capacity": LOG_QUEUE_CAPACITY,
+        }),
+        emitted_at,
+    ) {
+        Ok(encoded) => encoded,
+        Err(error) => {
+            dropped_events.fetch_add(dropped, Ordering::Relaxed);
+            return Err(error);
+        }
+    };
+    match sinks.oll.write(&encoded, emitted_at) {
+        Ok(Some(job)) => compression.enqueue(job),
+        Ok(None) => {}
+        Err(error) => {
+            dropped_events.fetch_add(dropped, Ordering::Relaxed);
+            return Err(error);
+        }
+    }
+    Ok(())
+}
+
+fn flush_log_sinks(sinks: &mut LogSinks, durable: bool) -> Result<(), NodeError> {
+    sinks.oll.flush(durable)?;
+    sinks.sync.flush(durable)
 }
 
 pub fn new_correlation_id() -> String {
@@ -406,9 +638,8 @@ fn open_log_file(path: &Path) -> Result<File, NodeError> {
     Ok(file)
 }
 
-fn write_event(file: &mut File, encoded: &[u8]) -> Result<(), NodeError> {
+fn write_event(file: &mut BufWriter<File>, encoded: &[u8]) -> Result<(), NodeError> {
     file.write_all(encoded)
-        .and_then(|_| file.flush())
         .map_err(|error| NodeError::io("write structured log event", error))
 }
 
@@ -578,6 +809,9 @@ mod tests {
                 json!({ "process_id": 42 }),
             )
             .unwrap();
+        logger
+            .flush_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
 
         let source = fs::read_to_string(directory.path().join("logs/oll.log")).unwrap();
         let record: Value = serde_json::from_str(source.trim()).unwrap();
@@ -609,6 +843,9 @@ mod tests {
                 json!({}),
             )
             .unwrap();
+        logger
+            .flush_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
         assert!(
             fs::read_to_string(logs.join("sync.log"))
                 .unwrap()
@@ -627,11 +864,119 @@ mod tests {
                 json!({}),
             )
             .unwrap();
+        logger
+            .flush_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
         assert!(
             fs::read_to_string(logs.join("sync.log"))
                 .unwrap()
                 .contains("corr-2")
         );
+    }
+
+    #[test]
+    fn emit_does_not_block_when_the_bounded_queue_is_full() {
+        let identity = NodeIdentity::generate("home".parse().unwrap());
+        let (sender, _receiver) = mpsc::sync_channel(1);
+        let logger = NodeLogger {
+            identity,
+            sender,
+            filters: RwLock::new(BTreeMap::new()),
+            dropped_events: Arc::new(AtomicU64::new(0)),
+            writer_disconnected_reported: AtomicBool::new(false),
+        };
+        logger
+            .emit(
+                LogLevel::Info,
+                "oll::node",
+                "first_event",
+                "corr-1",
+                json!({}),
+            )
+            .unwrap();
+
+        let started = Instant::now();
+        logger
+            .emit(
+                LogLevel::Error,
+                "oll::node",
+                "queue_is_full",
+                "corr-2",
+                json!({}),
+            )
+            .unwrap();
+
+        assert!(started.elapsed() < Duration::from_millis(50));
+        assert_eq!(logger.dropped_events.load(Ordering::Relaxed), 1);
+
+        let flush_started = Instant::now();
+        assert!(matches!(
+            logger.flush_until(Instant::now() + Duration::from_millis(20)),
+            Err(NodeError::Unavailable(_))
+        ));
+        assert!(flush_started.elapsed() < Duration::from_millis(200));
+    }
+
+    #[test]
+    fn writer_reports_dropped_events_after_it_recovers() {
+        let directory = TempDir::new().unwrap();
+        let logs = directory.path().join("logs");
+        let logger =
+            NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+        logger.dropped_events.store(7, Ordering::Relaxed);
+        logger
+            .emit(
+                LogLevel::Info,
+                "oll::node",
+                "retained_event",
+                "corr-retained",
+                json!({}),
+            )
+            .unwrap();
+        logger
+            .flush_until(Instant::now() + Duration::from_secs(2))
+            .unwrap();
+
+        let records = fs::read_to_string(logs.join("oll.log")).unwrap();
+        let dropped = records
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .find(|record| record["event"] == "log_events_dropped")
+            .unwrap();
+        assert_eq!(dropped["dropped_event_count"], 7);
+        assert_eq!(dropped["queue_capacity"], LOG_QUEUE_CAPACITY);
+    }
+
+    #[test]
+    fn writer_flushes_a_partial_batch_on_the_periodic_interval() {
+        let directory = TempDir::new().unwrap();
+        let logs = directory.path().join("logs");
+        let logger =
+            NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+        logger
+            .emit(
+                LogLevel::Info,
+                "oll::node",
+                "partial_batch",
+                "corr-periodic",
+                json!({}),
+            )
+            .unwrap();
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            if fs::read_to_string(logs.join("oll.log"))
+                .unwrap()
+                .contains("corr-periodic")
+            {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "partial log batch was not flushed"
+            );
+            thread::sleep(Duration::from_millis(10));
+        }
     }
 
     #[test]

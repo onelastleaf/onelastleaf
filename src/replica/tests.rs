@@ -47,7 +47,7 @@ impl Deployment {
 
     async fn start(&self) -> Arc<ReplicaRuntime> {
         let logger = NodeLogger::open(&self.log_dir, self.identity.clone()).unwrap();
-        ReplicaRuntime::start(
+        let runtime = ReplicaRuntime::start(
             self.root.clone(),
             &ReplicaStoreConfig::Sqlite {
                 path: self.store_path.clone(),
@@ -56,7 +56,12 @@ impl Deployment {
             logger,
         )
         .await
-        .unwrap()
+        .unwrap();
+        runtime
+            .logger
+            .flush_until(std::time::Instant::now() + Duration::from_secs(2))
+            .unwrap();
+        runtime
     }
 
     fn native(&self, namespace: &str) -> PathBuf {
@@ -159,6 +164,10 @@ async fn shutdown_runtime(runtime: &ReplicaRuntime) {
     runtime
         .shutdown(tokio::time::Instant::now() + Duration::from_secs(5))
         .await
+        .unwrap();
+    runtime
+        .logger
+        .flush_until(std::time::Instant::now() + Duration::from_secs(2))
         .unwrap();
 }
 
@@ -1341,6 +1350,10 @@ async fn targeted_projection_retries_a_transient_failure_before_acknowledging_th
             .unwrap()
             .is_empty()
     );
+    runtime
+        .logger
+        .flush_until(std::time::Instant::now() + Duration::from_secs(2))
+        .unwrap();
     let records = fs::read_to_string(deployment.log_dir.join("oll.log")).unwrap();
     assert!(records.lines().any(|line| {
         let event: serde_json::Value = serde_json::from_str(line).unwrap();
@@ -1422,6 +1435,10 @@ async fn unrelated_commit_cannot_forget_an_exhausted_projection_marker() {
         "new B"
     );
 
+    runtime
+        .logger
+        .flush_until(std::time::Instant::now() + Duration::from_secs(2))
+        .unwrap();
     let records = fs::read_to_string(deployment.log_dir.join("oll.log")).unwrap();
     let retry_attempts = records
         .lines()

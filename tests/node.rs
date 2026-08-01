@@ -123,11 +123,31 @@ fn foreground_daemon_serves_status_filters_and_graceful_stop() {
     }
     initialize(&directory);
     let config_root = directory.path().join("config");
+    let document = directory.path().join("replica/operations.md");
+    fs::write(&document, "operation history").unwrap();
     let mut daemon = ChildGuard(spawn_run(&config_root));
 
     let status = wait_for_status(&config_root);
     assert_eq!(status["node_name"], "home-node");
     assert_eq!(status["lifecycle"], "running");
+
+    let operations = oll()
+        .env("OLL_CONFIG", &config_root)
+        .args(["replica", "ops"])
+        .arg(&document)
+        .output()
+        .unwrap();
+    assert!(
+        operations.status.success(),
+        "replica ops failed: {}",
+        String::from_utf8_lossy(&operations.stderr)
+    );
+    let operations = String::from_utf8(operations.stdout).unwrap();
+    let operation_id = operations
+        .split_whitespace()
+        .find_map(|field| field.strip_prefix("operation_id="))
+        .unwrap_or_else(|| panic!("text output omitted operation_id: {operations}"));
+    assert!(!operation_id.is_empty());
 
     let filter = oll()
         .env("OLL_CONFIG", &config_root)

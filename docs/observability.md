@@ -105,6 +105,34 @@ JSON Lines makes all three files directly ingestible by external tools such as
 Fluent Bit, Vector, or journald forwarding without defining an additional oll
 log database.
 
+## Delivery and backpressure
+
+Daemon tasks MUST NOT write, flush, rotate, compress, or synchronize log files
+themselves. `NodeLogger::emit` serializes and attempts to enqueue an event into
+a bounded in-process queue; one dedicated writer thread owns the sinks and
+preserves retained-event queue order while performing all file I/O.
+
+The initial queue holds 4096 events. The writer buffers file output and flushes
+it to the operating system after either 256 queued events or 250 milliseconds.
+An ordinary batch flush does not call `fsync`/`fdatasync`: these logs are
+diagnostic records, not authoritative replica state. Rotation flushes and
+synchronizes the file before its atomic rename. Graceful shutdown enqueues a
+barrier after the final lifecycle event and requests a durable flush, but waits
+only until the node's existing absolute shutdown deadline. A stalled log device
+therefore cannot extend daemon shutdown or deployment-lock ownership.
+
+The bounded queue is an intentional trade-off. A synchronous writer would
+propagate slow-disk latency into Admin, watcher, SQL, and projection work; an
+unbounded asynchronous queue could exhaust memory while a sink is stalled; and
+batching flushes without moving writes off the caller would still block on file
+writes, rotation, and the sink lock. When the bounded queue is full, `emit`
+drops the event instead of waiting or performing synchronous fallback, even for
+`ERROR`. Once the writer can make progress, it emits a structured
+`log_events_dropped` warning with the dropped count and queue capacity. Runtime
+sink failures are reported on stderr because logging a sink failure back into
+the same sink would recurse. Startup still fails if the required directory and
+files cannot be safely opened.
+
 ## Event format
 
 Every file is UTF-8 JSON Lines: exactly one JSON object per line, no ANSI escape
@@ -269,6 +297,8 @@ format.
 Tests must verify:
 
 - JSON validity and one-event-per-line output;
+- non-blocking bounded-queue behavior and a structured dropped-event summary;
+- batch/periodic visibility and deadline-bounded final draining;
 - required field presence and stable event names;
 - correlation propagation through async tasks, sync envelopes, plugin calls,
   jobs, and scheduler callbacks;

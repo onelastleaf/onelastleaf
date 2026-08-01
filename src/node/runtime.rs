@@ -298,7 +298,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }),
     )?;
 
-    let (shutdown_correlation, server_result) =
+    let (shutdown_correlation, server_result, shutdown_deadline) =
         wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
     signal_task.abort();
     let _ = signal_task.await;
@@ -317,7 +317,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         &shutdown_correlation,
         json!({}),
     );
-    logger.flush()?;
+    let _ = logger.flush_until(shutdown_deadline.into_std());
     drop(socket_guard);
     drop(lock);
     drop(parent_liveness);
@@ -329,7 +329,7 @@ async fn wait_for_shutdown(
     admin_task: &mut JoinHandle<Result<(), NodeError>>,
     shutdown: &mut watch::Receiver<ShutdownNotice>,
     replica: &ReplicaRuntime,
-) -> (String, Result<(), NodeError>) {
+) -> (String, Result<(), NodeError>, Instant) {
     let (completed_admin, trigger_error) = tokio::select! {
         result = &mut *admin_task => {
             (Some(result), None)
@@ -366,7 +366,7 @@ async fn wait_for_shutdown(
     let replica_drain = async { replica.shutdown(deadline).await.map_err(replica_node_error) };
     let (admin_result, replica_result) = tokio::join!(admin_drain, replica_drain);
     let result = trigger_error.map_or(admin_result, Err).and(replica_result);
-    (correlation_id, result)
+    (correlation_id, result, deadline)
 }
 
 fn join_admin_task(
@@ -813,10 +813,11 @@ async fn show_replica_operations(
         OutputFormat::Text => {
             for operation in operations {
                 println!(
-                    "{} {} {} catalog_node_id={} document_id={} path_before={} path_after={} correlation_id={}",
+                    "{} {} {} operation_id={} catalog_node_id={} document_id={} path_before={} path_after={} correlation_id={}",
                     operation["timestamp"].as_str().unwrap_or(""),
                     operation["source"].as_str().unwrap_or("unknown"),
                     operation["kind"].as_str().unwrap_or("unknown"),
+                    operation["operation_id"].as_str().unwrap_or(""),
                     operation["catalog_node_id"].as_str().unwrap_or(""),
                     operation["document_id"].as_str().unwrap_or(""),
                     operation["path_before"].as_str().unwrap_or("-"),
