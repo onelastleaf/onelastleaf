@@ -43,6 +43,7 @@ fn loopback_available() -> bool {
 
 fn initialize(directory: &TempDir) {
     let output = oll()
+        .env("XDG_DATA_HOME", directory.path().join("data"))
         .args(["init", "home-node", "--config"])
         .arg(directory.path().join("config"))
         .arg("--replica")

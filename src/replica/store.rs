@@ -176,7 +176,7 @@ impl ReplicaStore {
                 ReplicaError::Store("cannot connect to the configured replica store".to_owned())
             })?;
         for statement in SCHEMA {
-            sqlx::query(statement)
+            sqlx::query(*statement)
                 .execute(&pool)
                 .await
                 .map_err(store_error)?;
@@ -907,8 +907,12 @@ async fn write_generation(
     .await
     .map_err(store_error)?;
 
-    for table in ["catalog_entries", "document_objects", "binary_versions"] {
-        sqlx::query(&format!("DELETE FROM {table} WHERE generation_id = $1"))
+    for statement in [
+        "DELETE FROM catalog_entries WHERE generation_id = $1",
+        "DELETE FROM document_objects WHERE generation_id = $1",
+        "DELETE FROM binary_versions WHERE generation_id = $1",
+    ] {
+        sqlx::query(statement)
             .bind(&generation)
             .execute(&mut **transaction)
             .await
@@ -1298,7 +1302,7 @@ mod tests {
             .await
             .expect("connect to OLL_TEST_POSTGRES_URL");
         let schema = format!("oll_test_{}", Uuid::new_v4().simple());
-        sqlx::query(&format!("CREATE SCHEMA {schema}"))
+        sqlx::query(sqlx::AssertSqlSafe(format!("CREATE SCHEMA {schema}")))
             .execute(&admin)
             .await
             .expect("create isolated PostgreSQL test schema");
@@ -1471,7 +1475,7 @@ mod tests {
         }
         .await;
 
-        let cleanup = sqlx::query(&format!("DROP SCHEMA {schema} CASCADE"))
+        let cleanup = sqlx::query(sqlx::AssertSqlSafe(format!("DROP SCHEMA {schema} CASCADE")))
             .execute(&admin)
             .await;
         admin.close().await;
