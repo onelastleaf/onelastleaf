@@ -1,0 +1,144 @@
+// C4 daemon-component model for the architecture currently implemented in src/.
+// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
+// they do not yet have runtime components in the current implementation.
+
+digraph C4_Daemon_Components {
+  graph [
+    label="oll Node Daemon - C4 Component Diagram - Current Implementation",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.7,
+    ranksep=0.95,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=9.5, margin="0.17,0.11"];
+  edge [fontname="Helvetica", fontsize=8, color="#555555", fontcolor="#333333", arrowsize=0.72];
+
+  admin_client [
+    label="Bounded oll Client\n[Container]\nIssues typed administrative requests",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  deployment_files [
+    shape=cylinder,
+    label="Deployment Files\n[Container: File Store]\nconfig.lua, node.json, node.lock",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  working_tree [
+    shape=cylinder,
+    label="Working Tree\n[Container: File System]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  sql_store [
+    shape=cylinder,
+    label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  logs [
+    shape=cylinder,
+    label="Structured Log Files\n[Container: File Store]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  snapshot [
+    shape=cylinder,
+    label="Replica Snapshot\n[Container: File]\n.ollsnap",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+
+  subgraph cluster_daemon {
+    label="oll Node Daemon [Container: Rust + Tokio]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#438DD5";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=20;
+
+    lifecycle [
+      label="Node Lifecycle Orchestrator\n[Component]\nInterface: PreparedRunIntent, Unix signals, and ShutdownNotice.\nOwns startup order, readiness, one-replica construction, and shutdown.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    admin_api [
+      label="Admin API Adapter\n[Component]\nInterface: oll.protocol.Admin gRPC service (7 RPCs).\nValidates context and translates transport requests to domain APIs.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    configuration [
+      label="Configuration Runtime\n[Component]\nInterface: ConfigRuntime::load -> ResolvedNodeConfig.\nEncapsulates embedded LuaJIT, schema conversion, and path validation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    deployment_state [
+      label="Deployment State Gateway\n[Component]\nInterfaces: DeploymentLock and NodeIdentity APIs.\nEncapsulates single-instance locking, identity persistence, and runtime paths.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    replica [
+      label="Replica Runtime\n[Component]\nInterface: ReplicaRuntime lifecycle, Admin-facing operations, and typed\ndocument/CRDT API. Encapsulates catalog/document Loro state, binary LWW,\nworking-tree reconciliation/projection, and snapshot coordination.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    persistence [
+      label="Replica Persistence Gateway\n[Component]\nInterface: ReplicaStore API.\nHides SQL schema, SQLite/PostgreSQL selection, transactions, blobs,\ngenerations, history, and recovery markers.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    logger [
+      label="Structured Logging Service\n[Component]\nInterface: NodeLogger open/emit/set_filter/flush.\nHides bounded queue, writer thread, filtering, routing, and file sinks.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+  }
+
+  admin_client -> admin_api [label="Calls GetStatus, Shutdown, SetLogFilter,\nInspectReplicaDocument, ListReplicaOperations,\nExportReplica, or ImportReplica\n[gRPC over UDS]"];
+
+  lifecycle -> deployment_state [label="Acquires lock and loads identity\n[DeploymentLock / NodeIdentity APIs]"];
+  deployment_state -> deployment_files [dir=both, label="flock and strict JSON I/O"];
+  lifecycle -> configuration [label="Loads typed effective configuration\n[ConfigRuntime API]"];
+  configuration -> deployment_files [label="Evaluates config.lua and contained modules\n[embedded LuaJIT]"];
+
+  lifecycle -> logger [label="Opens, emits lifecycle events, and flushes\n[NodeLogger API]"];
+  lifecycle -> replica [label="Starts exactly one instance and shuts it down\n[ReplicaRuntime API]"];
+  lifecycle -> admin_api [label="Constructs with AdminState and serves UDS"];
+  admin_api -> lifecycle [label="Requests ordered shutdown\n[ShutdownNotice watch channel]"];
+  admin_api -> replica [label="Status, inspection, history, export, import\n[ReplicaRuntime API]"];
+  admin_api -> logger [label="Emits RPC events and changes live filters\n[NodeLogger API]"];
+
+  replica -> persistence [label="Loads, commits, replaces, and recovers state\n[ReplicaStore API]"];
+  persistence -> sql_store [dir=both, label="Executes backend-neutral SQL operations\n[sqlx]"];
+  replica -> working_tree [dir=both, label="Scans, watches, reconciles, and projects\n[notify + filesystem I/O]"];
+  replica -> snapshot [dir=both, label="Streams validated import/export\n[tar + zstd]"];
+  replica -> logger [label="Emits correlated replica and snapshot events\n[NodeLogger API]"];
+  logger -> logs [label="Writes and flushes normalized JSON Lines"];
+}

@@ -1,0 +1,109 @@
+// C4 container model for the architecture currently implemented in src/.
+// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
+// they do not yet have runtime components in the current implementation.
+
+digraph C4_Containers {
+  graph [
+    label="onelastleaf (oll) - C4 Container Diagram - Current Implementation",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.75,
+    ranksep=1.0,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=10, margin="0.18,0.12"];
+  edge [fontname="Helvetica", fontsize=8.5, color="#555555", fontcolor="#333333", arrowsize=0.75];
+
+  user [
+    label="Deployment User\n[Person]",
+    fillcolor="#08427B",
+    fontcolor="white",
+    color="#052E56"
+  ];
+
+  subgraph cluster_oll_system {
+    label="onelastleaf (oll) [Software System]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#1168BD";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=22;
+
+    bounded_client [
+      label="Bounded oll Client\n[Container: Process]\nSame Rust executable; parses one command, performs\nlocal/bootstrap work or one Admin call, renders, and exits",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    node_daemon [
+      label="oll Node Daemon\n[Container: Process]\nSame Rust executable with Tokio; owns lifecycle,\nAdmin UDS, one node, and exactly one replica",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    deployment_files [
+      shape=cylinder,
+      label="Deployment Files\n[Container: File Store]\nconfig.lua, node.json, node.lock",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    working_tree [
+      shape=cylinder,
+      label="Working Tree\n[Container: File System]\nUser-editable ordinary directories and files;\nprojection of the logical replica",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    replica_store [
+      shape=cylinder,
+      label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL; durable catalog/document CRDTs,\nblobs, operation history, and recovery state",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    log_files [
+      shape=cylinder,
+      label="Structured Log Files\n[Container: File Store]\noll.log and sync.log as user-owned JSON Lines",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    snapshot_archive [
+      shape=cylinder,
+      label="Replica Snapshot\n[Container: File]\n.ollsnap tar+zstd logical-replica checkpoint",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+  }
+
+  user -> bounded_client [label="Invokes commands\n[terminal / stdin / stdout / stderr]"];
+  user -> node_daemon [label="May run in foreground\n[oll run]"];
+  user -> deployment_files [label="Owns and may edit configuration and identity\n[Lua and JSON]"];
+  user -> working_tree [label="Reads and edits documents\n[filesystem tools]"];
+
+  bounded_client -> node_daemon [label="Administrative operations\n[typed protobuf/gRPC over Unix domain socket]"];
+  bounded_client -> node_daemon [label="Starts detached daemon and verifies readiness\n[process spawn + one-use nonce pingback]", style=dashed];
+  bounded_client -> deployment_files [label="Initializes deployment or locates Admin socket\n[filesystem]"];
+  bounded_client -> snapshot_archive [label="Inspects or verifies locally\n[streaming file I/O]"];
+
+  node_daemon -> deployment_files [label="Locks deployment; loads identity and configuration\n[flock, JSON, embedded LuaJIT]"];
+  node_daemon -> working_tree [dir=both, label="Watches/reconciles edits and projects replica state\n[notify + filesystem I/O]"];
+  node_daemon -> replica_store [dir=both, label="Persists and recovers authoritative replica state\n[SQL transactions via sqlx]"];
+  node_daemon -> log_files [label="Appends normalized events asynchronously\n[JSON Lines]"];
+  node_daemon -> snapshot_archive [dir=both, label="Exports or imports complete replica checkpoints\n[tar + zstd]"];
+}

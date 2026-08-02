@@ -1,0 +1,123 @@
+// C4 bounded-client component model for the architecture currently implemented in src/.
+// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
+// they do not yet have runtime components in the current implementation.
+
+digraph C4_Bounded_Client_Components {
+  graph [
+    label="Bounded oll Client - C4 Component Diagram - Current Implementation",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.7,
+    ranksep=0.95,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=9.5, margin="0.17,0.11"];
+  edge [fontname="Helvetica", fontsize=8, color="#555555", fontcolor="#333333", arrowsize=0.72];
+
+  user [
+    label="Deployment User\n[Person]",
+    fillcolor="#08427B",
+    fontcolor="white",
+    color="#052E56"
+  ];
+  daemon [
+    label="oll Node Daemon\n[Container]\nServes the typed Admin API",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  deployment_files [
+    shape=cylinder,
+    label="Deployment Files\n[Container: File Store]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  working_tree [
+    shape=cylinder,
+    label="Working Tree\n[Container: File System]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  snapshot [
+    shape=cylinder,
+    label="Replica Snapshot\n[Container: File]\n.ollsnap",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+
+  subgraph cluster_client {
+    label="Bounded oll Client [Container: same Rust executable]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#438DD5";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=20;
+
+    cli_adapter [
+      label="Command-Line Adapter\n[Component]\nInterface: Clap command schema.\nParses argv once and produces a validated CliIntent.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    intent_preparer [
+      label="Intent Preparation Service\n[Component]\nInterface: CliIntent::prepare(Environment, cwd) -> PreparedCliIntent.\nResolves only the paths and dependencies required by the selected intent.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    client_app [
+      label="Bounded Command Application Service\n[Component]\nInterface: node::execute(PreparedCliIntent).\nDispatches client work, owns confirmations, rendering, and exit mapping.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    admin_adapter [
+      label="Admin Client Adapter\n[Component]\nInterface: typed get_status/request_shutdown/set_log_filter/replica calls.\nHides UDS connection setup, protobuf context, and request deadlines.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    bootstrap [
+      label="Deployment Bootstrap and Launcher\n[Component]\nInterfaces: initialization and start operations.\nEncapsulates atomic config/identity creation, process spawn, and pingback.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    snapshot_reader [
+      label="Local Snapshot Reader\n[Component]\nInterfaces: inspect_snapshot and verify_snapshot.\nEncapsulates streaming tar/zstd, manifest, hash, and Loro validation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+  }
+
+  user -> cli_adapter [label="Supplies argv and interactive input"];
+  cli_adapter -> intent_preparer [label="Passes validated CliIntent"];
+  intent_preparer -> client_app [label="Passes PreparedCliIntent"];
+
+  client_app -> admin_adapter [label="Performs one typed operational request"];
+  admin_adapter -> daemon [label="Calls Admin API\n[protobuf/gRPC over UDS]"];
+
+  client_app -> bootstrap [label="Initializes or starts a deployment"];
+  bootstrap -> deployment_files [dir=both, label="Creates/replaces files and checks lock/socket"];
+  bootstrap -> working_tree [label="Creates configured root when absent"];
+  bootstrap -> daemon [label="Spawns same executable and checks readiness\n[process + nonce pingback]", style=dashed];
+
+  client_app -> snapshot_reader [label="Inspects or verifies without a daemon"];
+  snapshot_reader -> snapshot [label="Reads and validates streaming archive"];
+}

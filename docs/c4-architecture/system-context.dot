@@ -1,0 +1,37 @@
+// C4 system-context model for the architecture currently implemented in src/.
+// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
+// they do not yet have runtime components in the current implementation.
+
+digraph C4_System_Context {
+  graph [
+    label="onelastleaf (oll) - C4 System Context - Current Implementation",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.9,
+    ranksep=1.1
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.18,0.12"];
+  edge [fontname="Helvetica", fontsize=9, color="#555555", fontcolor="#333333", arrowsize=0.8];
+
+  deployment_user [
+    label="Deployment User\n[Person]\nRuns oll and edits the local document tree",
+    fillcolor="#08427B",
+    fontcolor="white",
+    color="#052E56"
+  ];
+
+  oll [
+    label="onelastleaf (oll)\n[Software System]\nA user-owned, offline document library with one daemon,\none node, and exactly one CRDT replica per deployment",
+    fillcolor="#1168BD",
+    fontcolor="white",
+    color="#0B4884"
+  ];
+
+  deployment_user -> oll [
+    label="Runs bounded commands or the daemon;\nreads and edits documents\n[CLI and local filesystem]"
+  ];
+}
