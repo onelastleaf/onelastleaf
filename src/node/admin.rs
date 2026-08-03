@@ -34,11 +34,10 @@ use crate::{
             ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
             ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
             ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
-            NativePath, NodeLifecycleState, PeerConnectionDirection, PeerConnectionState,
-            PeerStatus, PingPeerRequest, PingPeerResponse, ReplicaId, ReplicaOperation,
-            ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
-            SetLogFilterRequest, SetLogFilterResponse, SynchronizePeersRequest,
-            SynchronizePeersResponse, TraceContext,
+            NativePath, NodeLifecycleState, PingPeerRequest, PingPeerResponse, ReplicaId,
+            ReplicaOperation, ReplicaOperationKind, ReplicaOperationSource,
+            ReplicaState as ProtoReplicaState, SetLogFilterRequest, SetLogFilterResponse,
+            SynchronizePeersRequest, SynchronizePeersResponse, TraceContext,
             admin_client::AdminClient,
             admin_server::{Admin, AdminServer},
         },
@@ -47,10 +46,11 @@ use crate::{
         OperationKind, OperationRecord, OperationSource, ReplicaError, ReplicaRuntime,
         ReplicaStatus,
     },
+    sync::{SyncError, SyncRuntime},
 };
 
 use super::{
-    identity::NodeIdentity,
+    identity::IdentityCoordinator,
     logging::{LogLevel, NodeLogger},
     runtime::NodeError,
 };
@@ -89,30 +89,33 @@ impl ShutdownNotice {
 }
 
 pub struct AdminState {
-    identity: NodeIdentity,
+    identities: Arc<IdentityCoordinator>,
     config: ResolvedNodeConfig,
     started_at: SystemTime,
     lifecycle: AtomicU8,
     logger: Arc<NodeLogger>,
     replica: Arc<ReplicaRuntime>,
+    sync: Arc<SyncRuntime>,
     shutdown: watch::Sender<ShutdownNotice>,
 }
 
 impl AdminState {
     pub fn new(
-        identity: NodeIdentity,
+        identities: Arc<IdentityCoordinator>,
         config: ResolvedNodeConfig,
         logger: Arc<NodeLogger>,
         replica: Arc<ReplicaRuntime>,
+        sync: Arc<SyncRuntime>,
         shutdown: watch::Sender<ShutdownNotice>,
     ) -> Self {
         Self {
-            identity,
+            identities,
             config,
             started_at: SystemTime::now(),
             lifecycle: AtomicU8::new(LIFECYCLE_STARTING),
             logger,
             replica,
+            sync,
             shutdown,
         }
     }
@@ -229,18 +232,7 @@ impl Admin for AdminService {
         let started = Instant::now();
         let correlation_id = self.validate_context(request.into_inner().context)?;
         self.require_serving()?;
-        let peers = self
-            .state
-            .config
-            .connect
-            .iter()
-            .map(|url| PeerStatus {
-                connect_target: Some(url.to_string()),
-                node: None,
-                connection_state: PeerConnectionState::Pending as i32,
-                direction: PeerConnectionDirection::Outbound as i32,
-            })
-            .collect();
+        let peers = self.state.sync.status().await;
         let (replica_state, replica_id) = match self.state.replica.status().await {
             ReplicaStatus::Uninitialized => (ProtoReplicaState::Uninitialized, None),
             ReplicaStatus::InitializedEmpty { replica_id } => (
@@ -256,9 +248,10 @@ impl Admin for AdminService {
                 }),
             ),
         };
+        let identity = self.state.identities.node().await;
         self.log_rpc(&correlation_id, "GetStatus", "ok", started);
         Ok(Response::new(GetStatusResponse {
-            node: Some(self.state.identity.to_proto()),
+            node: Some(identity.to_proto()),
             lifecycle: self.state.lifecycle() as i32,
             started_at: Some(timestamp(self.state.started_at)),
             process_id: std::process::id(),
@@ -454,15 +447,32 @@ impl Admin for AdminService {
         request: Request<SynchronizePeersRequest>,
     ) -> Result<Response<SynchronizePeersResponse>, Status> {
         let started = Instant::now();
-        let correlation_id = self.validate_context(request.into_inner().context)?;
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
         self.require_serving()?;
-        self.log_rpc(
-            &correlation_id,
-            "SynchronizePeers",
-            "unimplemented",
-            started,
-        );
-        Err(Status::unimplemented("command is not implemented"))
+        if request.total_attempts == 0 {
+            return Err(Status::invalid_argument(
+                "total_attempts must be greater than zero",
+            ));
+        }
+        let node_name = request
+            .node
+            .map(|node| node.value.parse().map_err(Status::invalid_argument))
+            .transpose()?;
+        let peers = match self
+            .state
+            .sync
+            .synchronize(node_name.as_ref(), request.total_attempts, &correlation_id)
+            .await
+        {
+            Ok(peers) => peers,
+            Err(error) => {
+                self.log_rpc(&correlation_id, "SynchronizePeers", "error", started);
+                return Err(sync_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "SynchronizePeers", "ok", started);
+        Ok(Response::new(SynchronizePeersResponse { peers }))
     }
 
     async fn ping_peer(
@@ -470,10 +480,27 @@ impl Admin for AdminService {
         request: Request<PingPeerRequest>,
     ) -> Result<Response<PingPeerResponse>, Status> {
         let started = Instant::now();
-        let correlation_id = self.validate_context(request.into_inner().context)?;
+        let request = request.into_inner();
+        let correlation_id = self.validate_context(request.context)?;
         self.require_serving()?;
-        self.log_rpc(&correlation_id, "PingPeer", "unimplemented", started);
-        Err(Status::unimplemented("command is not implemented"))
+        let node_name = request
+            .node
+            .ok_or_else(|| Status::invalid_argument("missing ping node name"))?
+            .value
+            .parse()
+            .map_err(Status::invalid_argument)?;
+        let (identity, round_trip) = match self.state.sync.ping(&node_name, &correlation_id).await {
+            Ok(result) => result,
+            Err(error) => {
+                self.log_rpc(&correlation_id, "PingPeer", "error", started);
+                return Err(sync_status(error));
+            }
+        };
+        self.log_rpc(&correlation_id, "PingPeer", "ok", started);
+        Ok(Response::new(PingPeerResponse {
+            node: Some(identity.to_proto()),
+            round_trip_millis: u64::try_from(round_trip.as_millis()).unwrap_or(u64::MAX),
+        }))
     }
 }
 
@@ -515,6 +542,7 @@ fn operation_to_proto(operation: OperationRecord) -> ReplicaOperation {
 fn replica_status(error: ReplicaError) -> Status {
     match error {
         ReplicaError::Uninitialized => Status::failed_precondition("no local replica yet"),
+        ReplicaError::Configuration(_) => Status::internal("replica identity is inconsistent"),
         ReplicaError::InvalidArgument(message) | ReplicaError::InvalidSnapshot(message) => {
             Status::invalid_argument(message)
         }
@@ -526,6 +554,19 @@ fn replica_status(error: ReplicaError) -> Status {
         | ReplicaError::Store(_)
         | ReplicaError::Internal(_) => {
             Status::internal("replica operation failed; inspect the correlated daemon log")
+        }
+    }
+}
+
+#[allow(clippy::result_large_err)]
+fn sync_status(error: SyncError) -> Status {
+    match error {
+        SyncError::NotFound(message) => Status::not_found(message),
+        SyncError::FailedPrecondition(message) => Status::failed_precondition(message),
+        SyncError::Unavailable(message) => Status::unavailable(message),
+        SyncError::Protocol(message) => Status::aborted(message),
+        SyncError::Store | SyncError::Internal(_) => {
+            Status::internal("sync operation failed; inspect the correlated daemon log")
         }
     }
 }
@@ -733,6 +774,46 @@ pub async fn import_replica(
         .map_err(status_error)
 }
 
+pub async fn ping_peer(
+    socket: &Path,
+    node_name: &crate::cli::NodeName,
+    correlation_id: String,
+) -> Result<PingPeerResponse, NodeError> {
+    let mut client = connect(socket).await?;
+    let mut request = Request::new(PingPeerRequest {
+        context: Some(call_context(correlation_id)),
+        node: Some(crate::protocol::oll::NodeName {
+            value: node_name.as_str().to_owned(),
+        }),
+    });
+    request.set_timeout(ADMIN_SHORT_CALL_DEADLINE);
+    client
+        .ping_peer(request)
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
+pub async fn synchronize_peers(
+    socket: &Path,
+    node_name: Option<&crate::cli::NodeName>,
+    total_attempts: u32,
+    correlation_id: String,
+) -> Result<SynchronizePeersResponse, NodeError> {
+    let mut client = connect(socket).await?;
+    client
+        .synchronize_peers(SynchronizePeersRequest {
+            context: Some(call_context(correlation_id)),
+            node: node_name.map(|node_name| crate::protocol::oll::NodeName {
+                value: node_name.as_str().to_owned(),
+            }),
+            total_attempts,
+        })
+        .await
+        .map(Response::into_inner)
+        .map_err(status_error)
+}
+
 fn native_path(path: &Path) -> NativePath {
     NativePath {
         unix_path: path.as_os_str().as_bytes().to_vec(),
@@ -776,7 +857,7 @@ mod tests {
 
     use crate::{
         configuration::{ReplicaStoreConfig, ResolvedNodeConfig},
-        protocol::oll::GetStatusRequest,
+        protocol::oll::{GetStatusRequest, PeerConnectionDirection},
     };
 
     use super::*;
@@ -899,6 +980,7 @@ mod tests {
     async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         let directory = TempDir::new().unwrap();
         let identity = NodeIdentity::generate("home-node".parse().unwrap());
+        let identities = IdentityCoordinator::new(identity.clone());
         let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
         logger
             .set_filter("oll::admin".to_owned(), LogLevel::Trace)
@@ -909,16 +991,28 @@ mod tests {
                 path: directory.path().join("replica.sqlite3"),
             },
             log_dir: directory.path().join("log"),
-            listen: Some("127.0.0.1:7443".parse().unwrap()),
-            connect: vec!["https://peer.example".parse().unwrap()],
+            listen: None,
+            connect: vec!["oll://127.0.0.1:9".parse().unwrap()],
+            network_key: Some(crate::configuration::NetworkKey::new_for_test(
+                b"test-network-key-with-thirty-two-bytes".to_vec(),
+            )),
         };
         std::fs::create_dir(&config.replica_root).unwrap();
         let document_path = config.replica_root.join("admin.md");
         std::fs::write(&document_path, "admin protocol").unwrap();
         let replica = ReplicaRuntime::start(
+            directory.path().to_owned(),
             config.replica_root.clone(),
             &config.replica_store,
-            identity.node_id(),
+            Arc::clone(&identities),
+            Arc::clone(&logger),
+        )
+        .await
+        .unwrap();
+        let sync = SyncRuntime::start(
+            &config,
+            Arc::clone(&identities),
+            Arc::clone(&replica),
             Arc::clone(&logger),
         )
         .await
@@ -931,10 +1025,11 @@ mod tests {
         };
         let (shutdown, receiver) = watch::channel(ShutdownNotice::default());
         let state = Arc::new(AdminState::new(
-            identity.clone(),
+            identities,
             config,
             Arc::clone(&logger),
             Arc::clone(&replica),
+            Arc::clone(&sync),
             shutdown,
         ));
         state.mark_running();
@@ -957,7 +1052,7 @@ mod tests {
         assert_eq!(status.peers.len(), 1);
         assert_eq!(
             status.peers[0].connect_target.as_deref(),
-            Some("https://peer.example/")
+            Some("oll://127.0.0.1:9")
         );
         assert_eq!(
             status.peers[0].direction,
@@ -1106,6 +1201,9 @@ mod tests {
             .await
             .unwrap()
             .unwrap()
+            .unwrap();
+        sync.shutdown(Instant::now() + Duration::from_secs(1))
+            .await
             .unwrap();
         replica
             .shutdown(Instant::now() + Duration::from_secs(1))

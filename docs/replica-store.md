@@ -177,6 +177,12 @@ For first initialization and sync bootstrap the expected active generation is
 `NULL`; for snapshot replacement it is the current generation. Candidate and
 transition cleanup is idempotent on SQLite and PostgreSQL.
 
+After identity-transition and bootstrap-claim recovery, startup deletes every
+other inactive generation. These are pre-activation candidates abandoned by a
+crash and can never become authoritative. It then deletes blob rows referenced
+by no retained generation; active and retained historical binary versions keep
+their content-addressed blobs live.
+
 The daemon watches `replica.json` after recovery. A valid user edit acquires the
 same identity coordinator, pauses new local/filesystem/remote commits, and
 updates the active generation's cached ID with a SQL

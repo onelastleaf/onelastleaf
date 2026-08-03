@@ -9,13 +9,18 @@ use std::{
     time::Duration,
 };
 
+use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use getrandom::fill as fill_random;
+use notify_debouncer_full::{
+    DebounceEventResult, Debouncer, RecommendedCache, new_debouncer,
+    notify::{EventKind, RecommendedWatcher, RecursiveMode},
+};
 use serde_json::json;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{TcpListener, TcpStream, UnixListener},
     process::Child,
-    sync::watch,
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
     time::{Instant, sleep, timeout, timeout_at},
 };
@@ -23,22 +28,23 @@ use tokio::{
 use crate::{
     cli::{
         CliIntent, ClientDependency, ConfirmationRequirement, LogIntent, OutputFormat,
-        PreparedCliIntent, PreparedClientIntent, PreparedRunIntent, ReplicaIntent,
+        PreparedCliIntent, PreparedClientIntent, PreparedRunIntent, ReplicaIntent, SyncIntent,
     },
     configuration::{ConfigRuntime, validate_storage_layout},
     protocol::oll::{
         GetStatusResponse, InspectReplicaDocumentResponse, NodeLifecycleState,
-        PeerConnectionDirection, PeerConnectionState, ReplicaOperationKind, ReplicaOperationSource,
-        ReplicaState as ProtoReplicaState,
+        PeerConnectionDirection, PeerConnectionState, PeerSyncOutcome, ReplicaOperationKind,
+        ReplicaOperationSource, ReplicaState as ProtoReplicaState,
     },
     replica::{
         ReplicaError, ReplicaRuntime, SnapshotInspection, inspect_snapshot, verify_snapshot,
     },
+    sync::{SyncError, SyncRuntime},
 };
 
 use super::{
     admin::{self, AdminState, ShutdownNotice},
-    identity::NodeIdentity,
+    identity::{IdentityCoordinator, NodeIdentity},
     init::{self, InitResult},
     liveness::ParentLivenessPipe,
     lock::{DeploymentLock, admin_socket_path, ensure_runtime_directory},
@@ -48,6 +54,211 @@ use super::{
 const STARTUP_DEADLINE: Duration = Duration::from_secs(10);
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 const LAUNCHER_TERMINATION_GRACE: Duration = Duration::from_secs(2);
+const IDENTITY_WATCH_DEBOUNCE: Duration = Duration::from_millis(200);
+
+struct IdentityWatch {
+    watcher: Option<Debouncer<RecommendedWatcher, RecommendedCache>>,
+    shutdown: watch::Sender<bool>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl IdentityWatch {
+    async fn start(
+        config_root: &Path,
+        identities: Arc<IdentityCoordinator>,
+        replica: Arc<ReplicaRuntime>,
+        logger: Arc<NodeLogger>,
+    ) -> Result<Self, NodeError> {
+        let (event_tx, event_rx) = mpsc::unbounded_channel();
+        let mut watcher = new_debouncer(
+            IDENTITY_WATCH_DEBOUNCE,
+            None,
+            move |result: DebounceEventResult| {
+                let _ = event_tx.send(result);
+            },
+        )
+        .map_err(|error| {
+            NodeError::Unavailable(format!("cannot initialize identity watcher: {error}"))
+        })?;
+        watcher
+            .watch(config_root, RecursiveMode::NonRecursive)
+            .map_err(|error| {
+                NodeError::Unavailable(format!("cannot watch node identity files: {error}"))
+            })?;
+        let node_path = super::identity::identity_path(config_root);
+        let replica_path = crate::replica::identity::identity_path(config_root);
+        let (shutdown, shutdown_rx) = watch::channel(false);
+        let (initial_tx, initial_rx) = oneshot::channel();
+        let task = tokio::spawn(run_identity_watch(
+            event_rx,
+            shutdown_rx,
+            node_path,
+            replica_path,
+            identities,
+            replica,
+            logger,
+            initial_tx,
+        ));
+        initial_rx.await.map_err(|_| {
+            NodeError::Internal("identity watcher stopped during its initial reload".to_owned())
+        })?;
+        Ok(Self {
+            watcher: Some(watcher),
+            shutdown,
+            task: Some(task),
+        })
+    }
+
+    async fn shutdown(&mut self, deadline: Instant) -> Result<(), NodeError> {
+        self.watcher.take();
+        let _ = self.shutdown.send(true);
+        let Some(mut task) = self.task.take() else {
+            return Ok(());
+        };
+        match timeout_at(deadline, &mut task).await {
+            Ok(result) => result.map_err(|error| {
+                NodeError::Internal(format!("identity watcher task failed: {error}"))
+            }),
+            Err(_) => {
+                task.abort();
+                let _ = task.await;
+                Err(NodeError::Unavailable(
+                    "identity watcher exceeded the graceful shutdown deadline".to_owned(),
+                ))
+            }
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_identity_watch(
+    mut events: mpsc::UnboundedReceiver<DebounceEventResult>,
+    mut shutdown: watch::Receiver<bool>,
+    node_path: PathBuf,
+    replica_path: PathBuf,
+    identities: Arc<IdentityCoordinator>,
+    replica: Arc<ReplicaRuntime>,
+    logger: Arc<NodeLogger>,
+    initial: oneshot::Sender<()>,
+) {
+    let mut initial = Some(initial);
+    loop {
+        let correlation_id = new_correlation_id();
+        let (reload_node, reload_replica) = if initial.is_some() {
+            (true, replica_path.exists())
+        } else {
+            let result = tokio::select! {
+                biased;
+                changed = shutdown.changed() => {
+                    if changed.is_err() || *shutdown.borrow_and_update() {
+                        break;
+                    }
+                    continue;
+                }
+                result = events.recv() => {
+                    let Some(result) = result else {
+                        break;
+                    };
+                    result
+                }
+            };
+            match result {
+                Ok(events) => {
+                    let mut reload_node = false;
+                    let mut reload_replica = false;
+                    for event in events {
+                        if matches!(event.kind, EventKind::Access(_)) {
+                            continue;
+                        }
+                        reload_node |= event.paths.iter().any(|path| path == &node_path);
+                        reload_replica |= event.paths.iter().any(|path| path == &replica_path);
+                    }
+                    (reload_node, reload_replica)
+                }
+                Err(errors) => {
+                    logger.emit(
+                        LogLevel::Warn,
+                        "oll::node",
+                        "identity_watcher_error",
+                        &correlation_id,
+                        json!({ "error_count": errors.len() }),
+                    );
+                    (false, false)
+                }
+            }
+        };
+        if reload_node {
+            let replacement = NodeIdentity::load(
+                node_path
+                    .parent()
+                    .expect("node identity path always has its config-root parent"),
+            );
+            match replacement {
+                Ok(replacement) => {
+                    let _gate = identities.commit_guard().await;
+                    let previous = identities.node().await;
+                    if previous != replacement {
+                        if logger.set_identity(replacement.clone()).is_err() {
+                            logger.emit(
+                                LogLevel::Error,
+                                "oll::node",
+                                "node_identity_reload_failed",
+                                &correlation_id,
+                                json!({ "error_code": "logger_identity_update_failed" }),
+                            );
+                        } else {
+                            identities
+                                .replace_node_while_commits_paused(replacement.clone())
+                                .await;
+                            match identities.advance_epoch() {
+                                Ok(epoch) => logger.emit(
+                                    LogLevel::Info,
+                                    "oll::node",
+                                    "node_identity_updated",
+                                    &correlation_id,
+                                    json!({
+                                        "previous_node_id": previous.node_id().to_string(),
+                                        "previous_node_name": previous.node_name().as_str(),
+                                        "node_id": replacement.node_id().to_string(),
+                                        "node_name": replacement.node_name().as_str(),
+                                        "identity_epoch": epoch,
+                                    }),
+                                ),
+                                Err(_) => logger.emit(
+                                    LogLevel::Error,
+                                    "oll::node",
+                                    "node_identity_reload_failed",
+                                    &correlation_id,
+                                    json!({ "error_code": "identity_epoch_overflow" }),
+                                ),
+                            }
+                        }
+                    }
+                }
+                Err(_) => logger.emit(
+                    LogLevel::Error,
+                    "oll::node",
+                    "node_identity_reload_failed",
+                    &correlation_id,
+                    json!({ "error_code": "invalid_node_identity" }),
+                ),
+            }
+        }
+        if reload_replica && let Err(error) = replica.reload_replica_identity(&correlation_id).await
+        {
+            logger.emit(
+                LogLevel::Error,
+                "oll::replica",
+                "replica_identity_reload_failed",
+                &correlation_id,
+                json!({ "error_code": error.code() }),
+            );
+        }
+        if let Some(initial) = initial.take() {
+            let _ = initial.send(());
+        }
+    }
+}
 
 #[derive(Debug)]
 pub enum NodeError {
@@ -131,6 +342,18 @@ pub fn execute(intent: PreparedCliIntent) -> Result<(), NodeError> {
 
 fn execute_client(intent: PreparedClientIntent) -> Result<(), NodeError> {
     match (intent.intent, intent.dependency) {
+        (CliIntent::Psk, ClientDependency::None) => {
+            let mut key = [0_u8; 32];
+            fill_random(&mut key).map_err(|error| {
+                NodeError::Internal(format!("cannot generate network key: {error}"))
+            })?;
+            let encoded = URL_SAFE_NO_PAD.encode(key);
+            let mut stdout = io::stdout().lock();
+            stdout
+                .write_all(encoded.as_bytes())
+                .and_then(|()| stdout.flush())
+                .map_err(|error| NodeError::io("write network key", error))
+        }
         (
             CliIntent::Replica(ReplicaIntent::SnapshotInspect { snapshot, json }),
             ClientDependency::None,
@@ -180,8 +403,34 @@ fn execute_client(intent: PreparedClientIntent) -> Result<(), NodeError> {
             }
             in_runtime(import_replica(&config_root, &snapshot))
         }
+        (CliIntent::Ping { node_name }, ClientDependency::ConfigRoot(config_root)) => {
+            in_runtime(ping_peer(&config_root, &node_name))
+        }
+        (
+            CliIntent::Sync(SyncIntent::Synchronize {
+                node_name,
+                max_attempts,
+            }),
+            ClientDependency::ConfigRoot(config_root),
+        ) => in_runtime(synchronize_peers(
+            &config_root,
+            node_name.as_ref(),
+            max_attempts.map_or(1, std::num::NonZeroU32::get),
+        )),
+        (CliIntent::Sync(SyncIntent::ViewLog), ClientDependency::LogDir(log_dir)) => {
+            show_log_file(&log_dir.join("sync.log"))
+        }
         _ => Err(NodeError::NotImplemented),
     }
+}
+
+fn show_log_file(path: &Path) -> Result<(), NodeError> {
+    let mut file =
+        std::fs::File::open(path).map_err(|error| NodeError::io("open log file", error))?;
+    let mut stdout = io::stdout().lock();
+    io::copy(&mut file, &mut stdout)
+        .and_then(|_| stdout.flush())
+        .map_err(|error| NodeError::io("write log output", error))
 }
 
 fn run_daemon(intent: PreparedRunIntent) -> Result<(), NodeError> {
@@ -194,6 +443,9 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     let (config_runtime, mut config) = ConfigRuntime::load(&intent.config_root)
         .map_err(|error| NodeError::Config(error.to_string()))?;
     intent.overrides.apply_to(&mut config);
+    config
+        .validate_sync_topology()
+        .map_err(|error| NodeError::Config(error.to_owned()))?;
     validate_storage_layout(
         &intent.config_root,
         &config.replica_root,
@@ -205,7 +457,24 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     let parent_liveness = ParentLivenessPipe::create()?;
 
     let logger = NodeLogger::open(&config.log_dir, identity.clone())?;
+    let identities = IdentityCoordinator::new(identity);
     let startup_correlation = new_correlation_id();
+    if config
+        .network_key
+        .as_ref()
+        .is_some_and(|network_key| network_key.expose().len() < 32)
+    {
+        println!(
+            "WARNING: node.network_key is shorter than 32 bytes; use `oll psk` to generate a stronger key"
+        );
+        logger.emit(
+            LogLevel::Warn,
+            "oll::sync",
+            "weak_network_key_configured",
+            &startup_correlation,
+            json!({ "minimum_recommended_bytes": 32 }),
+        );
+    }
     logger.emit(
         LogLevel::Info,
         "oll::node",
@@ -215,9 +484,10 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     );
 
     let replica = match ReplicaRuntime::start(
+        intent.config_root.clone(),
         config.replica_root.clone(),
         &config.replica_store,
-        identity.node_id(),
+        Arc::clone(&identities),
         Arc::clone(&logger),
     )
     .await
@@ -235,6 +505,52 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }
     };
 
+    let sync = match SyncRuntime::start(
+        &config,
+        Arc::clone(&identities),
+        Arc::clone(&replica),
+        Arc::clone(&logger),
+    )
+    .await
+    {
+        Ok(sync) => sync,
+        Err(error) => {
+            logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "sync_runtime" }),
+            );
+            let _ = replica.shutdown(Instant::now() + SHUTDOWN_DEADLINE).await;
+            return Err(sync_node_error(error));
+        }
+    };
+
+    let mut identity_watch = match IdentityWatch::start(
+        &intent.config_root,
+        Arc::clone(&identities),
+        Arc::clone(&replica),
+        Arc::clone(&logger),
+    )
+    .await
+    {
+        Ok(watch) => watch,
+        Err(error) => {
+            logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "identity_watcher" }),
+            );
+            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
+            let _ = sync.shutdown(deadline).await;
+            let _ = replica.shutdown(deadline).await;
+            return Err(error);
+        }
+    };
+
     let (listener, socket_guard) = match bind_admin_socket(&intent.config_root) {
         Ok(result) => result,
         Err(error) => {
@@ -245,16 +561,20 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
                 &startup_correlation,
                 json!({ "reason": "admin_socket" }),
             );
-            let _ = replica.shutdown(Instant::now() + SHUTDOWN_DEADLINE).await;
+            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
+            let _ = identity_watch.shutdown(deadline).await;
+            let _ = sync.shutdown(deadline).await;
+            let _ = replica.shutdown(deadline).await;
             return Err(error);
         }
     };
     let (shutdown_tx, mut shutdown_rx) = watch::channel(ShutdownNotice::default());
     let state = Arc::new(AdminState::new(
-        identity,
+        identities,
         config.clone(),
         Arc::clone(&logger),
         Arc::clone(&replica),
+        Arc::clone(&sync),
         shutdown_tx.clone(),
     ));
     state.mark_running();
@@ -272,7 +592,14 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     if let Err(error) = wait_for_admin_ready(&socket_guard.path).await {
         state.begin_shutdown();
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
-        let _ = wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
+        let _ = wait_for_shutdown(
+            &mut admin_task,
+            &mut shutdown_rx,
+            &replica,
+            &sync,
+            &mut identity_watch,
+        )
+        .await;
         signal_task.abort();
         let _ = signal_task.await;
         return Err(error);
@@ -282,7 +609,14 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     {
         state.begin_shutdown();
         let _ = shutdown_tx.send(ShutdownNotice::requested(new_correlation_id()));
-        let _ = wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
+        let _ = wait_for_shutdown(
+            &mut admin_task,
+            &mut shutdown_rx,
+            &replica,
+            &sync,
+            &mut identity_watch,
+        )
+        .await;
         signal_task.abort();
         let _ = signal_task.await;
         return Err(error);
@@ -299,8 +633,14 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }),
     );
 
-    let (shutdown_correlation, server_result, shutdown_deadline) =
-        wait_for_shutdown(&mut admin_task, &mut shutdown_rx, &replica).await;
+    let (shutdown_correlation, server_result, shutdown_deadline) = wait_for_shutdown(
+        &mut admin_task,
+        &mut shutdown_rx,
+        &replica,
+        &sync,
+        &mut identity_watch,
+    )
+    .await;
     signal_task.abort();
     let _ = signal_task.await;
     logger.emit(
@@ -330,6 +670,8 @@ async fn wait_for_shutdown(
     admin_task: &mut JoinHandle<Result<(), NodeError>>,
     shutdown: &mut watch::Receiver<ShutdownNotice>,
     replica: &ReplicaRuntime,
+    sync: &SyncRuntime,
+    identity_watch: &mut IdentityWatch,
 ) -> (String, Result<(), NodeError>, Instant) {
     let (completed_admin, trigger_error) = tokio::select! {
         result = &mut *admin_task => {
@@ -365,8 +707,15 @@ async fn wait_for_shutdown(
         }
     };
     let replica_drain = async { replica.shutdown(deadline).await.map_err(replica_node_error) };
-    let (admin_result, replica_result) = tokio::join!(admin_drain, replica_drain);
-    let result = trigger_error.map_or(admin_result, Err).and(replica_result);
+    let sync_drain = async { sync.shutdown(deadline).await.map_err(sync_node_error) };
+    let identity_drain = identity_watch.shutdown(deadline);
+    let (admin_result, sync_result, replica_result, identity_result) =
+        tokio::join!(admin_drain, sync_drain, replica_drain, identity_drain);
+    let result = trigger_error
+        .map_or(admin_result, Err)
+        .and(sync_result)
+        .and(replica_result)
+        .and(identity_result);
     (correlation_id, result, deadline)
 }
 
@@ -921,6 +1270,82 @@ async fn import_replica(config_root: &Path, snapshot: &Path) -> Result<(), NodeE
     Ok(())
 }
 
+async fn ping_peer(config_root: &Path, node_name: &crate::cli::NodeName) -> Result<(), NodeError> {
+    let response = admin::ping_peer(
+        &admin_socket_path(config_root),
+        node_name,
+        new_correlation_id(),
+    )
+    .await?;
+    let identity = response
+        .node
+        .ok_or_else(|| NodeError::Internal("daemon omitted pinged NodeIdentity".to_owned()))?;
+    let node_id = identity
+        .node_id
+        .ok_or_else(|| NodeError::Internal("daemon omitted pinged NodeId".to_owned()))?;
+    let node_name = identity
+        .node_name
+        .ok_or_else(|| NodeError::Internal("daemon omitted pinged NodeName".to_owned()))?;
+    println!(
+        "{} ({}) replied in {} ms",
+        node_name.value, node_id.value, response.round_trip_millis
+    );
+    Ok(())
+}
+
+async fn synchronize_peers(
+    config_root: &Path,
+    node_name: Option<&crate::cli::NodeName>,
+    total_attempts: u32,
+) -> Result<(), NodeError> {
+    let response = admin::synchronize_peers(
+        &admin_socket_path(config_root),
+        node_name,
+        total_attempts,
+        new_correlation_id(),
+    )
+    .await?;
+    let mut failed = false;
+    for peer in response.peers {
+        let target = peer
+            .node
+            .as_ref()
+            .and_then(|identity| identity.node_name.as_ref())
+            .map(|name| name.value.clone())
+            .or_else(|| peer.connect_target.clone())
+            .unwrap_or_else(|| "unknown-peer".to_owned());
+        match PeerSyncOutcome::try_from(peer.outcome).unwrap_or(PeerSyncOutcome::Unspecified) {
+            PeerSyncOutcome::Synchronized => println!(
+                "{target}: synchronized in {} attempt(s), {} object(s), {} blob(s), {} bytes",
+                peer.attempts_used, peer.object_count, peer.blob_count, peer.transferred_bytes
+            ),
+            PeerSyncOutcome::AlreadySatisfied => println!(
+                "{target}: already synchronized ({} attempt(s))",
+                peer.attempts_used
+            ),
+            PeerSyncOutcome::Failed => {
+                failed = true;
+                println!(
+                    "{target}: failed after {} attempt(s): {}",
+                    peer.attempts_used, peer.error_message
+                );
+            }
+            PeerSyncOutcome::Unspecified => {
+                return Err(NodeError::Internal(
+                    "daemon returned an unspecified synchronization outcome".to_owned(),
+                ));
+            }
+        }
+    }
+    if failed {
+        Err(NodeError::Operation(
+            "one or more peers failed to synchronize".to_owned(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
 fn confirm_replica_import() -> Result<bool, NodeError> {
     for requirement in [
         ConfirmationRequirement::ReplicaBackupCreated,
@@ -1158,6 +1583,7 @@ fn in_runtime<T>(future: impl Future<Output = Result<T, NodeError>>) -> Result<T
 fn replica_node_error(error: ReplicaError) -> NodeError {
     match error {
         ReplicaError::Uninitialized => NodeError::Unavailable("no local replica yet".to_owned()),
+        ReplicaError::Configuration(message) => NodeError::Config(message),
         ReplicaError::InvalidArgument(message)
         | ReplicaError::NotFound(message)
         | ReplicaError::AlreadyExists(message)
@@ -1167,6 +1593,16 @@ fn replica_node_error(error: ReplicaError) -> NodeError {
         ReplicaError::CorruptStore(_) | ReplicaError::Store(_) | ReplicaError::Internal(_) => {
             NodeError::Internal(error.to_string())
         }
+    }
+}
+
+fn sync_node_error(error: SyncError) -> NodeError {
+    match error {
+        SyncError::NotFound(message)
+        | SyncError::FailedPrecondition(message)
+        | SyncError::Protocol(message) => NodeError::Operation(message),
+        SyncError::Unavailable(message) => NodeError::Unavailable(message),
+        SyncError::Store | SyncError::Internal(_) => NodeError::Internal(error.to_string()),
     }
 }
 

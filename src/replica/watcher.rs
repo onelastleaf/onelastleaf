@@ -25,17 +25,21 @@ use uuid::Uuid;
 
 use crate::{
     configuration::ReplicaStoreConfig,
-    node::logging::{LogLevel, NodeLogger, new_correlation_id},
+    node::{
+        identity::IdentityCoordinator,
+        logging::{LogLevel, NodeLogger, new_correlation_id},
+    },
 };
 
 use super::{
     ReplicaError,
     classification::encode_text,
+    identity::{self, ReplicaIdentity},
     model::{
         absolute_to_namespace, apply_reliable_rename, initialize_from_disk, reconcile_disk,
         scan_working_tree,
     },
-    store::ReplicaStore,
+    store::{IdentityTransitionKind, ReplicaStore},
     types::{ActiveReplica, CatalogEntry, EntryData, OperationRecord, ReplicaStatus},
 };
 
@@ -57,11 +61,11 @@ pub struct DocumentInspection {
 }
 
 pub struct ReplicaRuntime {
+    pub(crate) config_root: PathBuf,
     pub(crate) root: PathBuf,
-    pub(crate) writer_node_id: Uuid,
     pub(crate) store: Arc<ReplicaStore>,
     pub(crate) state: RwLock<Option<ActiveReplica>>,
-    pub(crate) coordinator: Mutex<()>,
+    pub(crate) identities: Arc<IdentityCoordinator>,
     pub(crate) logger: Arc<NodeLogger>,
     watcher: StdMutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,
     event_shutdown: watch::Sender<bool>,
@@ -69,21 +73,27 @@ pub struct ReplicaRuntime {
 }
 
 impl ReplicaRuntime {
-    pub async fn start(
+    pub(crate) async fn start(
+        config_root: PathBuf,
         root: PathBuf,
         store_config: &ReplicaStoreConfig,
-        writer_node_id: Uuid,
+        identities: Arc<IdentityCoordinator>,
         logger: Arc<NodeLogger>,
     ) -> Result<Arc<Self>, ReplicaError> {
         let store = Arc::new(ReplicaStore::open(store_config).await?);
-        let active = store.load_active().await?;
+        identity::recover_transition(&store, &config_root).await?;
+        store.clear_bootstrap_claim_on_startup().await?;
+        store.discard_orphaned_generations_on_startup().await?;
+        let mut active = store.load_active().await?;
+        identity::reconcile_startup_identity(&store, &config_root, &mut active).await?;
+        store.ensure_active_state_guard(active.as_ref()).await?;
         let (event_shutdown, event_shutdown_rx) = watch::channel(false);
         let runtime = Arc::new(Self {
+            config_root,
             root,
-            writer_node_id,
             store,
             state: RwLock::new(active),
-            coordinator: Mutex::new(()),
+            identities,
             logger,
             watcher: StdMutex::new(None),
             event_shutdown,
@@ -129,6 +139,29 @@ impl ReplicaRuntime {
             .await
             .as_ref()
             .map_or(ReplicaStatus::Uninitialized, ActiveReplica::status)
+    }
+
+    pub(crate) async fn bind_sync_peer(
+        &self,
+        identity: &crate::node::identity::NodeIdentity,
+        connect_target: Option<&str>,
+    ) -> Result<(), ReplicaError> {
+        self.store.bind_sync_peer(identity, connect_target).await
+    }
+
+    pub(crate) async fn sync_peer_bindings(&self) -> Result<Vec<super::PeerBinding>, ReplicaError> {
+        self.store.sync_peer_bindings().await
+    }
+
+    pub(crate) async fn acquire_bootstrap_claim(
+        &self,
+        claim: &super::BootstrapClaim,
+    ) -> Result<bool, ReplicaError> {
+        self.store.acquire_bootstrap_claim(claim).await
+    }
+
+    pub(crate) async fn release_bootstrap_claim(&self, claim_id: Uuid) -> Result<(), ReplicaError> {
+        self.store.release_bootstrap_claim(claim_id).await
     }
 
     pub async fn inspect_document(
@@ -329,7 +362,7 @@ impl ReplicaRuntime {
             correlation_id,
             json!({}),
         );
-        let _coordinator = self.coordinator.lock().await;
+        let _coordinator = self.identities.commit_guard().await;
         self.recover_projection(Some(correlation_id)).await?;
         let root = self.root.clone();
         let disk = tokio::task::spawn_blocking(move || scan_working_tree(&root))
@@ -339,6 +372,7 @@ impl ReplicaRuntime {
             })??;
         let current = self.state.read().await.clone();
         let was_uninitialized = current.is_none();
+        let writer_node_id = self.identities.node_id().await;
         let change = match current.as_ref() {
             None if disk.is_empty() => {
                 self.logger.emit(
@@ -354,8 +388,8 @@ impl ReplicaRuntime {
                 );
                 return Ok(());
             }
-            None => initialize_from_disk(&disk, self.writer_node_id, correlation_id)?,
-            Some(replica) => reconcile_disk(replica, &disk, self.writer_node_id, correlation_id)?,
+            None => initialize_from_disk(&disk, writer_node_id, correlation_id)?,
+            Some(replica) => reconcile_disk(replica, &disk, writer_node_id, correlation_id)?,
         };
         if !change.changed {
             self.logger.emit(
@@ -373,13 +407,22 @@ impl ReplicaRuntime {
         }
         if was_uninitialized {
             self.store
-                .initialize(
+                .build_inactive_generation(
                     &change.replica,
                     &change.blobs,
                     &change.operations,
                     &change.projection_paths,
                 )
                 .await?;
+            identity::activate_candidate(
+                &self.store,
+                &self.config_root,
+                None,
+                &change.replica,
+                IdentityTransitionKind::Initialize,
+                false,
+            )
+            .await?;
         } else {
             self.store
                 .save_active(
@@ -410,6 +453,44 @@ impl ReplicaRuntime {
         Ok(())
     }
 
+    pub(crate) async fn reload_replica_identity(
+        &self,
+        correlation_id: &str,
+    ) -> Result<bool, ReplicaError> {
+        let replacement = ReplicaIdentity::load(&self.config_root)?;
+        let _coordinator = self.identities.commit_guard().await;
+        let mut state = self.state.write().await;
+        let replica = state.as_mut().ok_or_else(|| {
+            ReplicaError::Configuration(
+                "replica.json cannot identify an uninitialized replica".to_owned(),
+            )
+        })?;
+        if replica.replica_id == replacement.replica_id() {
+            return Ok(false);
+        }
+        let previous = replica.replica_id;
+        self.store
+            .update_active_replica_id(replica.generation_id, previous, replacement.replica_id())
+            .await?;
+        replica.replica_id = replacement.replica_id();
+        let epoch = self
+            .identities
+            .advance_epoch()
+            .map_err(|error| ReplicaError::Internal(error.to_string()))?;
+        self.logger.emit(
+            LogLevel::Info,
+            "oll::replica",
+            "replica_identity_updated",
+            correlation_id,
+            json!({
+                "previous_replica_id": previous.to_string(),
+                "replica_id": replacement.replica_id().to_string(),
+                "identity_epoch": epoch,
+            }),
+        );
+        Ok(true)
+    }
+
     async fn reconcile_rename(
         &self,
         source: &Path,
@@ -418,7 +499,7 @@ impl ReplicaRuntime {
     ) -> Result<(), ReplicaError> {
         let source = absolute_to_namespace(&self.root, source)?;
         let destination = absolute_to_namespace(&self.root, destination)?;
-        let _coordinator = self.coordinator.lock().await;
+        let _coordinator = self.identities.commit_guard().await;
         let current = self.state.read().await.clone();
         let Some(current) = current else {
             return Ok(());
@@ -770,7 +851,7 @@ impl ReplicaRuntime {
         }
     }
 
-    fn log_failure(&self, event: &str, correlation_id: &str, error: &ReplicaError) {
+    pub(crate) fn log_failure(&self, event: &str, correlation_id: &str, error: &ReplicaError) {
         self.logger.emit(
             LogLevel::Error,
             "oll::replica",

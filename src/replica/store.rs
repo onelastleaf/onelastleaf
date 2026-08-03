@@ -17,6 +17,7 @@ use url::Url;
 use uuid::Uuid;
 
 use crate::configuration::ReplicaStoreConfig;
+use crate::{cli::NodeName, node::identity::NodeIdentity};
 
 use super::{
     ReplicaError,
@@ -43,6 +44,15 @@ const SCHEMA: &[&str] = &[
         catalog_loro BYTEA NOT NULL,
         lamport_clock TEXT NOT NULL,
         projection_generation TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS generation_state_tokens (
+        generation_id TEXT PRIMARY KEY,
+        state_token BYTEA NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS active_state_guard (
+        singleton BIGINT PRIMARY KEY,
+        generation_id TEXT NOT NULL,
+        state_token BYTEA NOT NULL
     )",
     "CREATE TABLE IF NOT EXISTS catalog_entries (
         generation_id TEXT NOT NULL,
@@ -120,6 +130,32 @@ const SCHEMA: &[&str] = &[
         path TEXT NOT NULL,
         PRIMARY KEY (generation_id, path)
     )",
+    "CREATE TABLE IF NOT EXISTS replica_identity_transition (
+        singleton BIGINT PRIMARY KEY,
+        transition_kind TEXT NOT NULL,
+        expected_active_generation TEXT,
+        candidate_generation TEXT NOT NULL,
+        old_replica_id TEXT,
+        new_replica_id TEXT NOT NULL,
+        old_identity_file BYTEA,
+        new_identity_file BYTEA NOT NULL,
+        projection_pending BIGINT NOT NULL,
+        committed BIGINT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS bootstrap_claim (
+        singleton BIGINT PRIMARY KEY,
+        claim_id TEXT NOT NULL,
+        source_node_id TEXT NOT NULL,
+        correlation_id TEXT NOT NULL
+    )",
+    "CREATE TABLE IF NOT EXISTS sync_peer_bindings (
+        node_id TEXT PRIMARY KEY,
+        node_name TEXT NOT NULL UNIQUE
+    )",
+    "CREATE TABLE IF NOT EXISTS sync_connect_bindings (
+        connect_target TEXT PRIMARY KEY,
+        node_id TEXT NOT NULL
+    )",
 ];
 
 #[derive(Debug)]
@@ -135,7 +171,7 @@ pub enum NewBlobSource {
 }
 
 impl NewBlob {
-    fn size_bytes(&self) -> Result<u64, ReplicaError> {
+    pub(crate) fn size_bytes(&self) -> Result<u64, ReplicaError> {
         match &self.source {
             NewBlobSource::Bytes(bytes) => u64::try_from(bytes.len())
                 .map_err(|_| ReplicaError::InvalidArgument("blob is too large".to_owned())),
@@ -149,6 +185,60 @@ pub struct RetainedCommit {
     pub operation_id: String,
     pub request: Vec<u8>,
     pub response: Vec<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IdentityTransitionKind {
+    Initialize,
+    SnapshotImport,
+    Bootstrap,
+}
+
+impl IdentityTransitionKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Initialize => "initialize",
+            Self::SnapshotImport => "snapshot_import",
+            Self::Bootstrap => "bootstrap",
+        }
+    }
+
+    fn parse(value: &str) -> Result<Self, ReplicaError> {
+        match value {
+            "initialize" => Ok(Self::Initialize),
+            "snapshot_import" => Ok(Self::SnapshotImport),
+            "bootstrap" => Ok(Self::Bootstrap),
+            _ => Err(ReplicaError::CorruptStore(
+                "replica identity transition has an unknown kind".to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct IdentityTransition {
+    pub kind: IdentityTransitionKind,
+    pub expected_active_generation: Option<Uuid>,
+    pub candidate_generation: Uuid,
+    pub old_replica_id: Option<Uuid>,
+    pub new_replica_id: Uuid,
+    pub old_identity_file: Option<Vec<u8>>,
+    pub new_identity_file: Vec<u8>,
+    pub projection_pending: bool,
+    pub committed: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct PeerBinding {
+    pub identity: NodeIdentity,
+    pub connect_targets: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct BootstrapClaim {
+    pub claim_id: Uuid,
+    pub source_node_id: Uuid,
+    pub correlation_id: String,
 }
 
 #[derive(Debug)]
@@ -210,6 +300,498 @@ impl ReplicaStore {
         self.load_generation(&generation_id).await.map(Some)
     }
 
+    pub(crate) async fn active_generation_id(&self) -> Result<Option<Uuid>, ReplicaError> {
+        let value: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&self.pool)
+                .await
+                .map_err(store_error)?;
+        value
+            .map(|value| parse_uuid_v4(&value, "active_generation"))
+            .transpose()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn generation_exists(
+        &self,
+        generation_id: Uuid,
+    ) -> Result<bool, ReplicaError> {
+        let count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM replica_generations WHERE generation_id = $1")
+                .bind(generation_id.to_string())
+                .fetch_one(&self.pool)
+                .await
+                .map_err(store_error)?;
+        Ok(count != 0)
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn blob_exists(&self, sha256: &str) -> Result<bool, ReplicaError> {
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM blobs WHERE sha256 = $1")
+            .bind(sha256)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(store_error)?;
+        Ok(count != 0)
+    }
+
+    pub(crate) async fn ensure_active_state_guard(
+        &self,
+        active: Option<&ActiveReplica>,
+    ) -> Result<(), ReplicaError> {
+        let row = sqlx::query(
+            "SELECT generation_id, state_token FROM active_state_guard WHERE singleton = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        match (active, row) {
+            (None, None) => Ok(()),
+            (None, Some(_)) => Err(ReplicaError::CorruptStore(
+                "active-state guard exists without an active replica".to_owned(),
+            )),
+            (Some(replica), None) => {
+                let token = state_token(replica);
+                sqlx::query(
+                    "INSERT INTO generation_state_tokens (generation_id, state_token)
+                     VALUES ($1, $2)
+                     ON CONFLICT (generation_id) DO UPDATE SET state_token = excluded.state_token",
+                )
+                .bind(replica.generation_id.to_string())
+                .bind(token.as_slice())
+                .execute(&self.pool)
+                .await
+                .map_err(store_error)?;
+                sqlx::query(
+                    "INSERT INTO active_state_guard (singleton, generation_id, state_token)
+                     VALUES (1, $1, $2)",
+                )
+                .bind(replica.generation_id.to_string())
+                .bind(token.as_slice())
+                .execute(&self.pool)
+                .await
+                .map_err(store_error)?;
+                Ok(())
+            }
+            (Some(replica), Some(row)) => {
+                let generation = row
+                    .try_get::<String, _>("generation_id")
+                    .map_err(store_error)?;
+                let token = row
+                    .try_get::<Vec<u8>, _>("state_token")
+                    .map_err(store_error)?;
+                if generation != replica.generation_id.to_string()
+                    || token.as_slice() != state_token(replica)
+                {
+                    return Err(ReplicaError::CorruptStore(
+                        "active-state guard differs from the active replica".to_owned(),
+                    ));
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub(crate) async fn active_state_token(
+        &self,
+        generation_id: Uuid,
+    ) -> Result<[u8; 32], ReplicaError> {
+        let token: Vec<u8> = sqlx::query_scalar(
+            "SELECT state_token FROM active_state_guard
+             WHERE singleton = 1 AND generation_id = $1",
+        )
+        .bind(generation_id.to_string())
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| ReplicaError::CorruptStore("active-state guard is missing".to_owned()))?;
+        token.try_into().map_err(|_| {
+            ReplicaError::CorruptStore("active-state guard token has an invalid length".to_owned())
+        })
+    }
+
+    pub(crate) async fn identity_transition(
+        &self,
+    ) -> Result<Option<IdentityTransition>, ReplicaError> {
+        let row = sqlx::query(
+            "SELECT transition_kind, expected_active_generation,
+                    candidate_generation, old_replica_id, new_replica_id,
+                    old_identity_file, new_identity_file, projection_pending,
+                    committed
+             FROM replica_identity_transition
+             WHERE singleton = 1",
+        )
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(store_error)?;
+        row.map(|row| {
+            let expected_active_generation = row
+                .try_get::<Option<String>, _>("expected_active_generation")
+                .map_err(store_error)?
+                .map(|value| parse_uuid_v4(&value, "expected_active_generation"))
+                .transpose()?;
+            let old_replica_id = row
+                .try_get::<Option<String>, _>("old_replica_id")
+                .map_err(store_error)?
+                .map(|value| parse_uuid_v4(&value, "old_replica_id"))
+                .transpose()?;
+            Ok(IdentityTransition {
+                kind: IdentityTransitionKind::parse(
+                    &row.try_get::<String, _>("transition_kind")
+                        .map_err(store_error)?,
+                )?,
+                expected_active_generation,
+                candidate_generation: parse_uuid_v4(
+                    &row.try_get::<String, _>("candidate_generation")
+                        .map_err(store_error)?,
+                    "candidate_generation",
+                )?,
+                old_replica_id,
+                new_replica_id: parse_uuid_v4(
+                    &row.try_get::<String, _>("new_replica_id")
+                        .map_err(store_error)?,
+                    "new_replica_id",
+                )?,
+                old_identity_file: row
+                    .try_get::<Option<Vec<u8>>, _>("old_identity_file")
+                    .map_err(store_error)?,
+                new_identity_file: row
+                    .try_get::<Vec<u8>, _>("new_identity_file")
+                    .map_err(store_error)?,
+                projection_pending: parse_bool(
+                    row.try_get::<i64, _>("projection_pending")
+                        .map_err(store_error)?,
+                    "identity transition projection_pending",
+                )?,
+                committed: parse_bool(
+                    row.try_get::<i64, _>("committed").map_err(store_error)?,
+                    "identity transition committed",
+                )?,
+            })
+        })
+        .transpose()
+    }
+
+    pub(crate) async fn prepare_identity_transition(
+        &self,
+        transition: &IdentityTransition,
+    ) -> Result<(), ReplicaError> {
+        if transition.committed {
+            return Err(ReplicaError::Internal(
+                "cannot prepare an already committed identity transition".to_owned(),
+            ));
+        }
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let existing: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM replica_identity_transition")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(store_error)?;
+        if existing != 0 {
+            return Err(ReplicaError::RevisionConflict(
+                "another replica identity transition is already prepared".to_owned(),
+            ));
+        }
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        let expected = transition
+            .expected_active_generation
+            .map(|generation| generation.to_string());
+        if active != expected {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed while identity transition was prepared".to_owned(),
+            ));
+        }
+        let candidate_replica_id: Option<String> = sqlx::query_scalar(
+            "SELECT replica_id FROM replica_generations WHERE generation_id = $1",
+        )
+        .bind(transition.candidate_generation.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if candidate_replica_id.as_deref() != Some(transition.new_replica_id.to_string().as_str()) {
+            return Err(ReplicaError::CorruptStore(
+                "identity transition candidate is missing or has another ReplicaId".to_owned(),
+            ));
+        }
+        match (
+            transition.expected_active_generation,
+            transition.old_replica_id,
+        ) {
+            (None, None) => {}
+            (Some(generation), Some(old_replica_id)) => {
+                let active_replica_id: Option<String> = sqlx::query_scalar(
+                    "SELECT replica_id FROM replica_generations WHERE generation_id = $1",
+                )
+                .bind(generation.to_string())
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+                if active_replica_id.as_deref() != Some(old_replica_id.to_string().as_str()) {
+                    return Err(ReplicaError::CorruptStore(
+                        "identity transition old ReplicaId differs from active state".to_owned(),
+                    ));
+                }
+            }
+            _ => {
+                return Err(ReplicaError::Internal(
+                    "identity transition old identity is incomplete".to_owned(),
+                ));
+            }
+        }
+        sqlx::query(
+            "INSERT INTO replica_identity_transition (
+                singleton, transition_kind, expected_active_generation,
+                candidate_generation, old_replica_id, new_replica_id,
+                old_identity_file, new_identity_file, projection_pending,
+                committed
+             ) VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, 0)",
+        )
+        .bind(transition.kind.as_str())
+        .bind(expected)
+        .bind(transition.candidate_generation.to_string())
+        .bind(transition.old_replica_id.map(|value| value.to_string()))
+        .bind(transition.new_replica_id.to_string())
+        .bind(&transition.old_identity_file)
+        .bind(&transition.new_identity_file)
+        .bind(i64::from(transition.projection_pending))
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn activate_identity_transition(
+        &self,
+        candidate_generation: Uuid,
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let row = sqlx::query(
+            "SELECT expected_active_generation, projection_pending, committed
+             FROM replica_identity_transition
+             WHERE singleton = 1 AND candidate_generation = $1",
+        )
+        .bind(candidate_generation.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| {
+            ReplicaError::CorruptStore("prepared identity transition is missing".to_owned())
+        })?;
+        if parse_bool(
+            row.try_get::<i64, _>("committed").map_err(store_error)?,
+            "identity transition committed",
+        )? {
+            return Err(ReplicaError::RevisionConflict(
+                "replica identity transition is already committed".to_owned(),
+            ));
+        }
+        let expected = row
+            .try_get::<Option<String>, _>("expected_active_generation")
+            .map_err(store_error)?;
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if active != expected {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed before identity transition activation".to_owned(),
+            ));
+        }
+        let projection_pending = row
+            .try_get::<i64, _>("projection_pending")
+            .map_err(store_error)?;
+        let candidate_token: Vec<u8> = sqlx::query_scalar(
+            "SELECT state_token FROM generation_state_tokens WHERE generation_id = $1",
+        )
+        .bind(candidate_generation.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| {
+            ReplicaError::CorruptStore("identity transition candidate token is missing".to_owned())
+        })?;
+        let result = sqlx::query(
+            "UPDATE oll_meta
+             SET active_generation = $1, projection_pending = $2
+             WHERE singleton = 1 AND
+                   ((active_generation IS NULL AND $3 IS NULL) OR active_generation = $3)",
+        )
+        .bind(candidate_generation.to_string())
+        .bind(projection_pending)
+        .bind(expected)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if result.rows_affected() != 1 {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed during identity transition activation".to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO active_state_guard (singleton, generation_id, state_token)
+             VALUES (1, $1, $2)
+             ON CONFLICT (singleton) DO UPDATE SET
+                 generation_id = excluded.generation_id,
+                 state_token = excluded.state_token",
+        )
+        .bind(candidate_generation.to_string())
+        .bind(candidate_token)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        let result = sqlx::query(
+            "UPDATE replica_identity_transition SET committed = 1
+             WHERE singleton = 1 AND candidate_generation = $1 AND committed = 0",
+        )
+        .bind(candidate_generation.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if result.rows_affected() != 1 {
+            return Err(ReplicaError::CorruptStore(
+                "identity transition commit marker changed unexpectedly".to_owned(),
+            ));
+        }
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn clear_identity_transition(
+        &self,
+        candidate_generation: Uuid,
+    ) -> Result<(), ReplicaError> {
+        let result = sqlx::query(
+            "DELETE FROM replica_identity_transition
+             WHERE singleton = 1 AND candidate_generation = $1 AND committed = 1",
+        )
+        .bind(candidate_generation.to_string())
+        .execute(&self.pool)
+        .await
+        .map_err(store_error)?;
+        if result.rows_affected() != 1 {
+            return Err(ReplicaError::CorruptStore(
+                "committed identity transition is missing during cleanup".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub(crate) async fn rollback_identity_transition(
+        &self,
+        candidate_generation: Uuid,
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let row = sqlx::query(
+            "SELECT expected_active_generation, committed
+             FROM replica_identity_transition
+             WHERE singleton = 1 AND candidate_generation = $1",
+        )
+        .bind(candidate_generation.to_string())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(store_error)?
+        .ok_or_else(|| {
+            ReplicaError::CorruptStore("prepared identity transition is missing".to_owned())
+        })?;
+        if parse_bool(
+            row.try_get::<i64, _>("committed").map_err(store_error)?,
+            "identity transition committed",
+        )? {
+            return Err(ReplicaError::CorruptStore(
+                "cannot roll back a committed identity transition".to_owned(),
+            ));
+        }
+        let expected = row
+            .try_get::<Option<String>, _>("expected_active_generation")
+            .map_err(store_error)?;
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if active != expected {
+            return Err(ReplicaError::CorruptStore(
+                "active generation contradicts prepared identity transition".to_owned(),
+            ));
+        }
+        delete_generation_rows(&mut transaction, candidate_generation).await?;
+        sqlx::query("DELETE FROM replica_identity_transition WHERE singleton = 1")
+            .execute(&mut *transaction)
+            .await
+            .map_err(store_error)?;
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn update_active_replica_id(
+        &self,
+        generation_id: Uuid,
+        expected_replica_id: Uuid,
+        replacement_replica_id: Uuid,
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        require_active_generation(&mut transaction, generation_id).await?;
+        let pending: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM replica_identity_transition")
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(store_error)?;
+        if pending != 0 {
+            return Err(ReplicaError::RevisionConflict(
+                "replica identity transition is in progress".to_owned(),
+            ));
+        }
+        let result = sqlx::query(
+            "UPDATE replica_generations SET replica_id = $1
+             WHERE generation_id = $2 AND replica_id = $3",
+        )
+        .bind(replacement_replica_id.to_string())
+        .bind(generation_id.to_string())
+        .bind(expected_replica_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if result.rows_affected() != 1 {
+            return Err(ReplicaError::RevisionConflict(
+                "active ReplicaId changed before identity update".to_owned(),
+            ));
+        }
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn discard_inactive_generation(
+        &self,
+        generation_id: Uuid,
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if active.as_deref() == Some(generation_id.to_string().as_str()) {
+            return Err(ReplicaError::CorruptStore(
+                "cannot discard the active replica generation".to_owned(),
+            ));
+        }
+        let referenced: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM replica_identity_transition
+             WHERE candidate_generation = $1",
+        )
+        .bind(generation_id.to_string())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if referenced != 0 {
+            return Err(ReplicaError::RevisionConflict(
+                "cannot discard a generation with a prepared identity transition".to_owned(),
+            ));
+        }
+        delete_generation_rows(&mut transaction, generation_id).await?;
+        transaction.commit().await.map_err(store_error)
+    }
+
     pub async fn projection_pending(&self) -> Result<bool, ReplicaError> {
         let value: i64 =
             sqlx::query_scalar("SELECT projection_pending FROM oll_meta WHERE singleton = 1")
@@ -223,38 +805,6 @@ impl ReplicaStore {
                 "projection_pending is not boolean".to_owned(),
             )),
         }
-    }
-
-    pub async fn initialize(
-        &self,
-        replica: &ActiveReplica,
-        blobs: &[NewBlob],
-        operations: &[OperationRecord],
-        projection_paths: &[String],
-    ) -> Result<(), ReplicaError> {
-        let mut transaction = self.pool.begin().await.map_err(store_error)?;
-        let active: Option<String> =
-            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(store_error)?;
-        if active.is_some() {
-            return Err(ReplicaError::RevisionConflict(
-                "replica was initialized concurrently".to_owned(),
-            ));
-        }
-        write_generation(&mut transaction, replica, blobs, operations).await?;
-        write_projection_paths(&mut transaction, replica.generation_id, projection_paths).await?;
-        sqlx::query(
-            "UPDATE oll_meta
-             SET active_generation = $1, projection_pending = 0
-             WHERE singleton = 1 AND active_generation IS NULL",
-        )
-        .bind(replica.generation_id.to_string())
-        .execute(&mut *transaction)
-        .await
-        .map_err(store_error)?;
-        transaction.commit().await.map_err(store_error)
     }
 
     pub async fn save_active(
@@ -292,6 +842,20 @@ impl ReplicaStore {
         require_active_generation(&mut transaction, replica.generation_id).await?;
         write_generation(&mut transaction, replica, blobs, operations).await?;
         write_projection_paths(&mut transaction, replica.generation_id, projection_paths).await?;
+        let guard = sqlx::query(
+            "UPDATE active_state_guard SET state_token = $1
+             WHERE singleton = 1 AND generation_id = $2",
+        )
+        .bind(state_token(replica).as_slice())
+        .bind(replica.generation_id.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if guard.rows_affected() != 1 {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed during local commit".to_owned(),
+            ));
+        }
         if let Some(commit) = commit {
             sqlx::query(
                 "INSERT INTO retained_commits (
@@ -339,49 +903,91 @@ impl ReplicaStore {
         replica: &ActiveReplica,
         blobs: &[NewBlob],
         operations: &[OperationRecord],
+        projection_paths: &[String],
     ) -> Result<(), ReplicaError> {
         let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        write_generation(&mut transaction, replica, blobs, operations).await?;
+        write_projection_paths(&mut transaction, replica.generation_id, projection_paths).await?;
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn build_sync_generation(
+        &self,
+        expected_generation: Uuid,
+        replica: &ActiveReplica,
+        blobs: &[NewBlob],
+        operations: &[OperationRecord],
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO replica_operations (
+                generation_id, timestamp, operation_id, source, kind,
+                catalog_node_id, document_id, path_before, path_after,
+                correlation_id
+             )
+             SELECT $1, timestamp, operation_id, source, kind,
+                    catalog_node_id, document_id, path_before, path_after,
+                    correlation_id
+             FROM replica_operations WHERE generation_id = $2",
+        )
+        .bind(replica.generation_id.to_string())
+        .bind(expected_generation.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "INSERT INTO retained_commits (generation_id, operation_id, request, response)
+             SELECT $1, operation_id, request, response
+             FROM retained_commits WHERE generation_id = $2",
+        )
+        .bind(replica.generation_id.to_string())
+        .bind(expected_generation.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
         write_generation(&mut transaction, replica, blobs, operations).await?;
         transaction.commit().await.map_err(store_error)
     }
 
-    pub async fn activate_generation(
+    pub(crate) async fn activate_sync_generation(
         &self,
-        expected_active: Option<Uuid>,
-        generation_id: Uuid,
+        expected_generation: Uuid,
+        expected_state_token: [u8; 32],
+        candidate: &ActiveReplica,
     ) -> Result<(), ReplicaError> {
+        let candidate_token = state_token(candidate);
         let mut transaction = self.pool.begin().await.map_err(store_error)?;
-        let active: Option<String> =
-            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(store_error)?;
-        let expected = expected_active.map(|value| value.to_string());
-        if active != expected {
-            return Err(ReplicaError::RevisionConflict(
-                "active replica changed while snapshot import was staged".to_owned(),
-            ));
-        }
-        let exists: i64 =
-            sqlx::query_scalar("SELECT COUNT(*) FROM replica_generations WHERE generation_id = $1")
-                .bind(generation_id.to_string())
-                .fetch_one(&mut *transaction)
-                .await
-                .map_err(store_error)?;
-        if exists != 1 {
-            return Err(ReplicaError::CorruptStore(
-                "snapshot candidate generation is missing".to_owned(),
-            ));
-        }
-        sqlx::query(
-            "UPDATE oll_meta
-             SET active_generation = $1, projection_pending = 1
-             WHERE singleton = 1",
+        let guard = sqlx::query(
+            "UPDATE active_state_guard
+             SET generation_id = $1, state_token = $2
+             WHERE singleton = 1 AND generation_id = $3 AND state_token = $4",
         )
-        .bind(generation_id.to_string())
+        .bind(candidate.generation_id.to_string())
+        .bind(candidate_token.as_slice())
+        .bind(expected_generation.to_string())
+        .bind(expected_state_token.as_slice())
         .execute(&mut *transaction)
         .await
         .map_err(store_error)?;
+        if guard.rows_affected() != 1 {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed during synchronization".to_owned(),
+            ));
+        }
+        let active = sqlx::query(
+            "UPDATE oll_meta SET active_generation = $1, projection_pending = 1
+             WHERE singleton = 1 AND active_generation = $2",
+        )
+        .bind(candidate.generation_id.to_string())
+        .bind(expected_generation.to_string())
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        if active.rows_affected() != 1 {
+            return Err(ReplicaError::RevisionConflict(
+                "active replica changed during synchronization".to_owned(),
+            ));
+        }
         transaction.commit().await.map_err(store_error)
     }
 
@@ -874,6 +1480,225 @@ impl ReplicaStore {
         .map_err(store_error)?;
         rows.into_iter().map(decode_operation).collect()
     }
+
+    pub(crate) async fn bind_sync_peer(
+        &self,
+        identity: &NodeIdentity,
+        connect_target: Option<&str>,
+    ) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let node_id = identity.node_id().to_string();
+        let node_name = identity.node_name().as_str();
+        let name_for_id: Option<String> =
+            sqlx::query_scalar("SELECT node_name FROM sync_peer_bindings WHERE node_id = $1")
+                .bind(&node_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if name_for_id
+            .as_deref()
+            .is_some_and(|known| known != node_name)
+        {
+            return Err(ReplicaError::RevisionConflict(
+                "remote NodeId is already bound to another NodeName".to_owned(),
+            ));
+        }
+        let id_for_name: Option<String> =
+            sqlx::query_scalar("SELECT node_id FROM sync_peer_bindings WHERE node_name = $1")
+                .bind(node_name)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if id_for_name.as_deref().is_some_and(|known| known != node_id) {
+            return Err(ReplicaError::RevisionConflict(
+                "remote NodeName is already bound to another NodeId".to_owned(),
+            ));
+        }
+        sqlx::query(
+            "INSERT INTO sync_peer_bindings (node_id, node_name)
+             VALUES ($1, $2)
+             ON CONFLICT (node_id) DO NOTHING",
+        )
+        .bind(&node_id)
+        .bind(node_name)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+
+        if let Some(connect_target) = connect_target {
+            let bound_node: Option<String> = sqlx::query_scalar(
+                "SELECT node_id FROM sync_connect_bindings WHERE connect_target = $1",
+            )
+            .bind(connect_target)
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(store_error)?;
+            if bound_node.as_deref().is_some_and(|known| known != node_id) {
+                return Err(ReplicaError::RevisionConflict(
+                    "connect target is already bound to another NodeId".to_owned(),
+                ));
+            }
+            sqlx::query(
+                "INSERT INTO sync_connect_bindings (connect_target, node_id)
+                 VALUES ($1, $2)
+                 ON CONFLICT (connect_target) DO NOTHING",
+            )
+            .bind(connect_target)
+            .bind(&node_id)
+            .execute(&mut *transaction)
+            .await
+            .map_err(store_error)?;
+        }
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn sync_peer_bindings(&self) -> Result<Vec<PeerBinding>, ReplicaError> {
+        let rows = sqlx::query(
+            "SELECT node_id, node_name FROM sync_peer_bindings ORDER BY node_name, node_id",
+        )
+        .fetch_all(&self.pool)
+        .await
+        .map_err(store_error)?;
+        let mut peers = Vec::with_capacity(rows.len());
+        for row in rows {
+            let node_id = parse_uuid_v4(
+                &row.try_get::<String, _>("node_id").map_err(store_error)?,
+                "sync peer node_id",
+            )?;
+            let node_name = row
+                .try_get::<String, _>("node_name")
+                .map_err(store_error)?
+                .parse::<NodeName>()
+                .map_err(|_| {
+                    ReplicaError::CorruptStore(
+                        "sync peer node_name is not a lowercase DNS label".to_owned(),
+                    )
+                })?;
+            let connect_targets = sqlx::query_scalar(
+                "SELECT connect_target FROM sync_connect_bindings
+                 WHERE node_id = $1 ORDER BY connect_target",
+            )
+            .bind(node_id.to_string())
+            .fetch_all(&self.pool)
+            .await
+            .map_err(store_error)?;
+            peers.push(PeerBinding {
+                identity: NodeIdentity::new(node_id, node_name),
+                connect_targets,
+            });
+        }
+        Ok(peers)
+    }
+
+    pub(crate) async fn acquire_bootstrap_claim(
+        &self,
+        claim: &BootstrapClaim,
+    ) -> Result<bool, ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if active.is_some() {
+            return Ok(false);
+        }
+        let result = sqlx::query(
+            "INSERT INTO bootstrap_claim (singleton, claim_id, source_node_id, correlation_id)
+             VALUES (1, $1, $2, $3)
+             ON CONFLICT (singleton) DO NOTHING",
+        )
+        .bind(claim.claim_id.to_string())
+        .bind(claim.source_node_id.to_string())
+        .bind(&claim.correlation_id)
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        transaction.commit().await.map_err(store_error)?;
+        Ok(result.rows_affected() == 1)
+    }
+
+    pub(crate) async fn release_bootstrap_claim(&self, claim_id: Uuid) -> Result<(), ReplicaError> {
+        sqlx::query("DELETE FROM bootstrap_claim WHERE singleton = 1 AND claim_id = $1")
+            .bind(claim_id.to_string())
+            .execute(&self.pool)
+            .await
+            .map_err(store_error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn clear_bootstrap_claim_on_startup(&self) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let claim: Option<String> =
+            sqlx::query_scalar("SELECT claim_id FROM bootstrap_claim WHERE singleton = 1")
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        if let Some(claim_id) = claim {
+            let claim_id = parse_uuid_v4(&claim_id, "bootstrap claim_id")?;
+            let active: Option<String> =
+                sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                    .fetch_one(&mut *transaction)
+                    .await
+                    .map_err(store_error)?;
+            if active.as_deref() != Some(claim_id.to_string().as_str()) {
+                delete_generation_rows(&mut transaction, claim_id).await?;
+            }
+            sqlx::query("DELETE FROM bootstrap_claim WHERE singleton = 1")
+                .execute(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        }
+        transaction.commit().await.map_err(store_error)
+    }
+
+    pub(crate) async fn discard_orphaned_generations_on_startup(&self) -> Result<(), ReplicaError> {
+        let mut transaction = self.pool.begin().await.map_err(store_error)?;
+        let active: Option<String> =
+            sqlx::query_scalar("SELECT active_generation FROM oll_meta WHERE singleton = 1")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(store_error)?;
+        let prepared: Option<String> = sqlx::query_scalar(
+            "SELECT candidate_generation FROM replica_identity_transition WHERE singleton = 1",
+        )
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        let generations = sqlx::query_scalar::<_, String>(
+            "SELECT generation_id FROM replica_generations ORDER BY generation_id",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        for generation in generations {
+            if active.as_deref() == Some(generation.as_str())
+                || prepared.as_deref() == Some(generation.as_str())
+            {
+                continue;
+            }
+            delete_generation_rows(
+                &mut transaction,
+                parse_uuid_v4(&generation, "generation_id")?,
+            )
+            .await?;
+        }
+        sqlx::query(
+            "DELETE FROM blob_chunks
+             WHERE sha256 NOT IN (SELECT DISTINCT sha256 FROM binary_versions)",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        sqlx::query(
+            "DELETE FROM blobs
+             WHERE sha256 NOT IN (SELECT DISTINCT sha256 FROM binary_versions)",
+        )
+        .execute(&mut *transaction)
+        .await
+        .map_err(store_error)?;
+        transaction.commit().await.map_err(store_error)
+    }
 }
 
 async fn write_generation(
@@ -903,6 +1728,16 @@ async fn write_generation(
     .bind(&replica.catalog_loro)
     .bind(replica.lamport_clock.to_string())
     .bind(replica.projection_generation.to_string())
+    .execute(&mut **transaction)
+    .await
+    .map_err(store_error)?;
+    sqlx::query(
+        "INSERT INTO generation_state_tokens (generation_id, state_token)
+         VALUES ($1, $2)
+         ON CONFLICT (generation_id) DO UPDATE SET state_token = excluded.state_token",
+    )
+    .bind(&generation)
+    .bind(state_token(replica).as_slice())
     .execute(&mut **transaction)
     .await
     .map_err(store_error)?;
@@ -1156,6 +1991,53 @@ async fn require_active_generation(
     Ok(())
 }
 
+async fn delete_generation_rows(
+    transaction: &mut Transaction<'_, Any>,
+    generation_id: Uuid,
+) -> Result<(), ReplicaError> {
+    let generation = generation_id.to_string();
+    sqlx::query("DELETE FROM generation_state_tokens WHERE generation_id = $1")
+        .bind(&generation)
+        .execute(&mut **transaction)
+        .await
+        .map_err(store_error)?;
+    for statement in [
+        "DELETE FROM replica_operations WHERE generation_id = $1",
+        "DELETE FROM retained_commits WHERE generation_id = $1",
+        "DELETE FROM projection_paths WHERE generation_id = $1",
+        "DELETE FROM binary_versions WHERE generation_id = $1",
+        "DELETE FROM document_objects WHERE generation_id = $1",
+        "DELETE FROM catalog_entries WHERE generation_id = $1",
+        "DELETE FROM replica_generations WHERE generation_id = $1",
+    ] {
+        sqlx::query(statement)
+            .bind(&generation)
+            .execute(&mut **transaction)
+            .await
+            .map_err(store_error)?;
+    }
+    Ok(())
+}
+
+fn state_token(replica: &ActiveReplica) -> [u8; 32] {
+    fn field(hash: &mut Sha256, bytes: &[u8]) {
+        hash.update(u64::try_from(bytes.len()).unwrap_or(u64::MAX).to_be_bytes());
+        hash.update(bytes);
+    }
+
+    let mut hash = Sha256::new();
+    field(&mut hash, replica.root_catalog_node_id.as_bytes());
+    field(&mut hash, &replica.loro_peer_id.to_be_bytes());
+    field(&mut hash, &replica.lamport_clock.to_be_bytes());
+    field(&mut hash, &replica.projection_generation.to_be_bytes());
+    field(&mut hash, &replica.catalog_loro);
+    for (document_id, document) in &replica.documents {
+        field(&mut hash, document_id.as_bytes());
+        field(&mut hash, &document.loro);
+    }
+    hash.finalize().into()
+}
+
 async fn write_projection_paths(
     transaction: &mut Transaction<'_, Any>,
     generation_id: Uuid,
@@ -1289,7 +2171,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::replica::model::{initialize_from_disk, scan_working_tree};
+    use crate::replica::{
+        identity,
+        model::{initialize_from_disk, scan_working_tree},
+    };
 
     #[tokio::test]
     #[ignore = "requires OLL_TEST_POSTGRES_URL and an externally managed PostgreSQL database"]
@@ -1316,19 +2201,21 @@ mod tests {
                 url: scoped.as_str().parse().map_err(|error: String| error)?,
             };
             let directory = TempDir::new().map_err(|error| error.to_string())?;
-            fs::write(directory.path().join("a.md"), "postgres")
-                .map_err(|error| error.to_string())?;
+            let working = directory.path().join("working");
+            let config_root = directory.path().join("config");
+            fs::create_dir(&working).map_err(|error| error.to_string())?;
+            fs::create_dir(&config_root).map_err(|error| error.to_string())?;
+            fs::write(working.join("a.md"), "postgres").map_err(|error| error.to_string())?;
             let binary = b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff".to_vec();
-            fs::write(directory.path().join("image.gif"), &binary)
-                .map_err(|error| error.to_string())?;
-            let disk = scan_working_tree(directory.path()).map_err(|error| error.to_string())?;
+            fs::write(working.join("image.gif"), &binary).map_err(|error| error.to_string())?;
+            let disk = scan_working_tree(&working).map_err(|error| error.to_string())?;
             let change = initialize_from_disk(&disk, Uuid::new_v4(), "postgres-test-correlation")
                 .map_err(|error| error.to_string())?;
             let store = ReplicaStore::open(&config)
                 .await
                 .map_err(|error| error.to_string())?;
             store
-                .initialize(
+                .build_inactive_generation(
                     &change.replica,
                     &change.blobs,
                     &change.operations,
@@ -1336,6 +2223,16 @@ mod tests {
                 )
                 .await
                 .map_err(|error| error.to_string())?;
+            identity::activate_candidate(
+                &store,
+                &config_root,
+                None,
+                &change.replica,
+                IdentityTransitionKind::Initialize,
+                false,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
             let loaded = store
                 .load_active()
                 .await
@@ -1429,13 +2326,19 @@ mod tests {
             let mut candidate = loaded.clone();
             candidate.generation_id = Uuid::new_v4();
             store
-                .build_inactive_generation(&candidate, &[], &[])
+                .build_inactive_generation(&candidate, &[], &[], &[])
                 .await
                 .map_err(|error| error.to_string())?;
-            store
-                .activate_generation(Some(loaded.generation_id), candidate.generation_id)
-                .await
-                .map_err(|error| error.to_string())?;
+            identity::activate_candidate(
+                &store,
+                &config_root,
+                Some((loaded.generation_id, loaded.replica_id)),
+                &candidate,
+                IdentityTransitionKind::SnapshotImport,
+                true,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
             if !store
                 .projection_pending()
                 .await

@@ -18,8 +18,9 @@ use crate::node::logging::LogLevel;
 use super::{
     ReplicaError,
     classification::encode_text,
+    identity,
     model::{decode_catalog_snapshot, generate_loro_peer_id, validate_document_snapshot},
-    store::{NewBlob, NewBlobSource},
+    store::{IdentityTransitionKind, NewBlob, NewBlobSource},
     types::{
         ActiveReplica, DocumentObject, OperationKind, OperationRecord, OperationSource,
         parse_uuid_v4,
@@ -197,7 +198,7 @@ async fn export_runtime_inner(
         ));
     }
 
-    let coordinator = runtime.coordinator.lock().await;
+    let coordinator = runtime.identities.commit_guard().await;
     let replica = runtime
         .state
         .read()
@@ -491,20 +492,25 @@ async fn import_runtime_inner(
         .collect::<Vec<_>>();
     runtime
         .store
-        .build_inactive_generation(&candidate, &blobs, &operations)
+        .build_inactive_generation(&candidate, &blobs, &operations, &[])
         .await?;
 
-    let _coordinator = runtime.coordinator.lock().await;
+    let _coordinator = runtime.identities.commit_guard().await;
     let expected_active = runtime
         .state
         .read()
         .await
         .as_ref()
-        .map(|replica| replica.generation_id);
-    runtime
-        .store
-        .activate_generation(expected_active, candidate.generation_id)
-        .await?;
+        .map(|replica| (replica.generation_id, replica.replica_id));
+    identity::activate_candidate(
+        &runtime.store,
+        &runtime.config_root,
+        expected_active,
+        &candidate,
+        IdentityTransitionKind::SnapshotImport,
+        true,
+    )
+    .await?;
     runtime.replace_state(candidate.clone()).await;
     runtime.project_complete(&candidate).await?;
     runtime
@@ -1642,13 +1648,15 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("original.md"), "authoritative").unwrap();
         let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
+        let identities = crate::node::identity::IdentityCoordinator::new(identity.clone());
         let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
         let runtime = ReplicaRuntime::start(
+            directory.path().to_owned(),
             root.clone(),
             &ReplicaStoreConfig::Sqlite {
                 path: directory.path().join("store/replica.sqlite3"),
             },
-            identity.node_id(),
+            identities,
             logger,
         )
         .await
@@ -1679,13 +1687,15 @@ mod tests {
         fs::create_dir(&root).unwrap();
         fs::write(root.join("document.md"), "snapshot content").unwrap();
         let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
+        let identities = crate::node::identity::IdentityCoordinator::new(identity.clone());
         let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
         let runtime = ReplicaRuntime::start(
+            directory.path().to_owned(),
             root,
             &ReplicaStoreConfig::Sqlite {
                 path: directory.path().join("store/replica.sqlite3"),
             },
-            identity.node_id(),
+            identities,
             logger,
         )
         .await

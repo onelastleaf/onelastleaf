@@ -7,24 +7,27 @@ use std::{
     time::Duration,
 };
 
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use uuid::Uuid;
 
 use crate::{
     configuration::ReplicaStoreConfig,
-    node::{NodeIdentity, logging::NodeLogger},
+    node::{NodeIdentity, identity::IdentityCoordinator, logging::NodeLogger},
     protocol::oll,
 };
 
 use super::{
-    OperationSource, ReplicaError, ReplicaRuntime, ReplicaStatus,
-    store::{NewBlob, NewBlobSource},
+    BootstrapCandidate, BootstrapClaim, OperationSource, ReplicaError, ReplicaRuntime,
+    ReplicaStatus, ReplicationCandidate, ReplicationCommit, StagedBlob, identity,
+    store::{IdentityTransition, IdentityTransitionKind, NewBlob, NewBlobSource},
     types::EntryData,
 };
 
 struct Deployment {
     _directory: TempDir,
     root: PathBuf,
+    config_root: PathBuf,
     store_path: PathBuf,
     log_dir: PathBuf,
     identity: NodeIdentity,
@@ -35,12 +38,15 @@ impl Deployment {
         let directory = TempDir::new().unwrap();
         let root = directory.path().join("working");
         let log_dir = directory.path().join("logs");
+        let config_root = directory.path().join("config");
         fs::create_dir(&root).unwrap();
+        fs::create_dir(&config_root).unwrap();
         Self {
             store_path: directory.path().join("store/replica.sqlite3"),
             identity: NodeIdentity::generate("replica-test".parse().unwrap()),
             _directory: directory,
             root,
+            config_root,
             log_dir,
         }
     }
@@ -48,11 +54,12 @@ impl Deployment {
     async fn start(&self) -> Arc<ReplicaRuntime> {
         let logger = NodeLogger::open(&self.log_dir, self.identity.clone()).unwrap();
         let runtime = ReplicaRuntime::start(
+            self.config_root.clone(),
             self.root.clone(),
             &ReplicaStoreConfig::Sqlite {
                 path: self.store_path.clone(),
             },
-            self.identity.node_id(),
+            IdentityCoordinator::new(self.identity.clone()),
             logger,
         )
         .await
@@ -196,7 +203,7 @@ async fn shutdown_finishes_in_flight_watcher_work_without_starting_queued_work()
     let runtime = deployment.start().await;
     let log_path = deployment.log_dir.join("oll.log");
     let initial_starts = reconciliation_start_count(&log_path);
-    let coordinator = runtime.coordinator.lock().await;
+    let coordinator = runtime.identities.commit_guard().await;
 
     fs::write(deployment.native("/first.md"), "first").unwrap();
     wait_for_reconciliation_start_count(&log_path, initial_starts + 1).await;
@@ -234,7 +241,7 @@ async fn watcher_shutdown_aborts_in_flight_work_at_its_absolute_deadline() {
     let runtime = deployment.start().await;
     let log_path = deployment.log_dir.join("oll.log");
     let initial_starts = reconciliation_start_count(&log_path);
-    let coordinator = runtime.coordinator.lock().await;
+    let coordinator = runtime.identities.commit_guard().await;
 
     fs::write(deployment.native("/blocked.md"), "blocked").unwrap();
     wait_for_reconciliation_start_count(&log_path, initial_starts + 1).await;
@@ -352,12 +359,14 @@ async fn watcher_registration_closes_the_startup_scan_race() {
     }
     let logger = NodeLogger::open(&deployment.log_dir, deployment.identity.clone()).unwrap();
     let root = deployment.root.clone();
+    let config_root = deployment.config_root.clone();
     let config = ReplicaStoreConfig::Sqlite {
         path: deployment.store_path.clone(),
     };
-    let writer = deployment.identity.node_id();
-    let starting =
-        tokio::spawn(async move { ReplicaRuntime::start(root, &config, writer, logger).await });
+    let identities = IdentityCoordinator::new(deployment.identity.clone());
+    let starting = tokio::spawn(async move {
+        ReplicaRuntime::start(config_root, root, &config, identities, logger).await
+    });
     tokio::task::yield_now().await;
     fs::write(deployment.native("/arrived-during-startup.md"), "not lost").unwrap();
 
@@ -1598,7 +1607,7 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
     inactive.replica_id = Uuid::new_v4();
     runtime
         .store
-        .build_inactive_generation(&inactive, &[], &[])
+        .build_inactive_generation(&inactive, &[], &[], &[])
         .await
         .unwrap();
     drop(runtime);
@@ -1610,12 +1619,29 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
             replica_id: active.replica_id
         }
     );
-    shutdown_runtime(&before_switch_restart).await;
+    assert!(
+        !before_switch_restart
+            .store
+            .generation_exists(inactive.generation_id)
+            .await
+            .unwrap()
+    );
     before_switch_restart
         .store
-        .activate_generation(Some(active.generation_id), inactive.generation_id)
+        .build_inactive_generation(&inactive, &[], &[], &[])
         .await
         .unwrap();
+    shutdown_runtime(&before_switch_restart).await;
+    identity::activate_candidate(
+        &before_switch_restart.store,
+        &deployment.config_root,
+        Some((active.generation_id, active.replica_id)),
+        &inactive,
+        IdentityTransitionKind::SnapshotImport,
+        true,
+    )
+    .await
+    .unwrap();
     fs::write(deployment.native("/a.md"), "old-working-tree").unwrap();
     fs::write(deployment.native("/stale.md"), "must disappear").unwrap();
     drop(before_switch_restart);
@@ -1640,6 +1666,200 @@ async fn failed_sql_transaction_and_generation_switch_boundaries_preserve_author
             .unwrap()
     );
     shutdown_runtime(&after_switch_restart).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn replica_identity_transition_recovers_on_both_sides_of_sql_activation() {
+    let deployment = Deployment::new();
+    fs::write(deployment.native("/identity.md"), "identity recovery").unwrap();
+    let runtime = deployment.start().await;
+    shutdown_runtime(&runtime).await;
+    let active = runtime.state.read().await.clone().unwrap();
+    let old_identity_file = identity::read_identity_bytes(&deployment.config_root)
+        .unwrap()
+        .unwrap();
+
+    let mut before_activation = active.clone();
+    before_activation.generation_id = Uuid::new_v4();
+    before_activation.replica_id = Uuid::new_v4();
+    runtime
+        .store
+        .build_inactive_generation(&before_activation, &[], &[], &[])
+        .await
+        .unwrap();
+    let prepared_new_file = identity::ReplicaIdentity::new(before_activation.replica_id)
+        .encode()
+        .unwrap();
+    runtime
+        .store
+        .prepare_identity_transition(&IdentityTransition {
+            kind: IdentityTransitionKind::SnapshotImport,
+            expected_active_generation: Some(active.generation_id),
+            candidate_generation: before_activation.generation_id,
+            old_replica_id: Some(active.replica_id),
+            new_replica_id: before_activation.replica_id,
+            old_identity_file: Some(old_identity_file.clone()),
+            new_identity_file: prepared_new_file.clone(),
+            projection_pending: true,
+            committed: false,
+        })
+        .await
+        .unwrap();
+    fs::write(
+        identity::identity_path(&deployment.config_root),
+        &prepared_new_file,
+    )
+    .unwrap();
+    drop(runtime);
+
+    let rolled_back = deployment.start().await;
+    assert_eq!(
+        rolled_back.status().await,
+        ReplicaStatus::InitializedPopulated {
+            replica_id: active.replica_id,
+        }
+    );
+    assert_eq!(
+        identity::read_identity_bytes(&deployment.config_root)
+            .unwrap()
+            .unwrap(),
+        old_identity_file
+    );
+    assert!(
+        rolled_back
+            .store
+            .identity_transition()
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        rolled_back
+            .store
+            .load_generation(&before_activation.generation_id.to_string())
+            .await
+            .is_err()
+    );
+    shutdown_runtime(&rolled_back).await;
+
+    let active = rolled_back.state.read().await.clone().unwrap();
+    let mut after_activation = active.clone();
+    after_activation.generation_id = Uuid::new_v4();
+    after_activation.replica_id = Uuid::new_v4();
+    rolled_back
+        .store
+        .build_inactive_generation(&after_activation, &[], &[], &[])
+        .await
+        .unwrap();
+    let committed_new_file = identity::ReplicaIdentity::new(after_activation.replica_id)
+        .encode()
+        .unwrap();
+    rolled_back
+        .store
+        .prepare_identity_transition(&IdentityTransition {
+            kind: IdentityTransitionKind::SnapshotImport,
+            expected_active_generation: Some(active.generation_id),
+            candidate_generation: after_activation.generation_id,
+            old_replica_id: Some(active.replica_id),
+            new_replica_id: after_activation.replica_id,
+            old_identity_file: Some(
+                identity::read_identity_bytes(&deployment.config_root)
+                    .unwrap()
+                    .unwrap(),
+            ),
+            new_identity_file: committed_new_file.clone(),
+            projection_pending: true,
+            committed: false,
+        })
+        .await
+        .unwrap();
+    fs::write(
+        identity::identity_path(&deployment.config_root),
+        &committed_new_file,
+    )
+    .unwrap();
+    rolled_back
+        .store
+        .activate_identity_transition(after_activation.generation_id)
+        .await
+        .unwrap();
+    drop(rolled_back);
+
+    let recovered = deployment.start().await;
+    assert_eq!(
+        recovered.status().await,
+        ReplicaStatus::InitializedPopulated {
+            replica_id: after_activation.replica_id,
+        }
+    );
+    assert_eq!(
+        identity::read_identity_bytes(&deployment.config_root)
+            .unwrap()
+            .unwrap(),
+        committed_new_file
+    );
+    assert!(
+        recovered
+            .store
+            .identity_transition()
+            .await
+            .unwrap()
+            .is_none()
+    );
+    shutdown_runtime(&recovered).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn valid_replica_identity_edit_updates_sql_before_publication_and_invalid_edit_is_retained() {
+    let deployment = Deployment::new();
+    fs::write(deployment.native("/identity.md"), "hot identity").unwrap();
+    let runtime = deployment.start().await;
+    let previous = runtime.state.read().await.as_ref().unwrap().replica_id;
+    let replacement = Uuid::new_v4();
+    identity::ReplicaIdentity::new(replacement)
+        .write(&deployment.config_root)
+        .unwrap();
+    assert!(
+        runtime
+            .reload_replica_identity("replica-identity-hot-edit")
+            .await
+            .unwrap()
+    );
+    assert_ne!(previous, replacement);
+    assert_eq!(
+        runtime
+            .store
+            .load_active()
+            .await
+            .unwrap()
+            .unwrap()
+            .replica_id,
+        replacement
+    );
+    assert_eq!(runtime.identities.epoch(), 1);
+
+    fs::write(identity::identity_path(&deployment.config_root), b"{").unwrap();
+    assert!(matches!(
+        runtime
+            .reload_replica_identity("replica-identity-invalid-edit")
+            .await,
+        Err(ReplicaError::Configuration(_))
+    ));
+    assert_eq!(
+        runtime.state.read().await.as_ref().unwrap().replica_id,
+        replacement
+    );
+    assert_eq!(
+        runtime
+            .store
+            .load_active()
+            .await
+            .unwrap()
+            .unwrap()
+            .replica_id,
+        replacement
+    );
+    shutdown_runtime(&runtime).await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -2013,5 +2233,344 @@ async fn filesystem_kind_replacement_allocates_new_stable_identity() {
             .is_some_and(|binary| binary.binary_id == binary_identity)
     }));
     drop(state);
+    shutdown_runtime(&runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bootstrap_claim_atomically_imports_remote_state_and_merges_only_local_paths() {
+    let source = Deployment::new();
+    fs::write(source.native("/remote.md"), "remote only").unwrap();
+    fs::write(source.native("/collision.md"), "remote wins").unwrap();
+    fs::write(
+        source.native("/image.gif"),
+        b"GIF89a\x01\x00\x01\x00\x80\x00\x00\x00\x00\x00\xff\xff\xff",
+    )
+    .unwrap();
+    let source_runtime = source.start().await;
+    let source_replica_id = match source_runtime.status().await {
+        ReplicaStatus::InitializedPopulated { replica_id } => replica_id,
+        state => panic!("unexpected source state: {state:?}"),
+    };
+    let source_peer_id = source_runtime
+        .state
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .loro_peer_id;
+    let source_data = source_runtime.capture_bootstrap_source().await.unwrap();
+    let mut blobs = std::collections::BTreeMap::new();
+    for (sha256, size_bytes) in &source_data.inventory.blobs {
+        let staged = tempfile::NamedTempFile::new().unwrap();
+        fs::write(
+            staged.path(),
+            source_runtime.store.read_blob(sha256).await.unwrap(),
+        )
+        .unwrap();
+        blobs.insert(
+            sha256.clone(),
+            StagedBlob {
+                path: staged.into_temp_path(),
+                size_bytes: *size_bytes,
+            },
+        );
+    }
+
+    let target = Deployment::new();
+    let target_runtime = target.start().await;
+    assert_eq!(target_runtime.status().await, ReplicaStatus::Uninitialized);
+    let claim = BootstrapClaim {
+        claim_id: Uuid::new_v4(),
+        source_node_id: source.identity.node_id(),
+        correlation_id: "bootstrap-regression-correlation".to_owned(),
+    };
+    assert!(
+        target_runtime
+            .acquire_bootstrap_claim(&claim)
+            .await
+            .unwrap()
+    );
+    assert!(
+        !target_runtime
+            .acquire_bootstrap_claim(&BootstrapClaim {
+                claim_id: Uuid::new_v4(),
+                source_node_id: Uuid::new_v4(),
+                correlation_id: "losing-bootstrap-correlation".to_owned(),
+            })
+            .await
+            .unwrap()
+    );
+    let guard = target_runtime.identities.commit_guard_owned().await;
+    fs::write(target.native("/local.md"), "local only").unwrap();
+    fs::write(target.native("/collision.md"), "local loses").unwrap();
+
+    let commit = target_runtime
+        .commit_bootstrap_candidate(
+            BootstrapCandidate {
+                claim_id: claim.claim_id,
+                replica_id: source_replica_id,
+                object_updates: source_data
+                    .objects
+                    .into_iter()
+                    .map(|(object, exported)| (object, exported.payload))
+                    .collect(),
+                blobs,
+            },
+            &guard,
+            target.identity.node_id(),
+            &claim.correlation_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(commit, ReplicationCommit::Committed { .. }));
+    target_runtime
+        .release_bootstrap_claim(claim.claim_id)
+        .await
+        .unwrap();
+    drop(guard);
+
+    assert_eq!(
+        target_runtime.status().await,
+        ReplicaStatus::InitializedPopulated {
+            replica_id: source_replica_id
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(target.native("/remote.md")).unwrap(),
+        "remote only"
+    );
+    assert_eq!(
+        fs::read_to_string(target.native("/collision.md")).unwrap(),
+        "remote wins"
+    );
+    assert_eq!(
+        fs::read_to_string(target.native("/local.md")).unwrap(),
+        "local only"
+    );
+    assert!(target.native("/image.gif").is_file());
+    let target_peer_id = target_runtime
+        .state
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .loro_peer_id;
+    assert_ne!(target_peer_id, source_peer_id);
+    assert_eq!(
+        identity::ReplicaIdentity::load(&target.config_root)
+            .unwrap()
+            .replica_id(),
+        source_replica_id
+    );
+
+    shutdown_runtime(&target_runtime).await;
+    drop(target_runtime);
+    let restarted = target.start().await;
+    assert_eq!(
+        restarted.status().await,
+        ReplicaStatus::InitializedPopulated {
+            replica_id: source_replica_id
+        }
+    );
+    assert_eq!(
+        fs::read_to_string(target.native("/collision.md")).unwrap(),
+        "remote wins"
+    );
+    assert_eq!(
+        fs::read_to_string(target.native("/local.md")).unwrap(),
+        "local only"
+    );
+    shutdown_runtime(&restarted).await;
+    shutdown_runtime(&source_runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_candidate_rejects_a_concurrent_local_commit_before_publication() {
+    let deployment = Deployment::new();
+    fs::write(deployment.native("/race.md"), "before").unwrap();
+    let runtime = deployment.start().await;
+    let base = runtime.capture_replica_inventory().await.unwrap();
+    runtime
+        .commit_documents(
+            oll::CommitDocumentsRequest {
+                operation_id: "concurrent-local-sync-race".to_owned(),
+                preconditions: Vec::new(),
+                mutations: vec![replace_mutation("/race.md", "after")],
+            },
+            OperationSource::Plugin,
+            "concurrent-local-sync-correlation",
+        )
+        .await
+        .unwrap();
+
+    assert!(matches!(
+        runtime
+            .commit_replication_candidate(
+                ReplicationCandidate {
+                    base_generation_id: base.generation_id,
+                    base_state_token: base.state_token,
+                    object_updates: Default::default(),
+                    blobs: Default::default(),
+                },
+                "stale-sync-correlation",
+            )
+            .await,
+        Err(ReplicaError::RevisionConflict(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(deployment.native("/race.md")).unwrap(),
+        "after"
+    );
+    shutdown_runtime(&runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_discards_a_pre_activation_normal_sync_generation_and_its_orphan_blob() {
+    let deployment = Deployment::new();
+    fs::write(deployment.native("/active.md"), "active").unwrap();
+    let runtime = deployment.start().await;
+    let active = runtime.state.read().await.clone().unwrap();
+    let mut candidate = active.clone();
+    candidate.generation_id = Uuid::new_v4();
+    let orphan_bytes = b"orphaned sync blob".to_vec();
+    let orphan_sha256 = super::lower_hex(&Sha256::digest(&orphan_bytes));
+    runtime
+        .store
+        .build_sync_generation(
+            active.generation_id,
+            &candidate,
+            &[NewBlob {
+                sha256: orphan_sha256.clone(),
+                source: NewBlobSource::Bytes(orphan_bytes),
+            }],
+            &[],
+        )
+        .await
+        .unwrap();
+    assert!(
+        runtime
+            .store
+            .generation_exists(candidate.generation_id)
+            .await
+            .unwrap()
+    );
+    assert!(runtime.store.blob_exists(&orphan_sha256).await.unwrap());
+
+    shutdown_runtime(&runtime).await;
+    drop(runtime);
+    let restarted = deployment.start().await;
+    assert_eq!(
+        restarted.status().await,
+        ReplicaStatus::InitializedPopulated {
+            replica_id: active.replica_id,
+        }
+    );
+    assert!(
+        !restarted
+            .store
+            .generation_exists(candidate.generation_id)
+            .await
+            .unwrap()
+    );
+    assert!(!restarted.store.blob_exists(&orphan_sha256).await.unwrap());
+    shutdown_runtime(&restarted).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn startup_discards_the_inactive_generation_owned_by_a_stale_bootstrap_claim() {
+    let source = Deployment::new();
+    fs::write(source.native("/source.md"), "source").unwrap();
+    let source_runtime = source.start().await;
+    let mut stale_candidate = source_runtime.state.read().await.clone().unwrap();
+
+    let target = Deployment::new();
+    let target_runtime = target.start().await;
+    let claim = BootstrapClaim {
+        claim_id: Uuid::new_v4(),
+        source_node_id: source.identity.node_id(),
+        correlation_id: "stale-bootstrap-claim-correlation".to_owned(),
+    };
+    stale_candidate.generation_id = claim.claim_id;
+    target_runtime
+        .store
+        .build_inactive_generation(&stale_candidate, &[], &[], &[])
+        .await
+        .unwrap();
+    assert!(
+        target_runtime
+            .store
+            .generation_exists(claim.claim_id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        target_runtime
+            .acquire_bootstrap_claim(&claim)
+            .await
+            .unwrap()
+    );
+
+    shutdown_runtime(&target_runtime).await;
+    drop(target_runtime);
+    let restarted = target.start().await;
+    assert_eq!(restarted.status().await, ReplicaStatus::Uninitialized);
+    assert!(
+        !restarted
+            .store
+            .generation_exists(claim.claim_id)
+            .await
+            .unwrap()
+    );
+    assert!(
+        restarted
+            .acquire_bootstrap_claim(&BootstrapClaim {
+                claim_id: Uuid::new_v4(),
+                source_node_id: Uuid::new_v4(),
+                correlation_id: "post-recovery-bootstrap-correlation".to_owned(),
+            })
+            .await
+            .unwrap()
+    );
+
+    shutdown_runtime(&restarted).await;
+    shutdown_runtime(&source_runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn durable_peer_bindings_reject_node_name_id_and_target_collisions() {
+    let deployment = Deployment::new();
+    let runtime = deployment.start().await;
+    let first_id = Uuid::new_v4();
+    let first = NodeIdentity::new(first_id, "peer-one".parse().unwrap());
+    runtime
+        .bind_sync_peer(&first, Some("oll://127.0.0.1:17384"))
+        .await
+        .unwrap();
+
+    let renamed = NodeIdentity::new(first_id, "peer-renamed".parse().unwrap());
+    assert!(matches!(
+        runtime.bind_sync_peer(&renamed, None).await,
+        Err(ReplicaError::RevisionConflict(_))
+    ));
+    let reused_name = NodeIdentity::new(Uuid::new_v4(), "peer-one".parse().unwrap());
+    assert!(matches!(
+        runtime.bind_sync_peer(&reused_name, None).await,
+        Err(ReplicaError::RevisionConflict(_))
+    ));
+    let reused_target = NodeIdentity::new(Uuid::new_v4(), "peer-two".parse().unwrap());
+    assert!(matches!(
+        runtime
+            .bind_sync_peer(&reused_target, Some("oll://127.0.0.1:17384"))
+            .await,
+        Err(ReplicaError::RevisionConflict(_))
+    ));
+
+    let bindings = runtime.sync_peer_bindings().await.unwrap();
+    assert_eq!(bindings.len(), 1);
+    assert_eq!(bindings[0].identity, first);
+    assert_eq!(
+        bindings[0].connect_targets,
+        vec!["oll://127.0.0.1:17384".to_owned()]
+    );
     shutdown_runtime(&runtime).await;
 }

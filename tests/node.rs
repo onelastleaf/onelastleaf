@@ -10,6 +10,7 @@ use std::{
 
 use serde_json::Value;
 use tempfile::TempDir;
+use uuid::Uuid;
 
 const EXIT_UNAVAILABLE: i32 = 69;
 const EXIT_CONFIG: i32 = 78;
@@ -103,6 +104,35 @@ fn stop(config_root: &Path) {
         "stop failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn wait_for_identity(
+    config_root: &Path,
+    node_id: &str,
+    node_name: &str,
+    replica_id: Option<&str>,
+) -> Value {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let status = wait_for_status(config_root);
+        if status["node_id"] == node_id
+            && status["node_name"] == node_name
+            && replica_id.is_none_or(|replica_id| status["replica_id"] == replica_id)
+        {
+            return status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not adopt the expected identity: {status}"
+        );
+        thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn replace_file_atomically(path: &Path, contents: impl AsRef<[u8]>) {
+    let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
+    fs::write(&temporary, contents).unwrap();
+    fs::rename(temporary, path).unwrap();
 }
 
 struct ChildGuard(Child);
@@ -202,6 +232,69 @@ fn foreground_daemon_serves_status_filters_and_graceful_stop() {
         .as_str()
         .unwrap();
     assert_eq!(shutdown_requested, shutdown_completed);
+}
+
+#[test]
+fn daemon_hot_loads_valid_node_and_replica_identity_replacements() {
+    let directory = TempDir::new().unwrap();
+    if !unix_sockets_available(&directory) {
+        return;
+    }
+    initialize(&directory);
+    let config_root = directory.path().join("config");
+    fs::write(directory.path().join("replica/identity.md"), "identity").unwrap();
+    let mut daemon = ChildGuard(spawn_run(&config_root));
+    let initial = wait_for_status(&config_root);
+    let initial_replica_id = initial["replica_id"].as_str().unwrap().to_owned();
+
+    let replacement_node_id = Uuid::new_v4().to_string();
+    replace_file_atomically(
+        &config_root.join("node.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format_version": 1,
+            "node_id": replacement_node_id,
+            "node_name": "renamed-node",
+        }))
+        .unwrap(),
+    );
+    wait_for_identity(
+        &config_root,
+        &replacement_node_id,
+        "renamed-node",
+        Some(&initial_replica_id),
+    );
+
+    fs::write(config_root.join("node.json"), b"{").unwrap();
+    thread::sleep(Duration::from_millis(400));
+    let retained = wait_for_status(&config_root);
+    assert_eq!(retained["node_id"], replacement_node_id);
+    assert_eq!(retained["node_name"], "renamed-node");
+
+    let replacement_replica_id = Uuid::new_v4().to_string();
+    replace_file_atomically(
+        &config_root.join("replica.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format_version": 1,
+            "replica_id": replacement_replica_id,
+        }))
+        .unwrap(),
+    );
+    wait_for_identity(
+        &config_root,
+        &replacement_node_id,
+        "renamed-node",
+        Some(&replacement_replica_id),
+    );
+
+    fs::write(config_root.join("replica.json"), b"{").unwrap();
+    thread::sleep(Duration::from_millis(400));
+    assert_eq!(
+        wait_for_status(&config_root)["replica_id"],
+        replacement_replica_id
+    );
+
+    stop(&config_root);
+    assert!(daemon.0.wait().unwrap().success());
 }
 
 #[test]

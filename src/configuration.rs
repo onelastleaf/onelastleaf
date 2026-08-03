@@ -3,6 +3,7 @@ use std::{
     ffi::OsString,
     fmt, fs, io,
     net::SocketAddr,
+    os::unix::ffi::OsStringExt,
     path::{Component, Path, PathBuf},
     str::FromStr,
     sync::Arc,
@@ -10,6 +11,7 @@ use std::{
 
 use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Table, Value, chunk::ChunkMode};
 use url::Url;
+use zeroize::Zeroizing;
 
 const CONFIG_FILENAME: &str = "config.lua";
 const ROOT_REGISTRY_KEY: &str = "oll.config.root";
@@ -22,6 +24,18 @@ pub struct ConnectUrl(Url);
 impl ConnectUrl {
     pub fn as_url(&self) -> &Url {
         &self.0
+    }
+
+    pub fn host(&self) -> &str {
+        self.0
+            .host_str()
+            .expect("validated oll connect URL always has a host")
+    }
+
+    pub fn port(&self) -> u16 {
+        self.0
+            .port()
+            .expect("validated oll connect URL always has an explicit port")
     }
 }
 
@@ -36,13 +50,49 @@ impl FromStr for ConnectUrl {
 
     fn from_str(input: &str) -> Result<Self, Self::Err> {
         let url = Url::parse(input).map_err(|error| error.to_string())?;
-        if !matches!(url.scheme(), "http" | "https") {
-            return Err("connect URL scheme must be http or https".to_owned());
+        if url.scheme() != "oll" {
+            return Err("connect URL scheme must be oll".to_owned());
         }
         if url.host().is_none() {
             return Err("connect URL must include a host".to_owned());
         }
+        if url.port().is_none_or(|port| port == 0) {
+            return Err("connect URL must include an explicit nonzero port".to_owned());
+        }
+        if !url.username().is_empty() || url.password().is_some() {
+            return Err("connect URL must not include user information".to_owned());
+        }
+        if url.query().is_some() || url.fragment().is_some() {
+            return Err("connect URL must not include a query or fragment".to_owned());
+        }
+        if !matches!(url.path(), "" | "/") {
+            return Err("connect URL path must be empty or root".to_owned());
+        }
         Ok(Self(url))
+    }
+}
+
+#[derive(Clone, Eq, PartialEq)]
+pub struct NetworkKey(Zeroizing<Vec<u8>>);
+
+impl NetworkKey {
+    fn new(bytes: Vec<u8>) -> Self {
+        Self(Zeroizing::new(bytes))
+    }
+
+    pub(crate) fn expose(&self) -> &[u8] {
+        self.0.as_slice()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn new_for_test(bytes: Vec<u8>) -> Self {
+        Self::new(bytes)
+    }
+}
+
+impl fmt::Debug for NetworkKey {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("NetworkKey(REDACTED)")
     }
 }
 
@@ -86,6 +136,17 @@ pub struct ResolvedNodeConfig {
     pub log_dir: PathBuf,
     pub listen: Option<SocketAddr>,
     pub connect: Vec<ConnectUrl>,
+    pub network_key: Option<NetworkKey>,
+}
+
+impl ResolvedNodeConfig {
+    pub fn validate_sync_topology(&self) -> Result<(), &'static str> {
+        if (self.listen.is_some() || !self.connect.is_empty()) && self.network_key.is_none() {
+            Err("node.network_key is required when listen or connect is configured")
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -315,11 +376,39 @@ fn install_environment_helper(lua: &Lua, environment: EnvironmentLookup) -> mlua
         environment(&name)
             .map_err(|()| mlua::Error::runtime("environment value is not valid UTF-8"))
     })?;
+    let read_network_key = lua.create_function(|lua, path: mlua::LuaString| {
+        let bytes = path.as_bytes();
+        if bytes.is_empty() || bytes.contains(&0) {
+            return Err(mlua::Error::runtime(
+                "network-key path must be nonempty and NUL-free",
+            ));
+        }
+        let path = PathBuf::from(OsString::from_vec(bytes.to_vec()));
+        if !path.is_absolute() {
+            return Err(mlua::Error::runtime("network-key path must be absolute"));
+        }
+        let metadata = fs::metadata(&path)
+            .map_err(|_| mlua::Error::runtime("network-key file cannot be read"))?;
+        if !metadata.is_file() {
+            return Err(mlua::Error::runtime(
+                "network-key path must name a regular file",
+            ));
+        }
+        let bytes =
+            fs::read(path).map_err(|_| mlua::Error::runtime("network-key file cannot be read"))?;
+        lua.create_string(&bytes)
+    })?;
     lua.globals().set("_oll_getenv", getenv)?;
+    lua.globals()
+        .set("_oll_read_network_key", read_network_key)?;
     lua.load(
         r#"
-        local helpers = { getenv = _oll_getenv }
+        local helpers = {
+            getenv = _oll_getenv,
+            read_network_key = _oll_read_network_key,
+        }
         _oll_getenv = nil
+        _oll_read_network_key = nil
         oll = setmetatable({}, {
             __index = helpers,
             __newindex = function() error("oll helpers are read-only", 2) end,
@@ -470,6 +559,7 @@ fn decode_root(
             "log_dir",
             "listen",
             "connect",
+            "network_key",
         ],
         config_path,
         "node",
@@ -486,14 +576,20 @@ fn decode_root(
     let log_dir = required_path(&node, "log_dir", "node.log_dir", config_root, config_path)?;
     let listen = optional_listen(&node, config_path)?;
     let connect = connect_urls(&node, config_path)?;
+    let network_key = optional_network_key(&node, config_path)?;
 
-    Ok(ResolvedNodeConfig {
+    let config = ResolvedNodeConfig {
         replica_root,
         replica_store,
         log_dir,
         listen,
         connect,
-    })
+        network_key,
+    };
+    config
+        .validate_sync_topology()
+        .map_err(|problem| schema_error(config_path, "node.network_key", problem))?;
+    Ok(config)
 }
 
 fn ensure_plain_table(
@@ -681,15 +777,37 @@ fn optional_listen(table: &Table, config_path: &Path) -> Result<Option<SocketAdd
             let value = value
                 .to_str()
                 .map_err(|_| schema_error(config_path, "node.listen", "must be valid UTF-8"))?;
-            value
-                .parse()
-                .map(Some)
-                .map_err(|_| schema_error(config_path, "node.listen", "must be a socket address"))
+            let address: SocketAddr = value.parse().map_err(|_| {
+                schema_error(config_path, "node.listen", "must be a socket address")
+            })?;
+            if address.port() == 0 {
+                return Err(schema_error(
+                    config_path,
+                    "node.listen",
+                    "must use a nonzero port",
+                ));
+            }
+            Ok(Some(address))
         }
         _ => Err(schema_error(
             config_path,
             "node.listen",
             "must be a socket address string or nil",
+        )),
+    }
+}
+
+fn optional_network_key(
+    table: &Table,
+    config_path: &Path,
+) -> Result<Option<NetworkKey>, ConfigError> {
+    match raw_value(table, "network_key", config_path, "node.network_key")? {
+        Value::Nil => Ok(None),
+        Value::String(value) => Ok(Some(NetworkKey::new(value.as_bytes().to_vec()))),
+        _ => Err(schema_error(
+            config_path,
+            "node.network_key",
+            "must be a raw Lua byte string or nil",
         )),
     }
 }
@@ -913,7 +1031,7 @@ mod tests {
             r#"
             return {
                 replica = "data/replica",
-                endpoint = "https://node-a.example.com",
+                endpoint = "oll://node-a.example.com:17384",
             }
             "#,
         );
@@ -935,7 +1053,8 @@ mod tests {
                     },
                     log_dir = oll.getenv("OLL_TEST_LOG"),
                     listen = "127.0.0.1:7443",
-                    connect = { paths.endpoint, "https://node-b.example.com" },
+                    connect = { paths.endpoint, "oll://node-b.example.com:17384" },
+                    network_key = "test-network-key-with-thirty-two-bytes",
                 },
             }
             "#,
@@ -961,7 +1080,10 @@ mod tests {
                 .iter()
                 .map(ToString::to_string)
                 .collect::<Vec<_>>(),
-            ["https://node-a.example.com/", "https://node-b.example.com/"]
+            [
+                "oll://node-a.example.com:17384",
+                "oll://node-b.example.com:17384"
+            ]
         );
 
         let globals = runtime.lua().globals();
@@ -1003,7 +1125,7 @@ mod tests {
             (
                 &literal_config("replica", "log").replace(
                     "connect = {},",
-                    "connect = { [1] = \"https://a.example\", [3] = \"https://b.example\" },",
+                    "connect = { [1] = \"oll://a.example:17384\", [3] = \"oll://b.example:17384\" },",
                 ),
                 "contiguous integer indexes",
             ),

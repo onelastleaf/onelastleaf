@@ -21,6 +21,7 @@ const RUNTIME_PROTO_FILES: &[&str] = &[
     "proto/oll/admin.proto",
     "proto/oll/common.proto",
     "proto/oll/document.proto",
+    "proto/oll/replication.proto",
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {

@@ -68,6 +68,7 @@ impl Cli {
             Command::Ping(args) => Ok(CliIntent::Ping {
                 node_name: args.node_name,
             }),
+            Command::Psk => Ok(CliIntent::Psk),
             Command::Plugin(args) => plugin_intent(args).map(CliIntent::Plugin),
             Command::Job(args) => Ok(CliIntent::Job(args.command.into())),
         }
@@ -89,6 +90,7 @@ pub enum CliIntent {
     Replica(ReplicaIntent),
     Sync(SyncIntent),
     Ping { node_name: NodeName },
+    Psk,
     Plugin(PluginIntent),
     Job(JobIntent),
 }
@@ -488,7 +490,8 @@ impl CliIntent {
                     Self::Replica(
                         ReplicaIntent::SnapshotInspect { .. }
                         | ReplicaIntent::SnapshotVerify { .. },
-                    ) => ClientDependency::None,
+                    )
+                    | Self::Psk => ClientDependency::None,
                     Self::Sync(SyncIntent::ViewLog)
                     | Self::Plugin(PluginIntent::ViewLog { .. }) => {
                         ClientDependency::LogDir(resolve_client_path(&environment.log_dir()?, cwd))

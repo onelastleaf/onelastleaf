@@ -89,6 +89,10 @@ message SyncRoundStart {
   SyncRoundMode mode = 2;
 }
 
+// Requests one normal finite round in both directions. The responding peer
+// sources the first round. Simultaneous requests are coalesced by NodeId.
+message SyncRoundRequest {}
+
 message SyncRoundInventory {
   string round_id = 1;
   uint32 batch_index = 2;
@@ -287,5 +291,6 @@ message SyncEnvelope {
     SyncPing ping = 29;
     SyncPong pong = 30;
     SyncClose close = 31;
+    SyncRoundRequest round_request = 32;
   }
 }

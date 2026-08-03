@@ -152,14 +152,16 @@ session replica. There is no compression negotiation, session nonce, protocol
 downgrade, or application flow-control message. TCP backpressure plus bounded
 local staging provides flow control.
 
-An authenticated session carries finite inventory rounds. `SyncRoundStart`,
-numbered `SyncRoundInventory` batches, and `SyncRoundInventoryComplete` capture
-the source object/blob set. The receiver requests missing Loro update ranges and
-SHA-256-addressed blobs. Start/chunk/complete messages transfer each payload;
-typed ACK means verified private staging, while typed reject identifies a
-transfer failure without exposing content. `SyncRoundCommitted` alone means the
-fully validated inactive candidate was atomically made active. A base-generation
-CAS failure rejects and retries the round rather than publishing partial state.
+An authenticated session starts a bidirectional finite operation with
+`SyncRoundRequest`; simultaneous requests are deterministically coalesced by
+canonical `NodeId`. `SyncRoundStart`, numbered `SyncRoundInventory` batches, and
+`SyncRoundInventoryComplete` capture the source object/blob set. The receiver
+requests missing Loro update ranges and SHA-256-addressed blobs.
+Start/chunk/complete messages transfer each payload; typed ACK means verified
+private staging, while typed reject identifies a transfer failure without
+exposing content. `SyncRoundCommitted` alone means the fully validated inactive
+candidate was atomically made active. A base-generation CAS failure rejects and
+retries the round rather than publishing partial state.
 
 Normal and bootstrap rounds use the same transfers. Normal rounds export updates
 after the receiver's version vector. Bootstrap exports the complete retained

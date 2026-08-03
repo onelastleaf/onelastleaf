@@ -3,7 +3,9 @@
 
 mod api;
 mod classification;
+pub(crate) mod identity;
 mod model;
+mod replication;
 mod snapshot;
 mod store;
 mod types;
@@ -14,11 +16,17 @@ mod tests;
 
 use std::{fmt, io};
 
+pub(crate) use replication::{
+    BootstrapCandidate, BootstrapSource, ExportedReplicaObject, ReplicaInventory, ReplicaObject,
+    ReplicaObjectSummary, ReplicaUpdateValidationError, ReplicationCandidate, ReplicationCommit,
+    StagedBlob,
+};
 pub use snapshot::{SnapshotInspection, inspect_snapshot, verify_snapshot};
+pub(crate) use store::{BootstrapClaim, PeerBinding};
 pub use types::{OperationKind, OperationRecord, OperationSource, ReplicaStatus};
 pub use watcher::ReplicaRuntime;
 
-fn lower_hex(bytes: &[u8]) -> String {
+pub(crate) fn lower_hex(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
 
     let mut encoded = String::with_capacity(bytes.len() * 2);
@@ -31,6 +39,7 @@ fn lower_hex(bytes: &[u8]) -> String {
 #[derive(Debug)]
 pub enum ReplicaError {
     Uninitialized,
+    Configuration(String),
     InvalidArgument(String),
     NotFound(String),
     AlreadyExists(String),
@@ -53,6 +62,7 @@ impl ReplicaError {
     pub(crate) fn code(&self) -> &'static str {
         match self {
             Self::Uninitialized => "failed_precondition",
+            Self::Configuration(_) => "configuration",
             Self::InvalidArgument(_) => "invalid_argument",
             Self::NotFound(_) => "not_found",
             Self::AlreadyExists(_) => "already_exists",
@@ -70,7 +80,8 @@ impl fmt::Display for ReplicaError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Uninitialized => formatter.write_str("no local replica yet"),
-            Self::InvalidArgument(message)
+            Self::Configuration(message)
+            | Self::InvalidArgument(message)
             | Self::NotFound(message)
             | Self::AlreadyExists(message)
             | Self::RevisionConflict(message)

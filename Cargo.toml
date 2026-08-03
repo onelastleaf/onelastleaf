@@ -26,6 +26,7 @@ futures-util = { version = "0.3", default-features = false, features = ["std"] }
 getrandom = "0.4"
 gix-url = "0.37"
 hyper-util = { version = "0.1", features = ["tokio"] }
+hkdf = "0.13"
 infer = "0.22"
 libc = "0.2"
 loro = "1.13"
@@ -36,6 +37,7 @@ prost-types = "0.14"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
+snow = "0.10"
 sqlx = { version = "0.9", default-features = false, features = [
   "any",
   "runtime-tokio",
@@ -66,6 +68,7 @@ unicode-normalization = "0.1"
 url = "2.5"
 uuid = { version = "1", features = ["v4"] }
 walkdir = "2"
+zeroize = "1.9"
 zstd = "0.13"
 
 [build-dependencies]

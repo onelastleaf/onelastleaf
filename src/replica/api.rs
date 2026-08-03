@@ -243,7 +243,7 @@ impl ReplicaRuntime {
             ));
         }
 
-        let _coordinator = self.coordinator.lock().await;
+        let _coordinator = self.identities.commit_guard().await;
         let current = self
             .state
             .read()

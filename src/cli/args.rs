@@ -40,6 +40,8 @@ pub enum Command {
     Sync(SyncArgs),
     /// Test connectivity to a protocol-named node.
     Ping(PingArgs),
+    /// Generate a printable network key on stdout.
+    Psk,
     /// Install and manage plugins.
     Plugin(PluginArgs),
     /// Inspect and stop plugin jobs.
@@ -55,7 +57,7 @@ pub struct InitArgs {
     #[arg(long, value_name = "URL")]
     pub connect: Vec<ConnectUrl>,
     /// Socket address to listen on.
-    #[arg(long, value_name = "ADDRESS")]
+    #[arg(long, value_name = "ADDRESS", value_parser = parse_listen_address)]
     pub listen: Option<SocketAddr>,
     /// Replica root. Overrides OLL_REPLICA and the default path.
     #[arg(long, value_name = "PATH")]
@@ -80,7 +82,7 @@ pub struct RunArgs {
     #[arg(long, value_name = "PATH")]
     pub log_dir: Option<PathBuf>,
     /// Temporary socket address to listen on.
-    #[arg(long, value_name = "ADDRESS")]
+    #[arg(long, value_name = "ADDRESS", value_parser = parse_listen_address)]
     pub listen: Option<SocketAddr>,
     /// Temporary peer URL to connect to. May be repeated.
     #[arg(long, value_name = "URL")]
@@ -177,6 +179,16 @@ pub struct PingArgs {
     /// Protocol-declared name of the node to ping.
     #[arg(value_name = "NODE_NAME")]
     pub node_name: NodeName,
+}
+
+fn parse_listen_address(value: &str) -> Result<SocketAddr, String> {
+    let address = value
+        .parse::<SocketAddr>()
+        .map_err(|_| "listen address must be a socket address".to_owned())?;
+    if address.port() == 0 {
+        return Err("listen address must use a nonzero port".to_owned());
+    }
+    Ok(address)
 }
 
 #[derive(Debug, Args)]

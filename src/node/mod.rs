@@ -1,7 +1,7 @@
 //! Unix-only node lifecycle and local administration runtime.
 
 mod admin;
-mod identity;
+pub(crate) mod identity;
 mod init;
 mod liveness;
 mod lock;

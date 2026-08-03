@@ -247,7 +247,7 @@ enum LogCommand {
 
 /// The user-owned JSONL logging sink for one node deployment.
 pub struct NodeLogger {
-    identity: NodeIdentity,
+    identity: Arc<RwLock<NodeIdentity>>,
     sender: SyncSender<LogCommand>,
     filters: RwLock<BTreeMap<String, LogLevel>>,
     dropped_events: Arc<AtomicU64>,
@@ -265,7 +265,8 @@ impl NodeLogger {
         let (sender, receiver) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let dropped_events = Arc::new(AtomicU64::new(0));
         let writer_dropped_events = Arc::clone(&dropped_events);
-        let writer_identity = identity.clone();
+        let identity = Arc::new(RwLock::new(identity));
+        let writer_identity = Arc::clone(&identity);
         thread::Builder::new()
             .name("oll-log-writer".to_owned())
             .spawn(move || {
@@ -285,6 +286,15 @@ impl NodeLogger {
             dropped_events,
             emit_failure_reported: AtomicBool::new(false),
         }))
+    }
+
+    pub fn set_identity(&self, identity: NodeIdentity) -> Result<(), NodeError> {
+        *self
+            .identity
+            .write()
+            .map_err(|_| NodeError::Internal("logger identity lock is poisoned".to_owned()))? =
+            identity;
+        Ok(())
     }
 
     pub fn set_filter(&self, target: String, level: LogLevel) -> Result<(), NodeError> {
@@ -325,8 +335,16 @@ impl NodeLogger {
         }
 
         let emitted_at = OffsetDateTime::now_utc();
+        let identity = match self.identity.read() {
+            Ok(identity) => identity.clone(),
+            Err(_) => {
+                self.dropped_events.fetch_add(1, Ordering::Relaxed);
+                self.report_emit_failure("oll structured logger identity lock is poisoned");
+                return;
+            }
+        };
         let encoded = match encode_log_event(
-            &self.identity,
+            &identity,
             level,
             target,
             event,
@@ -471,7 +489,7 @@ fn run_log_writer(
     compression: CompressionWorker,
     receiver: mpsc::Receiver<LogCommand>,
     dropped_events: Arc<AtomicU64>,
-    identity: NodeIdentity,
+    identity: Arc<RwLock<NodeIdentity>>,
 ) {
     let mut commands_since_flush = 0_usize;
     let mut next_flush = Instant::now() + LOG_FLUSH_INTERVAL;
@@ -554,15 +572,19 @@ fn write_dropped_summary(
     sinks: &mut LogSinks,
     compression: &CompressionWorker,
     dropped_events: &AtomicU64,
-    identity: &NodeIdentity,
+    identity: &RwLock<NodeIdentity>,
 ) -> Result<(), NodeError> {
     let dropped = dropped_events.swap(0, Ordering::Relaxed);
     if dropped == 0 {
         return Ok(());
     }
+    let identity = identity
+        .read()
+        .map_err(|_| NodeError::Internal("logger identity lock is poisoned".to_owned()))?
+        .clone();
     let emitted_at = OffsetDateTime::now_utc();
     let encoded = match encode_log_event(
-        identity,
+        &identity,
         LogLevel::Warn,
         "oll::node",
         "log_events_dropped",
@@ -896,7 +918,7 @@ mod tests {
         let identity = NodeIdentity::generate("home".parse().unwrap());
         let (sender, receiver) = mpsc::sync_channel(1);
         let logger = NodeLogger {
-            identity,
+            identity: Arc::new(RwLock::new(identity)),
             sender,
             filters: RwLock::new(BTreeMap::new()),
             dropped_events: Arc::new(AtomicU64::new(0)),

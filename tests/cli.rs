@@ -160,6 +160,23 @@ fn sync_retry_help_defines_a_total_attempt_limit() {
 }
 
 #[test]
+fn psk_writes_one_base64url_key_without_a_newline_or_local_side_effects() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let output = oll()
+        .env_remove("HOME")
+        .env_remove("OLL_CONFIG")
+        .args(["psk"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(output.stderr.is_empty());
+    assert_eq!(output.stdout.len(), 43);
+    assert!(!output.stdout.contains(&b'\n'));
+    assert_eq!(URL_SAFE_NO_PAD.decode(&output.stdout).unwrap().len(), 32);
+}
+
+#[test]
 fn pingback_is_hidden_but_reaches_node_validation() {
     let deployment = TestDeployment::new();
     let help = oll().args(["run", "--help"]).output().unwrap();
@@ -424,32 +441,48 @@ fn local_snapshot_intents_do_not_require_directory_configuration() {
 #[test]
 fn log_intents_use_platform_or_explicit_log_directory_without_other_configuration() {
     let deployment = TestDeployment::empty();
-    for arguments in [
-        vec!["sync", "--log"],
-        vec!["plugin", "--log"],
-        vec!["plugin", "--log", "__all__"],
-    ] {
-        let platform_default = oll()
-            .env_remove("HOME")
-            .env("XDG_STATE_HOME", deployment.root().join("platform-state"))
-            .env_remove("OLL_CONFIG")
-            .env_remove("OLL_REPLICA")
-            .env_remove("OLL_LOG_DIR")
-            .args(&arguments)
-            .output()
-            .unwrap();
-        assert_eq!(platform_default.status.code(), Some(EXIT_UNAVAILABLE));
+    let platform_state = deployment.root().join("platform-state");
+    let platform_log = platform_state.join("oll");
+    fs::create_dir_all(&platform_log).unwrap();
+    fs::write(platform_log.join("sync.log"), "platform sync log\n").unwrap();
+    let platform_default = oll()
+        .env_remove("HOME")
+        .env("XDG_STATE_HOME", &platform_state)
+        .env_remove("OLL_CONFIG")
+        .env_remove("OLL_REPLICA")
+        .env_remove("OLL_LOG_DIR")
+        .args(["sync", "--log"])
+        .output()
+        .unwrap();
+    assert!(platform_default.status.success());
+    assert_eq!(platform_default.stdout, b"platform sync log\n");
 
-        let configured = oll()
+    let explicit_log = deployment.root().join("explicit-log");
+    fs::create_dir_all(&explicit_log).unwrap();
+    fs::write(explicit_log.join("sync.log"), "explicit sync log\n").unwrap();
+    let configured = oll()
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("OLL_CONFIG")
+        .env_remove("OLL_REPLICA")
+        .env("OLL_LOG_DIR", &explicit_log)
+        .args(["sync", "--log"])
+        .output()
+        .unwrap();
+    assert!(configured.status.success());
+    assert_eq!(configured.stdout, b"explicit sync log\n");
+
+    for arguments in [vec!["plugin", "--log"], vec!["plugin", "--log", "__all__"]] {
+        let output = oll()
             .env_remove("HOME")
             .env_remove("XDG_STATE_HOME")
             .env_remove("OLL_CONFIG")
             .env_remove("OLL_REPLICA")
-            .env("OLL_LOG_DIR", "/tmp/oll-log")
+            .env("OLL_LOG_DIR", &explicit_log)
             .args(&arguments)
             .output()
             .unwrap();
-        assert_eq!(configured.status.code(), Some(EXIT_UNAVAILABLE));
+        assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
     }
 }
 
@@ -485,11 +518,16 @@ fn admin_intents_require_config_but_not_a_client_replica_root() {
 }
 
 #[test]
-fn operational_command_is_unavailable_until_implemented() {
-    let output = oll().args(["sync", "node-a", "-n", "3"]).output().unwrap();
+fn sync_operational_command_reaches_the_admin_client() {
+    let deployment = TestDeployment::new();
+    let output = oll()
+        .env("OLL_CONFIG", deployment.config())
+        .args(["sync", "node-a", "-n", "3"])
+        .output()
+        .unwrap();
     assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
     assert!(
-        String::from_utf8(output.stderr)
+        !String::from_utf8(output.stderr)
             .unwrap()
             .contains("command is not implemented")
     );

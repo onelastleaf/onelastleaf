@@ -52,6 +52,18 @@ fn clap_schema_is_internally_consistent() {
 }
 
 #[test]
+fn psk_is_a_dependency_free_local_intent() {
+    let prepared = intent(&["oll", "psk"])
+        .prepare(&Environment::default(), Path::new("/working"))
+        .unwrap();
+    let PreparedCliIntent::Client(prepared) = prepared else {
+        panic!()
+    };
+    assert!(matches!(prepared.intent, CliIntent::Psk));
+    assert_eq!(prepared.dependency, ClientDependency::None);
+}
+
+#[test]
 fn resolves_path_precedence() {
     let environment = Environment {
         home: Some("/home/test".into()),
@@ -133,21 +145,21 @@ fn parses_init_and_run_topologies() {
             "--listen",
             "127.0.0.1:7443",
             "--connect",
-            "https://oll.example.com",
+            "oll://oll.example.com:17384",
         ],
         vec!["oll", "run"],
         vec!["oll", "run", "--replica", "/path/to/replica/root"],
         vec!["oll", "run", "--config", "/path/to/config/root"],
         vec!["oll", "run", "--log-dir", "/path/to/log/dir"],
         vec!["oll", "run", "--listen", "127.0.0.1:7443"],
-        vec!["oll", "run", "--connect", "https://oll.example.com"],
+        vec!["oll", "run", "--connect", "oll://oll.example.com:17384"],
         vec![
             "oll",
             "run",
             "--listen",
             "127.0.0.1:7443",
             "--connect",
-            "https://oll.example.com",
+            "oll://oll.example.com:17384",
         ],
         vec!["oll", "start"],
         vec!["oll", "stop"],
@@ -162,7 +174,7 @@ fn parses_init_and_run_topologies() {
         "init",
         "test-node",
         "--connect",
-        "https://oll.example.com",
+        "oll://oll.example.com:17384",
         "--listen",
         "127.0.0.1:7443",
     ]);
@@ -179,9 +191,9 @@ fn parses_init_and_run_topologies() {
         "--listen",
         "127.0.0.1:7443",
         "--connect",
-        "https://node-a.example.com",
+        "oll://node-a.example.com:17384",
         "--connect",
-        "https://node-b.example.com",
+        "oll://node-b.example.com:17384",
     ]);
     let Command::Run(args) = cli.command else {
         panic!()
@@ -651,7 +663,7 @@ fn prepares_run_overrides_without_evaluating_config() {
         "--listen",
         "127.0.0.1:8000",
         "--connect",
-        "https://cli.example.com",
+        "oll://cli.example.com:17384",
     ])
     .prepare(&environment, &cwd)
     .unwrap();
@@ -669,7 +681,7 @@ fn prepares_run_overrides_without_evaluating_config() {
     );
     assert_eq!(
         prepared.overrides.connect.unwrap()[0].to_string(),
-        "https://cli.example.com/"
+        "oll://cli.example.com:17384"
     );
 }
 
@@ -682,13 +694,14 @@ fn run_overrides_apply_after_configuration_load() {
         },
         log_dir: PathBuf::from("/persisted/log"),
         listen: Some("127.0.0.1:7000".parse().unwrap()),
-        connect: vec!["https://persisted.example.com".parse().unwrap()],
+        connect: vec!["oll://persisted.example.com:17384".parse().unwrap()],
+        network_key: None,
     };
     let overrides = RunOverrides {
         replica_root: Some(PathBuf::from("/override/replica")),
         log_dir: Some(PathBuf::from("/override/log")),
         listen: Some("127.0.0.1:8000".parse().unwrap()),
-        connect: Some(vec!["https://override.example.com".parse().unwrap()]),
+        connect: Some(vec!["oll://override.example.com:17384".parse().unwrap()]),
     };
 
     overrides.apply_to(&mut config);
@@ -698,7 +711,7 @@ fn run_overrides_apply_after_configuration_load() {
     assert_eq!(config.listen, Some("127.0.0.1:8000".parse().unwrap()));
     assert_eq!(
         config.connect[0].to_string(),
-        "https://override.example.com/"
+        "oll://override.example.com:17384"
     );
 }
 

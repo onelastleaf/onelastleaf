@@ -169,17 +169,37 @@ can compute the same choice.
 
 ## Finite synchronization rounds
 
-A ready session may carry independent rounds in either direction. A source
-starts a round, captures a coherent inventory under a short replica write
-barrier, and then releases the barrier. The captured inventory includes every
+A ready session may carry independent rounds in either direction. A node that
+wants one bidirectional finite synchronization sends `SyncRoundRequest`; the
+peer answers by sourcing the first round, and the requester sources the reverse
+round after committing the first. If both nodes request at the same time, the
+request sent by the lexicographically smaller canonical `NodeId` wins and the
+other local request is coalesced into that same bidirectional operation. This
+request arbitration prevents two inventories from deadlocking or being mistaken
+for responses; it is not application flow control or replica authority.
+
+For each accepted request, the first source starts a round, captures a coherent
+starting inventory under a short replica write barrier, and then releases the
+barrier. The inventory includes every
 retained catalog/document object summary and every blob referenced by the
-captured catalog. Later writes belong to a later round.
+catalog observed at that point; it is not a frozen copy of all Loro payloads.
+
+When the source later handles `RequestReplicaUpdates`, it exports from the
+object's current state, so the transfer includes every update available when
+that response is prepared rather than being artificially limited to the
+starting inventory's version vector. `ReplicaTransferStart` describes the
+actual resulting version vector of that payload. Each individual export is
+finite, but a write concurrent with the round may therefore be included in the
+current transfer. If a newer catalog payload introduces an object or blob that
+was not present in the starting inventory, complete-candidate validation cannot
+publish a partial graph: the receiver rejects that candidate and the next round
+advertises a fresh inventory containing the new references.
 
 The source sends numbered inventory batches followed by an inventory-complete
-message with exact object, blob, and batch counts plus a hash of the canonical
-inventory. The receiver requests every missing update range and blob. Transfers
-may be interleaved and arrive in any object/file order, but chunks within one
-transfer are numbered and complete exactly once.
+message with exact object, blob, and batch counts. The receiver requests every
+missing update range and blob. Transfers may be interleaved and arrive in any
+object/file order, but chunks within one transfer are numbered and complete
+exactly once.
 
 For each object transfer:
 
@@ -212,13 +232,18 @@ It then commits the candidate with one SQL transaction that compares the active
 generation with the round's base and switches it only if unchanged. A concurrent
 local or remote commit makes that comparison fail; the candidate is discarded
 and a later round retries from the new active generation. Active state therefore
-never exposes a catalog entry whose retained document or blob is missing.
+never exposes a catalog entry whose retained document or blob is missing. A
+crash after an inactive normal-round generation is built but before its
+compare-and-swap leaves the old generation active; startup discards that
+unreferenced candidate and any blob bytes referenced by no retained generation.
 
 `SyncRoundCommitted` is sent only after the candidate transaction succeeds. A
-manual `oll sync` succeeds for a peer when the finite inventories captured for
-both directions have each been committed or were already satisfied. Edits after
-capture do not prolong that command indefinitely; the background connection
-manager schedules another round.
+manual `oll sync` succeeds for a peer when one finite round in both directions
+has committed or was already satisfied. An update included while preparing a
+requested object transfer belongs to that round. Writes that occur after an
+individual payload is prepared, and newly referenced objects that require a
+fresh inventory, are handled by a later round; they do not prolong one command
+indefinitely.
 
 There is no snapshot fallback. Because the initial retention policy keeps all
 required Loro history, a sender exports an update batch from the requested

@@ -1,5 +1,5 @@
 use std::{
-    fs,
+    fs::{self, File},
     io::{self, BufRead, Write},
     os::unix::fs::PermissionsExt,
     path::Path,
@@ -30,7 +30,11 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     let _lock = DeploymentLock::acquire_for_init(&intent.config_root)?;
     let config_path = intent.config_root.join(CONFIG_FILENAME);
     let node_path = identity_path(&intent.config_root);
-    if (path_exists(&config_path)? || path_exists(&node_path)?) && !confirm_replacement()? {
+    let replica_path = crate::replica::identity::identity_path(&intent.config_root);
+    let replica_identity_exists = path_exists(&replica_path)?;
+    if (path_exists(&config_path)? || path_exists(&node_path)? || replica_identity_exists)
+        && !confirm_replacement()?
+    {
         return Ok(InitResult::Cancelled);
     }
 
@@ -67,6 +71,13 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     atomic_write(&config_path, source.as_bytes())?;
 
     NodeIdentity::write(&intent.config_root, &identity)?;
+    if replica_identity_exists {
+        fs::remove_file(&replica_path)
+            .map_err(|error| NodeError::io("remove previous replica identity", error))?;
+        File::open(&intent.config_root)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|error| NodeError::io("sync replica identity removal", error))?;
+    }
     Ok(InitResult::Initialized(identity))
 }
 
@@ -85,8 +96,11 @@ fn confirm_replacement() -> Result<bool, NodeError> {
         "oll: existing initialization material will be replaced and a new node identity generated."
     )
     .map_err(|error| NodeError::io("write initialization warning", error))?;
-    write!(stderr, "oll: replace config.lua and node.json? [y/N] ")
-        .map_err(|error| NodeError::io("write initialization prompt", error))?;
+    write!(
+        stderr,
+        "oll: replace config.lua and node.json and remove replica.json? [y/N] "
+    )
+    .map_err(|error| NodeError::io("write initialization prompt", error))?;
     stderr
         .flush()
         .map_err(|error| NodeError::io("flush initialization prompt", error))?;
@@ -186,7 +200,7 @@ mod tests {
     fn intent(directory: &TempDir) -> PreparedInitIntent {
         PreparedInitIntent {
             node_name: "home-node".parse().unwrap(),
-            connect: vec!["https://peer.example".parse().unwrap()],
+            connect: vec!["oll://peer.example:17384".parse().unwrap()],
             listen: Some("127.0.0.1:7443".parse::<SocketAddr>().unwrap()),
             replica_root: directory.path().join("replica"),
             replica_store_base: directory.path().join("data"),
@@ -212,7 +226,7 @@ mod tests {
         assert!(config.contains("format_version = 1"));
         assert!(config.contains("driver = \"sqlite\""));
         assert!(config.contains(&identity.node_id().to_string()));
-        assert!(config.contains("https://peer.example/"));
+        assert!(config.contains("oll://peer.example:17384"));
     }
 
     #[test]
