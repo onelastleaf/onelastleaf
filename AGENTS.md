@@ -85,6 +85,11 @@ decision that also updates the architecture documentation.
   `killjob`, and timeout all begin with the same graceful `ShutdownRequest`;
   signals only enforce that request when the process does not exit.
 
+## Commit discipline
+
+- Follow the repository's existing Conventional Commit style and history.
+- Never add an AI/model author, co-author, or `Co-authored-by` trailer.
+
 ## Required validation
 
 For Rust changes, run the applicable formatter, checks, and focused tests. At a
