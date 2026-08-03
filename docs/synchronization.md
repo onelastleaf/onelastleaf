@@ -1,12 +1,28 @@
 # Synchronization
 
-## State model
+## Security model
 
-Synchronization is peer-to-peer, multi-writer, offline-capable CRDT
-replication. A node reached through a public address is not authoritative.
+Synchronization is peer-to-peer, multi-writer, and offline-capable. A node
+reached through a public address is not authoritative. Membership is proved by
+one long-lived symmetric network key shared by every node in the same oll sync
+network. A peer that completes the Noise handshake with that key is trusted to
+read and modify the complete replica.
 
-The unit advertised by the transport is a replica object, not the entire
-replica as one Loro blob:
+This is deliberately a small threat model. The protocol has no certificate
+chain, CA, domain validation, per-node signing key, or separate `NetworkId`.
+Possession of the shared key permits a participant to impersonate any
+`NodeIdentity`; the one-to-one identity-binding checks below detect accidental
+collisions, not a malicious key holder. Removing one compromised node requires
+rotating the key on every remaining node.
+
+The network key is configuration-only. Its bytes never enter protobuf, the
+network, command arguments, or logs. The exact configuration and derivation
+rules are in [configuration.md](configuration.md).
+
+## Replica objects
+
+The unit advertised by the protocol is a replica object, not the entire replica
+as one Loro blob:
 
 ```text
 ReplicaId
@@ -18,124 +34,303 @@ ReplicaId
 ```
 
 Each catalog or document object has its own Loro version vector and frontier.
-Deltas and snapshots are requested and imported per object. Binary bytes are
-not replica objects with a Loro frontier: catalog metadata names their retained
-SHA-256 hashes, and those immutable blobs transfer separately by hash.
+Normal synchronization transfers update batches for each object. Bootstrap
+transfers the complete retained update history for each object as an ordinary
+update batch from an empty version vector. Neither path transfers a Loro
+snapshot or an oll `.ollsnap` archive.
 
-Every endpoint also has one durable `NodeIdentity`: a UUID-v4 `NodeId` paired
-one-to-one with its human-readable `NodeName`. The node declares this same pair
-to every peer. Names are not chosen by receivers and are never derived from a
-connect URL.
+Binary bytes have no Loro frontier. Catalog metadata names their retained
+SHA-256 hashes, and immutable blob files transfer separately by hash.
+
+## Endpoints and connection management
+
+`listen` is an operating-system bind endpoint such as `0.0.0.0:17384` or
+`[::]:17384`. `connect` entries are remote targets such as
+`oll://203.0.113.10:17384`, `oll://[2001:db8::10]:17384`, or
+`oll://node.example:17384`. Both require an explicit nonzero port; there is no
+default port. A connect URL has no user information, query, fragment, or path
+other than the URI parser's empty/root path.
+
+The daemon binds its configured listener before Admin readiness. Failure to
+bind `listen` is a startup failure. Outbound failures are nonfatal and use
+bounded exponential backoff with jitter. Connect-only, listen-only, and mixed
+nodes have identical replica rights.
+
+Configured outbound targets and authenticated inbound peers feed one durable
+peer directory. Learned bindings are stored outside replica generations and
+are not exported in `.ollsnap`. A known `NodeId` presenting another `NodeName`,
+or a known name presenting another ID, is rejected. A configured target is
+associated with the identity it authenticated as; it is not named by its URL.
 
 ## Transport
 
-`Replication.Synchronize` is one gRPC bidirectional stream. gRPC decides which
-side opens the transport; after connection, both peers send the same message
-types and have identical replication rights.
-
-The stream handshake is:
-
-1. both peers send `SyncHello` with their complete `NodeIdentity`;
-2. both verify the exact protobuf schema hash and the one-to-one
-   `NodeId`/`NodeName` binding against durable identities already known locally;
-3. both select mutually supported compression/chunk parameters and send
-   `SyncReady`;
-4. either side advertises replica-object summaries;
-5. either side requests missing object updates.
-
-An identity collision closes the stream with `ALREADY_EXISTS`; schema and
-replica mismatches also close it. There is no protocol downgrade,
-receiver-local renaming, or fallback from `NodeName` to URL or `NodeId` as the
-CLI selector.
-
-## Transfer
-
-For each object:
+Sync does not use gRPC, HTTP, WebSocket, TLS, or certificates. Its stack is:
 
 ```text
-RequestReplicaDelta
+TCP
+└── Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s
+    └── u16-length oll transport frames
+        └── prost-encoded SyncEnvelope
+```
+
+`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s` is used exactly. Version 1 does not
+perform Noise rekeying. A connection closes before either transport cipher
+nonce can be exhausted.
+
+### Preface and Noise handshake
+
+The initiator first writes the exact cleartext preface `b"OLLSYNC\x01"`. The
+same bytes are the Noise prologue. Version 1 accepts only an exact match and
+does not negotiate or downgrade. The initiator SHOULD coalesce the preface and
+first Noise message into one TCP write, but the receiver parses them as
+distinct protocol elements.
+
+The Noise handshake pattern is:
+
+```text
+initiator -> responder: psk, e
+initiator <- responder: e, ee
+```
+
+Both handshake payloads are empty. Each encoded Noise handshake message is an
+oll transport frame consisting of a two-byte unsigned big-endian length and
+that many Noise message bytes. Handshake-message length is limited to 1024
+bytes and is checked before allocation. A wrong preface, timeout, early EOF,
+PSK mismatch, or handshake AEAD failure causes an immediate close without an
+application error response. The local node records only a redacted structured
+warning and never tells an unauthenticated peer that its key was wrong.
+
+TCP establishment, preface parsing, the Noise exchange, `SyncHello`, and
+`SyncReady` share one absolute deadline 10 seconds after TCP connection
+establishment. Advancing to another handshake step does not reset that deadline.
+
+### Encrypted transport frames
+
+After the handshake both sides enter Noise stateful transport mode. Every later
+oll transport frame is:
+
+```text
+u16 big-endian ciphertext_length
+Noise transport ciphertext
+```
+
+The decrypted plaintext is exactly one ordinary prost encoding of
+`SyncEnvelope`; it is not a second prost length-delimited record. The visible
+length leaks frame size. It is validated before allocation and may not exceed
+65535 bytes. A Noise transport ciphertext includes a 16-byte authentication
+tag, so its plaintext cannot exceed 65519 bytes.
+
+`SyncHello.max_chunk_bytes` applies to the `data` field of transfer chunks. The
+version-1 implementation advertises at most 61440 bytes and chooses the smaller
+valid peer value, leaving room for the protobuf envelope and Noise tag. Control
+and inventory messages are batched so their complete encrypted frame also fits
+the 65535-byte limit. An invalid zero length, oversized length, decode failure,
+or out-of-state message is a protocol violation and closes the authenticated
+session with `SyncClose` when a close frame can still be sent safely.
+
+TCP provides wire flow control. There is no application credit or flow-control
+message. Implementations still stream received chunks directly into private
+staging files and use bounded producer queues so they do not defeat TCP
+backpressure by buffering an unbounded amount in userspace.
+
+## Application handshake
+
+Immediately after Noise completes, both peers independently send one encrypted
+`SyncHello`. It carries the complete `NodeIdentity`, exact protobuf descriptor
+hash, maximum chunk-data size, and exactly one local replica state:
+
+- `replica_id` when a complete active replica exists;
+- `no_local_replica` when the local slot is uninitialized.
+
+There is no compression negotiation or session nonce. After validation both
+peers send the same `SyncReady`, containing the selected chunk size and the one
+`ReplicaId` for the session:
+
+- equal nonempty IDs select normal synchronization;
+- one initialized peer and one uninitialized peer select bootstrap from the
+  initialized source to the uninitialized receiver;
+- two uninitialized peers close with `NO_REPLICA_AVAILABLE`;
+- two different IDs close with `REPLICA_MISMATCH`.
+
+Schema mismatch, invalid chunk limits, identity collision, and self-connection
+also close the session. Application close reasons are sent only after Noise has
+authenticated the shared network key. `SyncClose` includes at least normal,
+shutdown, protocol, schema, identity-collision, self-connection,
+duplicate-session, replica-mismatch, no-replica, bootstrap-in-progress,
+resource-exhausted, and internal-error codes. A received close reason is a
+diagnostic and never changes local authority rules.
+
+After identities are known, duplicate sessions are resolved without a random
+session field. The connection initiated by the lexicographically smaller
+canonical `NodeId` is preferred. If more than one connection has that same
+preferred direction, both endpoints keep the one with the lexicographically
+smallest Noise handshake hash and close the rest as duplicates. Both endpoints
+can compute the same choice.
+
+## Finite synchronization rounds
+
+A ready session may carry independent rounds in either direction. A source
+starts a round, captures a coherent inventory under a short replica write
+barrier, and then releases the barrier. The captured inventory includes every
+retained catalog/document object summary and every blob referenced by the
+captured catalog. Later writes belong to a later round.
+
+The source sends numbered inventory batches followed by an inventory-complete
+message with exact object, blob, and batch counts plus a hash of the canonical
+inventory. The receiver requests every missing update range and blob. Transfers
+may be interleaved and arrive in any object/file order, but chunks within one
+transfer are numbered and complete exactly once.
+
+For each object transfer:
+
+```text
+RequestReplicaUpdates
         |
         v
 ReplicaTransferStart
-ReplicaTransferChunk × N
+ReplicaTransferChunk x N
 ReplicaTransferComplete
         |
         v
-hash/decompress/Loro import
+size/hash/Loro decode/import into private round candidate
         |
         v
-ReplicaTransferAck
+ReplicaTransferAck or ReplicaTransferReject
 ```
 
-The normal payload is a Loro update batch from the receiver's advertised
-version vector. A Loro snapshot is allowed when retained update history cannot
-satisfy the request. A snapshot is a transport fallback, not an authoritative
-replacement of concurrent local state.
+Blob transfers use corresponding hash-addressed start/chunk/complete/ack/reject
+messages. A transfer acknowledgement means that exact payload was verified and
+staged for the named round; it does not claim that active replica state changed.
+Malformed chunks, size/hash contradictions, Loro decode/import failure, and
+unknown objects receive a typed transfer rejection. Partial staging is discarded
+when its session or round ends.
 
-The receiver verifies chunk count, size, and SHA-256 before Loro import. Partial
-transfers are discarded. Reconnection starts from newly advertised object
-summaries; CRDT idempotence makes already imported operations harmless.
+The receiver starts from a private candidate copy of its active generation,
+imports every verified update, obtains every newly referenced object and blob,
+and validates the complete catalog/document/blob graph and business metadata.
+It then commits the candidate with one SQL transaction that compares the active
+generation with the round's base and switches it only if unchanged. A concurrent
+local or remote commit makes that comparison fail; the candidate is discarded
+and a later round retries from the new active generation. Active state therefore
+never exposes a catalog entry whose retained document or blob is missing.
 
-There is no Loro encoding fingerprint in `SyncHello`. A received Loro update or
-snapshot is compatible only when the actual Loro decoder and importer accept
-it. Decode or import failure rejects that transfer as malformed or unsupported;
-oll does not invent a second hash that claims to predict Loro compatibility.
+`SyncRoundCommitted` is sent only after the candidate transaction succeeds. A
+manual `oll sync` succeeds for a peer when the finite inventories captured for
+both directions have each been committed or were already satisfied. Edits after
+capture do not prolong that command indefinitely; the background connection
+manager schedules another round.
 
-Application-level flow-control credit limits unacknowledged transfer bytes in
-addition to HTTP/2 flow control.
+There is no snapshot fallback. Because the initial retention policy keeps all
+required Loro history, a sender exports an update batch from the requested
+version vector. A future history-compaction feature must define a new compatible
+recovery mechanism before discarding required updates; it may not silently turn
+an oll snapshot or Loro snapshot into version-1 sync traffic.
 
-## Binary blobs
+## Bootstrap of an uninitialized receiver
 
-The catalog's CRDT state replicates each binary version's `BinaryId`, LWW stamp,
-media type, byte count, and SHA-256 hash. Once that metadata arrives, a receiver
-requests every referenced hash it does not already retain. The sync-stage wire
-contract adds hash-addressed blob advertise/request/chunk/ack messages for this
-purpose; it MUST NOT model a blob as a Loro object or give it a Loro peer,
-frontier, or snapshot.
+Bootstrap uses the same object and blob chunk messages, not `.ollsnap`. The
+initialized peer is the bootstrap source and the uninitialized peer is the
+bootstrap receiver. At most one authenticated source may bootstrap a receiver
+at a time. The first session to acquire the local durable bootstrap claim wins;
+another receives `SyncClose(BOOTSTRAP_IN_PROGRESS)`.
 
-Blob transfer is streaming and checksum-verified. A catalog binary entry whose
-winning blob has not arrived is retained as pending and is not materialized into
-the working tree until the hash verifies. Catalog conflict resolution retains
-concurrent binary records; the deterministic `(lamport, writer-node-id)` rule in
-[replica.md](replica.md) selects the visible version after all available metadata
-has imported.
+While that claim is held, the replica coordinator stops admitting new local,
+filesystem, and remote commits. The working tree remains directly editable and
+the watcher continues recording final-state triggers, but those events cannot
+create a local `ReplicaId` or active generation. Source writes after its captured
+inventory are outside this bootstrap and arrive in a later normal round.
 
-## Catalog/document ordering
+The source advertises a complete retained inventory and sends each catalog or
+document's full update history from an empty version vector plus every referenced
+blob. Files may be transferred in arbitrary order. The receiver stores all
+payloads in private staging associated with the bootstrap claim; no transfer
+modifies active store rows. Each per-transfer ACK confirms only verified staging.
 
-Catalog and document objects can arrive in either order.
+After all advertised transfers are staged, the receiver builds an inactive SQL
+generation and performs complete structural, Loro, catalog-reference, encoding,
+byte-size, and blob validation. It also reconciles the working tree state queued
+during bootstrap into that candidate using this product policy:
 
-- A document object arriving first is retained by `DocumentId` until catalog
-  state references or tombstones it.
-- A catalog document node arriving first is shown as pending until its document
-  object arrives, and the node requests that object.
-- A catalog binary entry arriving first is retained until its winning blob hash
-  has been received and verified.
-- A path is never used as a sync object key because concurrent moves change
-  paths without changing document identity.
+- a local path absent from the received portable catalog namespace is imported
+  into the candidate, together with local-only descendants whose parents remain
+  directories;
+- if the received catalog already occupies or conflicts with the same portable
+  path, the received entry wins and the local item is discarded from candidate
+  import; a remote non-directory parent also discards the local subtree.
 
-## Conflict behavior
+The candidate uses the source `ReplicaId` and a fresh local `LoroPeerId` absent
+from every received version vector. The receiver prepares the authoritative
+`replica.json` identity transition described in
+[replica-store.md](replica-store.md), then performs one SQL compare-and-swap from
+`active_generation = NULL` to the complete candidate. That transaction commit is
+the only bootstrap linearization point: before it the deployment is
+uninitialized; after it a complete validated replica is active. The same
+transaction sets whole-tree projection recovery, after which the working tree
+is rebuilt from the active generation before normal watcher imports resume.
 
-Concurrent replica writes are imported normally and resolved by Loro. The sync
-protocol does not run host revision preconditions and does not reject remote
-operations because local state advanced.
+A crash before the compare-and-swap leaves `active_generation` null; startup
+removes the candidate, staging, bootstrap claim, and an exactly matching prepared
+identity file. A crash after it loads the active generation and completes
+projection. Bootstrap envelopes, staging, validation, activation, and recovery
+share the correlation ID inherited from the session operation that acquired the
+claim.
 
-`CatalogRevision` and `DocumentRevision` are host API guards for stale
-application intent. Loro version vectors and frontiers are replication internals.
-Neither should be substituted for the other.
+## Ping, Admin requests, and status
+
+The sync stage adds only two Admin RPCs:
+
+- `SynchronizePeers`, used by `oll sync`, starts an immediate finite round for
+  every configured peer or one learned `NodeName` and waits for its result;
+- `PingPeer`, used by `oll ping <node-name>`, measures an authenticated
+  protocol ping/pong to that learned identity.
+
+`oll psk` is a pure local CSPRNG command and `oll sync --log` is a local log
+viewer; neither is an Admin RPC. Admin connection establishment retains its
+short deadline. `PingPeer` is a short RPC. `SynchronizePeers` has no fixed
+10-second request deadline because connection attempts and valid transfers may
+take longer. Its `total_attempts` counts the initial attempt, is greater than
+zero, and is enforced by the daemon. Cancelling the Admin waiter does not tear
+down a durable background peer session.
+
+Status lists configured outbound targets even before authentication and also
+authenticated inbound-only peers. A connect target is optional on an inbound
+row; connection direction, state, and learned `NodeIdentity` are explicit.
+
+## Shutdown and observability
+
+The sync listener and all connection tasks belong to the node's existing
+shutdown coordinator. When stopping begins, the daemon closes the listener,
+admits no new session or round, sends best-effort authenticated `SyncClose` frames,
+and drains or aborts connection tasks under the same absolute 10-second node
+deadline. Sync cannot extend deployment-lock ownership with another deadline.
+
+Every envelope has a nonempty correlation ID. One normal transfer keeps the
+request's ID through chunks, staging, commit/reject, and ACK. A complete
+bootstrap uses one inherited ID across every transfer and activation step. A
+background connection or inbound operation without an external ID creates one
+at its first local boundary. Network keys, handshake material, raw frames, Loro
+updates, and blobs are never logged.
 
 ## Required tests
 
-Sync tests must cover:
+Sync tests cover:
 
-- offline concurrent edits to one document;
-- concurrent directory moves/renames in the catalog;
-- document creation where catalog and content arrive in opposite orders;
-- catalog binary metadata followed by a missing, duplicated, and verified blob
-  transfer;
-- deletion/tombstone propagation;
-- interrupted and duplicated transfers;
-- delta fallback to object snapshot;
-- nodes configured as connect-only, listen-only, and both;
-- stable `NodeIdentity` presentation and rejection of both name-to-ID and
-  ID-to-name collisions;
-- exact schema rejection and Loro decode/import failure handling.
+- exact preface/prologue, one absolute handshake deadline, wrong-PSK silent
+  close, and frame limits checked before allocation;
+- exact schema rejection, self/identity collision rejection, simultaneous
+  duplicate-session arbitration, and no protocol downgrade;
+- connect-only, listen-only, and mixed topologies using explicit `oll://` ports;
+- offline concurrent document edits and catalog move/rename/delete convergence;
+- coherent normal-round activation when catalog and content transfers arrive in
+  either order, including active-generation CAS restart after a concurrent local
+  commit;
+- missing, duplicated, interrupted, reordered, hash-invalid, and decode-invalid
+  object/blob transfers without exposing partial active state;
+- bootstrap claim exclusion, arbitrary transfer order, both-uninitialized and
+  different-replica rejection, local-only working-tree merge, remote path-win
+  behavior, and crashes immediately before and after atomic activation;
+- fresh bootstrap `LoroPeerId` selection and `replica.json` recovery;
+- bounded userspace buffering that relies on TCP backpressure without a wire
+  credit protocol;
+- inherited correlation through a normal transfer and an entire bootstrap;
+- listener/session shutdown under the node's single absolute deadline.

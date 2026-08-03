@@ -65,15 +65,18 @@ It MUST NOT contain per-chunk sync traces or raw payloads.
 `sync.log` contains the detailed network and replica-object synchronization
 stream:
 
-- listen/connect addresses, DNS, TCP, TLS, HTTP/2, and gRPC failures;
+- listen/connect addresses, DNS, TCP, cleartext-preface, Noise handshake, and
+  encrypted-frame failures without handshake bytes or key diagnostics;
 - local and peer `NodeName`, `NodeId`, `ReplicaId`, and connection identity;
 - `SyncHello`/`SyncReady` results and schema mismatches;
-- catalog/document advertisements, delta requests, and binary-blob requests;
-- snapshot fallback decisions;
-- object, transfer, chunk-count, byte-count, duration, and flow-credit fields;
-- payload checksum/decompression failure;
+- normal/bootstrap inventory rounds, object-update requests, and binary-blob
+  requests;
+- bootstrap claim, staging, candidate validation, activation, and recovery;
+- object, transfer, chunk-count, byte-count, duration, and candidate-commit
+  fields;
+- payload size/checksum failure;
 - Loro decode/import result and frontier/version summary;
-- binary blob verification, byte counts, and pending/materialized state;
+- binary blob verification, byte counts, and atomic materialization state;
 - EOF, retry, backoff, and reconnection.
 
 Normal levels record one event per operation or transfer phase, not one event per
@@ -185,6 +188,7 @@ Relevant events SHOULD add typed fields rather than concatenate data into
   `restart_reason`, and `restart_attempt`;
 - `parent_call_id`, `call_depth`, and `causal_depth`;
 - `operation_id`, `snapshot_id`, and `artifact_id`;
+- `round_id`, `bootstrap_id`, and connection direction;
 - `error_code`, `retryable`, `attempt`, and `backoff_ms`;
 - `bytes`, `object_count`, `chunk_count`, and `duration_ms`.
 
@@ -220,9 +224,11 @@ Correlation IDs are mandatory, not an optional logging enhancement.
   `call_depth`.
 - Derived events and scheduled callbacks preserve the ID and increment or carry
   the documented causal context.
-- A sync delta request establishes an ID that is propagated over the wire on
-  responses, chunks, import results, and acknowledgements. Both peers therefore
-  log the same distributed operation under one ID.
+- A sync update request establishes an ID that is propagated over the wire on
+  responses, chunks, staging, candidate commit, and acknowledgements. An entire
+  bootstrap uses the inherited claim correlation ID across every file and its
+  atomic activation. Both peers therefore log the same distributed operation
+  under one ID.
 - `connection_id`, `transfer_id`, `job_id`, and `operation_id` complement the
   correlation ID; none replaces it.
 
@@ -278,6 +284,8 @@ No level, including `TRACE`, may record:
   payloads;
 - Lua configuration values, prompts, credentials, or AI tokens;
 - HTTP authorization, cookies, private keys, or plugin secrets;
+- configured sync network keys, key-file bytes, derived Noise PSKs, handshake
+  messages, and HKDF intermediates;
 - artifact contents.
 
 Network addresses and sanitized document paths may be logged because they are

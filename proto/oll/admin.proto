@@ -19,6 +19,9 @@ service Admin {
       returns (ListReplicaOperationsResponse);
   rpc ExportReplica(ExportReplicaRequest) returns (ExportReplicaResponse);
   rpc ImportReplica(ImportReplicaRequest) returns (ImportReplicaResponse);
+  rpc SynchronizePeers(SynchronizePeersRequest)
+      returns (SynchronizePeersResponse);
+  rpc PingPeer(PingPeerRequest) returns (PingPeerResponse);
 }
 
 // Every unary Admin request carries this context. Exact fingerprint equality is
@@ -41,6 +44,13 @@ enum PeerConnectionState {
   PEER_CONNECTION_STATE_CONNECTING = 2;
   PEER_CONNECTION_STATE_READY = 3;
   PEER_CONNECTION_STATE_BACKOFF = 4;
+  PEER_CONNECTION_STATE_CLOSING = 5;
+}
+
+enum PeerConnectionDirection {
+  PEER_CONNECTION_DIRECTION_UNSPECIFIED = 0;
+  PEER_CONNECTION_DIRECTION_OUTBOUND = 1;
+  PEER_CONNECTION_DIRECTION_INBOUND = 2;
 }
 
 enum ReplicaState {
@@ -55,10 +65,12 @@ enum ReplicaState {
 message NativePath { bytes unix_path = 1; }
 
 message PeerStatus {
-  string connect_url = 1;
+  // Absent for an authenticated inbound-only peer.
+  optional string connect_target = 1;
   // Absent until a successful SyncHello establishes the remote identity.
   NodeIdentity node = 2;
   PeerConnectionState connection_state = 3;
+  PeerConnectionDirection direction = 4;
 }
 
 message GetStatusRequest { AdminCallContext context = 1; }
@@ -173,4 +185,47 @@ message ImportReplicaRequest {
 message ImportReplicaResponse {
   string snapshot_id = 1;
   ReplicaId replica_id = 2;
+}
+
+message SynchronizePeersRequest {
+  AdminCallContext context = 1;
+  // Absent to capture every configured peer at request admission.
+  NodeName node = 2;
+  // Greater than zero and includes the initial attempt.
+  uint32 total_attempts = 3;
+}
+
+enum PeerSyncOutcome {
+  PEER_SYNC_OUTCOME_UNSPECIFIED = 0;
+  PEER_SYNC_OUTCOME_SYNCHRONIZED = 1;
+  PEER_SYNC_OUTCOME_ALREADY_SATISFIED = 2;
+  PEER_SYNC_OUTCOME_FAILED = 3;
+}
+
+message PeerSyncResult {
+  // Present for a configured outbound target; absent for an inbound-only peer.
+  optional string connect_target = 1;
+  // Present after the remote identity has been authenticated.
+  NodeIdentity node = 2;
+  uint32 attempts_used = 3;
+  PeerSyncOutcome outcome = 4;
+  uint64 object_count = 5;
+  uint64 blob_count = 6;
+  uint64 transferred_bytes = 7;
+  ErrorCode error_code = 8;
+  // Empty on success; otherwise a redacted peer-local diagnostic.
+  string error_message = 9;
+}
+
+message SynchronizePeersResponse { repeated PeerSyncResult peers = 1; }
+
+message PingPeerRequest {
+  AdminCallContext context = 1;
+  // Semantically required and resolved through durable authenticated bindings.
+  NodeName node = 2;
+}
+
+message PingPeerResponse {
+  NodeIdentity node = 1;
+  uint64 round_trip_millis = 2;
 }

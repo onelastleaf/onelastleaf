@@ -27,8 +27,9 @@ use crate::{
     },
     configuration::{ConfigRuntime, validate_storage_layout},
     protocol::oll::{
-        GetStatusResponse, InspectReplicaDocumentResponse, NodeLifecycleState, PeerConnectionState,
-        ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
+        GetStatusResponse, InspectReplicaDocumentResponse, NodeLifecycleState,
+        PeerConnectionDirection, PeerConnectionState, ReplicaOperationKind, ReplicaOperationSource,
+        ReplicaState as ProtoReplicaState,
     },
     replica::{
         ReplicaError, ReplicaRuntime, SnapshotInspection, inspect_snapshot, verify_snapshot,
@@ -980,7 +981,8 @@ fn status_json(status: &GetStatusResponse) -> Result<serde_json::Value, NodeErro
         .iter()
         .map(|peer| {
             json!({
-                "connect_url": peer.connect_url,
+                "connect_target": peer.connect_target,
+                "direction": peer_direction_name(peer.direction),
                 "connection_state": peer_state_name(peer.connection_state),
                 "node": peer.node.as_ref().map(|node| json!({
                     "node_id": node.node_id.as_ref().map(|value| value.value.clone()),
@@ -1037,9 +1039,20 @@ fn print_status(status: &GetStatusResponse) -> Result<(), NodeError> {
     } else {
         println!("Peers:");
         for peer in &status.peers {
+            let label = peer
+                .connect_target
+                .as_deref()
+                .or_else(|| {
+                    peer.node
+                        .as_ref()
+                        .and_then(|node| node.node_name.as_ref())
+                        .map(|name| name.value.as_str())
+                })
+                .unwrap_or("inbound peer");
             println!(
-                "  {} ({})",
-                peer.connect_url,
+                "  {} ({}, {})",
+                label,
+                peer_direction_name(peer.direction),
                 peer_state_name(peer.connection_state)
             );
         }
@@ -1105,7 +1118,16 @@ fn peer_state_name(value: i32) -> &'static str {
         PeerConnectionState::Connecting => "connecting",
         PeerConnectionState::Ready => "ready",
         PeerConnectionState::Backoff => "backoff",
+        PeerConnectionState::Closing => "closing",
         PeerConnectionState::Unspecified => "unknown",
+    }
+}
+
+fn peer_direction_name(value: i32) -> &'static str {
+    match PeerConnectionDirection::try_from(value).unwrap_or(PeerConnectionDirection::Unspecified) {
+        PeerConnectionDirection::Outbound => "outbound",
+        PeerConnectionDirection::Inbound => "inbound",
+        PeerConnectionDirection::Unspecified => "unknown",
     }
 }
 

@@ -87,29 +87,31 @@ oll init <node-name>
 oll init home-laptop --replica /path/to/replica/root
 oll init home-laptop --config /path/to/config/root
 oll init home-laptop --log-dir /path/to/log/dir
-oll init home-laptop --listen 127.0.0.1:7443 \
-  --connect https://oll.example.com
+oll init home-laptop --listen 0.0.0.0:17384 \
+  --connect oll://peer.example.com:17384
 
 oll run
 oll run --replica /path/to/replica/root
 oll run --config /path/to/config/root
 oll run --log-dir /path/to/log/dir
-oll run --listen 127.0.0.1:7443
-oll run --connect https://oll.example.com
-oll run --listen 127.0.0.1:7443 \
-  --connect https://node-a.example.com \
-  --connect https://node-b.example.com
+oll run --listen 0.0.0.0:17384
+oll run --connect oll://peer.example.com:17384
+oll run --listen 0.0.0.0:17384 \
+  --connect oll://203.0.113.10:17384 \
+  --connect 'oll://[2001:db8::10]:17384'
 
 oll start
 oll stop
 oll status
 oll status --json
 oll log set oll::sync=trace
+oll psk
 ```
 
-`--connect` is repeatable; `--listen` accepts one socket address. Together they
-fully express deployment topology. There is no `client`/`server` profile wrapper
-and no topology-derived authority level.
+`--connect` is repeatable and accepts only an `oll://host:port` target with an
+explicit nonzero port; `--listen` accepts one local bind socket address with an
+explicit nonzero port. Together they fully express deployment topology. There
+is no `client`/`server` profile wrapper and no topology-derived authority level.
 
 `init` and `run` each define their own root and topology flags. They are not one
 shared argument group: future command-specific options need not be added to both
@@ -118,15 +120,33 @@ commands. `init` creates the selected directories, writes a complete
 directory, and topology, and writes `<config-root>/node.json`. It establishes
 only an empty replica slot; `ReplicaId` and replica data are created later. A
 PostgreSQL store is selected by replacing the generated `replica_store` table in
-`config.lua` with the documented tagged configuration. When either
-initialization file already exists, it warns and asks for an interactive `y`/`n`
-replacement confirmation. `run` locates those files through its selected config
+`config.lua` with the documented tagged configuration. When `config.lua`,
+`node.json`, or `replica.json` already exists, it warns that reinitialization
+replaces node/configuration identity and removes the current replica identity,
+then asks for an interactive `y`/`n` replacement confirmation. It leaves the
+working tree and old SQL store intact. `run` locates those files through its selected config
 root; its `--replica`, `--log-dir`, `--listen`, and `--connect` values are
 temporary runtime overrides and do not rewrite configuration. `config.lua` is
 an executable LuaJIT module that must return the complete versioned table
 defined in `configuration.md`; oll reads the returned table rather than named
 Lua globals. Full layout, recovery, and lock behavior are in `node.md` and
 `replica-store.md`.
+
+`init` never generates or persists `node.network_key`, including when topology
+flags are present. Such a generated configuration is intentionally incomplete
+for sync until its user adds the raw key or an
+`oll.read_network_key("/absolute/os/path")` expression. The daemon does not take
+the key from a CLI option.
+
+`oll psk` is a pure local generator. It reads 32 random bytes directly from the
+operating-system CSPRNG, encodes them as 43 base64url-without-padding bytes, and
+writes exactly those bytes to stdout without a terminating newline. It accepts
+no output-path or network options, does not open configuration or Admin, and
+emits no structured log. Those 43 printable bytes are the intended raw
+`node.network_key`; because their length is not exactly 32 they pass through the
+documented HKDF derivation. Shell redirection therefore creates an exact key
+file. If the user later adds a newline, `oll.read_network_key` deliberately
+includes it as different IKM.
 
 `node-name` is required when initializing a deployment. It is the durable,
 globally presented human name paired one-to-one with the generated `NodeId`, not
@@ -144,7 +164,7 @@ all child processes, then waits for actual daemon termination rather than
 treating the initial `accepted` response as completion.
 
 `status` reports the local `NodeName` prominently, its `NodeId`, configured
-listen and connection targets, and, after the replica stage, whether the local
+listen and connection targets, authenticated inbound-only peers, and whether the local
 replica is uninitialized, initialized with no visible entries, or initialized
 and populated. Both initialized states include the active `ReplicaId`. A target
 learned through `SyncHello` is displayed with the remote node's
@@ -251,6 +271,14 @@ plus three additional retries. `sync --log` views
 `<log-dir>/sync.log`; it is a log-view mode and conflicts with `node-name` and
 `--retries`. It reads that file locally and does not require node configuration
 or an Admin connection.
+
+Without a name, `oll sync` asks the daemon to run one finite bidirectional round
+against every configured peer and waits for a result per peer. With a name, it
+targets only the durable identity learned from an earlier authenticated
+handshake. The command has no fixed ten-second request deadline; `oll ping`
+retains a short deadline and measures an authenticated sync-protocol ping, not
+ICMP. Cancelling the waiting CLI does not tear down the daemon's persistent
+background peer connection.
 
 ## Plugin commands
 

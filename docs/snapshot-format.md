@@ -193,16 +193,21 @@ Import is staged before active-replica mutation:
 6. encode every retained document's `content` using its catalog encoding and
    BOM and verify exact representability plus the catalog byte size;
 7. build a complete candidate store without mutating the active store;
-8. only then acquire the replica write coordinator and atomically commit the
-   candidate catalog, documents, blobs, `ReplicaId`, fresh local `LoroPeerId`,
-   and `projection_pending` marker.
+8. only then acquire the identity and replica write coordinators, prepare the
+   `replica.json` transition, and atomically commit the candidate catalog,
+   documents, blobs, cached `ReplicaId`, fresh local `LoroPeerId`, and
+   `projection_pending` marker.
 
-The candidate is an inactive SQL generation. The final commit changes the
-store's `active_generation` pointer and sets `projection_pending` in one
-transaction, as specified in [replica-store.md](replica-store.md). A crash
-before that pointer switch leaves the old generation active. A crash after it
-makes the imported generation authoritative and forces projection recovery;
-startup never guesses between generations from working-tree contents.
+The candidate is an inactive SQL generation. The identity transition first
+atomically publishes a strict user-owned `<config-root>/replica.json` containing
+the manifest ID. The final SQL commit compares and changes the store's
+`active_generation` pointer, caches that ID, marks the transition committed, and
+sets `projection_pending` in one transaction, as specified in
+[replica-store.md](replica-store.md). That SQL commit remains the only
+linearization point. A crash before it restores the prior identity file and
+leaves the old generation active. A crash after it recovers the new identity
+file, makes the imported generation authoritative, and forces projection
+recovery; startup never guesses between generations from working-tree contents.
 
 ## Import modes
 
@@ -213,8 +218,9 @@ replica.
 
 If the store is uninitialized, import initializes it from the snapshot. It
 preserves snapshot `ReplicaId`, `CatalogNodeId`, `DocumentId`, and `BinaryId`
-values. The deployment keeps its own `NodeIdentity` and creates a fresh local
-`LoroPeerId` for future Loro operations.
+values and writes that `ReplicaId` to the deployment's authoritative
+`replica.json`. The deployment keeps its own `NodeIdentity` and creates a fresh
+local `LoroPeerId` for future Loro operations.
 
 ### Replace
 
@@ -226,9 +232,9 @@ without sending the request.
 
 Replacement MAY use a snapshot with a different `ReplicaId`. After both
 confirmations, oll discards the old active replica state and adopts the
-snapshot's `ReplicaId`; it never retains the old ID while loading unrelated
-logical content. This still does not add a second replica or silently mount a
-second store.
+snapshot's `ReplicaId` in both `replica.json` and the active-generation cache;
+it never retains the old ID while loading unrelated logical content. This still
+does not add a second replica or silently mount a second store.
 
 The candidate-store transaction sets `projection_pending` before the new
 working tree is materialized. The projection removes managed paths absent from
@@ -243,6 +249,8 @@ untouched.
 A replica snapshot MUST NOT contain:
 
 - `NodeIdentity` or a separate active `LoroPeerId` to use for future operations;
+- the physical `node.json` or `replica.json` deployment records (the manifest's
+  logical `replica_id` is data needed to reconstruct the latter on import);
 - `connect`/`listen` configuration;
 - the SQL backend's physical layout, connection URL, credentials, locks, or
   operation-history records;

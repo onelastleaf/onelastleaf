@@ -11,7 +11,7 @@ or infer the role from configuration:
 | `oll run` | daemon | Enters the one long-running node runtime and does not exit after startup. |
 | `oll init` | bootstrap client | Initializes local configuration, `NodeIdentity`, and the one empty replica slot without starting services. |
 | `oll start` | launcher client | Starts a detached `oll run` child, verifies readiness, and exits. |
-| snapshot inspect/verify, log viewing, and `plugin validate` | local file client | Validates or reads one local file and exits. |
+| `oll psk`, snapshot inspect/verify, log viewing, and `plugin validate` | local client | Generates random output, validates, or reads one local file and exits without Admin. |
 | remaining operational subcommands | admin client | Opens the configured Admin API, makes one request under its method-specific deadline policy, renders the result, and exits. |
 
 `init` cannot use an already-running daemon: its purpose includes creating the
@@ -63,6 +63,11 @@ request deadline: version 1 snapshots have no size limit, so a valid operation
 may take much longer than ten seconds. They remain bounded by explicit client
 termination and by the daemon's node-wide graceful-shutdown deadline; the
 transport channel does not impose a hidden per-request timeout on them.
+`PingPeer` is also short and uses the 10-second request deadline.
+`SynchronizePeers` has no fixed client request deadline because connection
+attempts and valid object/blob transfers may exceed it. Cancelling that Admin
+wait does not implicitly tear down the daemon's persistent background sync
+session.
 
 The service grows with the required implementation order. The node stage owns
 status, graceful shutdown, and typed live log-filter changes. Replica, sync, and
@@ -72,7 +77,9 @@ placeholders for those future methods.
 
 `GetStatus` returns the local node's complete `NodeIdentity`, not only its UUID-v4
 `NodeId`, its configured listen address when present, plus each configured
-connect URL's state and optional remote identity learned through `SyncHello`.
+connect target's state and optional remote identity learned through `SyncHello`.
+It also includes authenticated inbound-only peers, whose status row has no
+connect target, and reports connection direction explicitly.
 Future sync and ping Admin requests use `NodeName` as their typed human-facing
 selector after the daemon has learned that identity.
 
@@ -144,6 +151,45 @@ outside the working tree for a document request is `INVALID_ARGUMENT`. The
 replica protobuf update must use the method and message names fixed in this
 section rather than introducing a generic command or entry-inspection RPC.
 
+## Synchronization administration
+
+The sync stage adds exactly two typed Admin methods:
+
+```proto
+rpc SynchronizePeers(SynchronizePeersRequest)
+    returns (SynchronizePeersResponse);
+rpc PingPeer(PingPeerRequest) returns (PingPeerResponse);
+```
+
+`SynchronizePeersRequest` carries `AdminCallContext`, an optional `NodeName`, and
+`total_attempts`. The attempts value is greater than zero and includes the first
+attempt. With no selector, the daemon captures the configured peer set at
+request admission and runs one finite bidirectional inventory round for each.
+With a selector, it resolves only a previously authenticated durable
+`NodeIdentity`; an unknown name is `NOT_FOUND`. A deployment with no configured
+peers and no selected learned peer is `FAILED_PRECONDITION`.
+
+The response contains one result per captured peer, including identity when
+known, attempts used, success/already-satisfied/failed outcome, transferred
+object and blob counts, transferred bytes, and a typed error code plus redacted
+message for a peer-local failure. Partial failure is therefore representable
+without losing successful peer results. The CLI exits unsuccessfully if any
+requested peer failed. A later edit after a round inventory was captured belongs
+to the background manager's next round and does not keep this RPC open forever.
+
+`PingPeerRequest` carries `AdminCallContext` and one required `NodeName`. It
+resolves that learned identity, obtains or establishes an authenticated Noise
+session, and measures a `SyncPing`/`SyncPong` exchange. The response returns the
+confirmed `NodeIdentity` and round-trip milliseconds. It is not ICMP and success
+proves sync-protocol/key/schema reachability at that instant, not replica
+convergence.
+
+`oll sync --log` remains a local file-view operation. `oll psk` remains a local
+CSPRNG operation. Neither creates another Admin method. Correlation from the
+Admin context propagates through connection attempts, finite rounds, transfers,
+candidate activation, results, and logs. An inbound or background sync action
+without Admin context creates its ID at the first daemon boundary.
+
 ## Errors
 
 Admin method failures use gRPC status codes directly. They do not wrap every
@@ -156,6 +202,8 @@ types. The request context is validated before method-specific work:
 | normalized request is malformed | `INVALID_ARGUMENT` | The client or caller constructed an invalid typed request. |
 | managed-document path lies outside `replica_root` | `INVALID_ARGUMENT` | Use a document path inside the configured working tree. |
 | replica operation requires an initialized replica | `FAILED_PRECONDITION` | Add a working-tree file and run oll, or import a snapshot first. |
+| sync selector names no learned node | `NOT_FOUND` | Establish a configured authenticated connection or choose a name from status. |
+| sync-all captures no configured peers | `FAILED_PRECONDITION` | Configure a connect target or select a learned peer. |
 | daemon is stopping or the UDS cannot serve a request | `UNAVAILABLE` | Retry only after the daemon is ready again. |
 | unexpected daemon failure | `INTERNAL` | Inspect the correlated daemon log event. |
 

@@ -13,8 +13,9 @@ documents describe the larger runtime and storage model around those messages.
 - [Command-line interface](cli.md): commands, arguments, defaults, conflicts,
   environment precedence, and exit behavior.
 - [Configuration runtime](configuration.md): the executable `config.lua`
-  contract, typed result schema, path precedence, and embedded LuaJIT build.
-- [Node runtime](node.md): user-owned node identity, deployment layout,
+  contract, raw sync network-key input, typed result schema, path precedence,
+  and embedded LuaJIT build.
+- [Node runtime](node.md): user-owned node/replica identities, deployment layout,
   single-instance locking, startup, shutdown, and Unix platform boundary.
 - [Local administration API](admin-api.md): subcommand-selected process roles,
   the typed gRPC-over-UDS boundary, background startup, and local debugging.
@@ -24,8 +25,8 @@ documents describe the larger runtime and storage model around those messages.
   tree, SQL-backed CRDT store, filesystem reconciliation, and recovery rules.
 - [Snapshot format](snapshot-format.md): the `.ollsnap` tar+zstd container and
   export/import behavior for catalog, text documents, and binary blobs.
-- [Synchronization](synchronization.md): peer-to-peer CRDT replication and its
-  object-level protocol.
+- [Synchronization](synchronization.md): peer-to-peer CRDT replication over
+  TCP + Noise PSK, finite object-level rounds, and atomic bootstrap.
 - [Observability](observability.md): structured JSON logs, aggregation,
   correlation propagation, file routing, and retention.
 - [Plugin system](plugin-system.md): process lifecycle, bidi gRPC, jobs,

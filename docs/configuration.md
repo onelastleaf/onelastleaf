@@ -2,14 +2,15 @@
 
 ## Boundaries
 
-oll has two Lua files with deliberately different source contracts, plus one
-strict JSON identity record:
+oll has two Lua files with deliberately different source contracts, plus two
+strict JSON identity records:
 
 | File | Contract | Mutation owner |
 | --- | --- | --- |
 | `<config-root>/config.lua` | trusted executable LuaJIT module returning the effective daemon configuration | user; `oll init` creates the initial file |
 | `<config-root>/plugins.lua` | literal-only data module returning desired plugin installations | user and oll plugin installer |
 | `<config-root>/node.json` | strict versioned `NodeId`/`NodeName` record | user; `oll init` creates the initial file |
+| `<config-root>/replica.json` | strict versioned `ReplicaId` record | user; replica initialization, bootstrap, or snapshot import creates it |
 
 `config.lua` is a program. oll evaluates it and validates only its returned
 value; local variables, functions, conditionals, and allowed module composition
@@ -27,6 +28,10 @@ recovery rules are in [node.md](node.md). It is intentionally separate from
 `config.lua` so the daemon can validate its stable identity without executing
 user code.
 
+`replica.json` is absent in an uninitialized deployment. Its authority, atomic
+activation journal, runtime edit behavior, and relationship to the SQL cache are
+defined in [replica-store.md](replica-store.md).
+
 ## Module result
 
 `config.lua` MUST return exactly one Lua table. The initial schema is:
@@ -42,11 +47,14 @@ return {
             path = "/home/user/.local/share/oll/stores/<node-id>/replica.sqlite3",
         },
         log_dir = "/home/user/.local/state/oll",
-        listen = "127.0.0.1:7443",
+        listen = "0.0.0.0:17384",
         connect = {
-            "https://node-a.example.com",
-            "https://node-b.example.com",
+            "oll://node-a.example.com:17384",
+            "oll://[2001:db8::10]:17384",
         },
+
+        -- Added manually by the user when sync topology is enabled.
+        -- network_key = oll.read_network_key("/etc/oll/network.key"),
     },
 }
 ```
@@ -59,8 +67,15 @@ required table with these fields:
 | `replica_root` | string | Required non-empty UTF-8 OS path. |
 | `replica_store` | table | Required tagged SQLite or PostgreSQL store configuration. |
 | `log_dir` | string | Required non-empty UTF-8 OS path. |
-| `listen` | string or `nil` | At most one socket address. |
-| `connect` | array of strings | Zero or more HTTP(S) connect URLs in declared order. |
+| `listen` | string or `nil` | At most one local bind socket address with an explicit nonzero port. |
+| `connect` | array of strings | Zero or more `oll://host:port` targets in declared order; the port is required. |
+| `network_key` | raw Lua byte string or `nil` | Required only by an effective nonempty sync topology; no text normalization is applied. |
+
+`listen` is parsed as a local `SocketAddr`; wildcard addresses are valid bind
+targets, but port zero is not. A `connect` entry uses only the `oll` scheme and
+must contain a DNS name, IPv4 address, or bracketed IPv6 address plus an
+explicit nonzero port. User information, query, fragment, and a non-root path
+are rejected. A wildcard listen address is never rewritten into a connect URL.
 
 `node.replica_store` has exactly two valid shapes:
 
@@ -82,15 +97,17 @@ SQLite requires `path` and forbids `url`. PostgreSQL requires `url` and forbids
 `path`. `driver` is exactly `"sqlite"` or `"postgres"`; a SQLite path is an OS
 path and a PostgreSQL URL is a non-empty PostgreSQL connection URL. Unknown
 fields in either tagged table, unknown top-level or `node` fields, and every
-missing required field are errors. This means a hand-written configuration with
-a partial `node` table fails validation. oll does not append defaults to an
-arbitrary Lua program after its `return` statement. `oll init` instead writes a
-complete initial table with explicit defaults.
+missing required field other than optional `network_key` are errors. This means
+a hand-written configuration with a partial `node` table fails validation. oll
+does not append defaults to an arbitrary Lua program after its `return`
+statement. `oll init` instead writes a complete initial table with explicit
+defaults and deliberately omits `network_key`, even when `--listen` or
+`--connect` was supplied. The user must add a key before that topology can run.
 
 Later stages may extend the versioned schema only after documenting their
-ownership. `NodeIdentity` is also not Lua configuration: it resides in the
-separate, user-editable `node.json` record rather than being inferred from Lua
-globals or a returned table.
+ownership. `NodeIdentity` and `ReplicaId` are also not Lua configuration: they
+reside in the separate user-editable `node.json` and `replica.json` records
+rather than being inferred from Lua globals or a returned table.
 
 oll converts the validated node table into a Rust-owned `ResolvedNodeConfig`
 before starting the node runtime. Node, replica, and sync code consume this
@@ -121,6 +138,46 @@ The read-only `oll.getenv(name)` helper exposes environment lookup without
 exposing mutation of the process environment. A missing variable returns
 `nil`, a UTF-8 value returns a Lua string, and a present non-UTF-8 value is a
 configuration evaluation error.
+
+The read-only `oll.read_network_key(path)` helper reads a network key from one
+absolute operating-system path. The path is not resolved relative to the config
+root. On Unix the Lua string supplies the native pathname bytes; it must be
+absolute and NUL-free. The helper reads a regular file exactly and returns one
+raw Lua byte string. A trailing newline, leading whitespace, embedded NUL, and
+all other file bytes are key material: oll does not trim, normalize Unicode, or
+auto-detect hex/base64. Missing, unreadable, non-regular, or relative paths are
+configuration evaluation errors. This helper is the supported file-based secret
+input; there is no special dotenv parser.
+
+Because the working tree is replicated user content, operators SHOULD keep a
+network-key file outside `replica_root`. oll does not infer secret status from an
+arbitrary user path or silently exclude a working-tree file from the catalog.
+
+After CLI overrides are applied, `network_key` is required when `listen` is not
+`nil` or `connect` is nonempty. It is ignored when both are absent, and in that
+case it may be omitted. Any byte string, including an empty or obviously weak
+one, is accepted because the deployment user owns this trust decision. A value
+shorter than 32 bytes emits one redacted `WARNING` on daemon stdout and one
+structured `WARN` after log sinks open; the value and its derived key are never
+included. This length warning is only a heuristic: a
+32-byte repeated string can still be weak. File permissions are not forced to
+`0600`.
+
+Exactly 32 input bytes are used directly as the Noise PSK. Every other length is
+an HKDF-SHA256 input keying material value with these exact byte strings:
+
+```text
+salt = b"oll-sync-network-key\0v1"
+info = b"oll-sync-noise-psk\0v1\0" ||
+       b"Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s"
+output length = 32 bytes
+```
+
+`NodeId`, `ReplicaId`, addresses, and schema fingerprints do not participate.
+Future uses of the configured key must define a different `info` label rather
+than reuse the Noise output. Network-key bytes and HKDF intermediates are never
+exposed through typed status or Admin APIs and are zeroized when their owning
+Rust state is dropped where the type permits it.
 
 Configuration is trusted user code, not a security sandbox. These restrictions
 still protect daemon integrity and make startup behavior diagnosable; they do
@@ -241,10 +298,12 @@ snapshot and log clients retain the intent-specific dependencies defined in
 Missing or unreadable files, Lua syntax failures, evaluation failures, a
 non-table or multiple return values, unsupported format versions, unknown or
 missing fields, invalid tagged-store combinations, invalid field types, invalid
-URLs or socket addresses, invalid paths, and overlapping local storage
+`oll://` targets or socket addresses, a topology without `network_key`, invalid
+paths, and overlapping local storage
 locations are configuration errors and exit with `EX_CONFIG` (`78`).
 Diagnostics identify the config file and field path without printing Lua values
-that may contain secrets.
+that may contain secrets. In particular they never print a network-key value,
+file content, derived PSK, or HKDF intermediate.
 
 Tests cover successful computed returns, wrong return arity and type, schema
 errors including both store variants and missing fields, controlled module
@@ -253,7 +312,11 @@ HOME-less deployment whose absolute config root supplies its persisted replica,
 store, and log paths. They also cover equality, both ancestor directions, and
 existing symlink aliases between the working tree and each local
 daemon-managed location, including layouts produced by runtime overrides and
-`oll init`. Tests do not execute intentionally non-terminating Lua in-process.
+`oll init`. Sync configuration tests cover raw Lua byte strings, exact key-file
+bytes including a trailing newline, weak-key warning redaction, direct 32-byte
+use, the specified HKDF vector for every other length, omitted-key topology
+failure, and strict explicit-port `oll://` parsing. Tests do not execute
+intentionally non-terminating Lua in-process.
 
 ## Troubleshooting a startup that never becomes ready
 

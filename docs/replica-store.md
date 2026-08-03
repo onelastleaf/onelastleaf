@@ -8,7 +8,8 @@ operation journals, or hidden control files beneath it. A user may edit, add,
 move, rename, and remove its entries with an editor or file manager.
 
 The configured `replica_store` is oll-managed durable state. It contains the
-catalog and document CRDT state, replica metadata, content-addressed binary
+catalog and document CRDT state, a cache of the authoritative `ReplicaId`,
+content-addressed binary
 blobs, high-level operation records, and recovery state. Both locations are
 owned by the deployment user, but normal user edits belong in the working tree.
 Manual edits to the store are supported only in the sense that oll trusts its
@@ -65,13 +66,15 @@ database, a `ReplicaId`, or a catalog.
 
 The physical SQL schema is private, but every backend MUST durably represent:
 
-- initialization state, the active `ReplicaId`, and the local `LoroPeerId`;
+- initialization state, the active generation's cached `ReplicaId`, and the
+  local `LoroPeerId`;
 - the catalog LoroDoc and every retained document LoroDoc;
 - the monotonic local Lamport clock used for binary versions;
 - content-addressed binary blobs keyed by lower-case SHA-256;
 - high-level local operation records used by `oll replica ops`;
 - working-tree projection generations and durable recovery records, including
   a whole-tree `projection_pending` marker for snapshot replacement.
+- prepared replica-identity transitions and an exclusive bootstrap claim.
 
 The blob namespace is logical rather than a required directory layout. A
 backend streams a blob by SHA-256; SQLite and PostgreSQL may store those bytes
@@ -87,11 +90,11 @@ working-tree materialization part of one distributed transaction.
 
 The replica slot has three externally observable states:
 
-| State | Store metadata | Working tree | Meaning |
-| --- | --- | --- | --- |
-| Uninitialized | no active replica metadata | empty or non-empty | no `ReplicaId` exists yet |
-| Initialized, empty | active metadata and catalog | no visible entries | a stable empty replica |
-| Initialized, populated | active metadata and catalog | one or more visible entries | normal operation |
+| State | `replica.json` | Store metadata | Working tree | Meaning |
+| --- | --- | --- | --- | --- |
+| Uninitialized | absent | no active replica metadata | empty or non-empty | no `ReplicaId` exists yet |
+| Initialized, empty | valid ID | active metadata and matching catalog | no visible entries | a stable empty replica |
+| Initialized, populated | valid ID | active metadata and matching catalog | one or more visible entries | normal operation |
 
 `oll init` creates only the uninitialized slot. On daemon startup, oll opens
 the configured store before serving Admin requests and applies this rule:
@@ -99,23 +102,99 @@ the configured store before serving Admin requests and applies this rule:
 1. no active metadata and an empty working tree: remain uninitialized;
 2. no active metadata and one or more supported working-tree entries: perform
    the initial scan, create a UUID-v4 `ReplicaId`, create the catalog, and
-   import those entries as the first local state;
-3. active metadata: load the existing replica.
+   import those entries as the first local state through the identity-transition
+   protocol below;
+3. active metadata: require a valid `replica.json`, reconcile its value with the
+   SQL cache, and load the existing replica.
+
+Outside a recognized prepared transition, `replica.json` present with no active
+generation is inconsistent configuration: choosing an ID cannot manufacture a
+catalog. Startup reports `EX_CONFIG` and does not initialize from the working
+tree until the user removes or repairs that file. Conversely, active metadata
+with a missing identity file is recoverable only from a still-durable committed
+transition; otherwise startup also reports `EX_CONFIG`.
 
 When rule 1 leaves the slot uninitialized, the daemon still starts the recursive
 watcher. The first later reconciliation that finds one or more supported
 working-tree entries performs the same initialization as rule 2. Under the
-replica write coordinator, one SQL transaction creates the active generation,
-a UUID-v4 `ReplicaId`, the catalog and its fixed root, a fresh local
-`LoroPeerId`, and the first imported entries. No Admin client can observe a
-catalog without its `ReplicaId` or a first document without its catalog entry.
-If that transaction fails, the slot remains uninitialized and the filesystem
-entries remain untouched for a later reconciliation.
+replica write coordinator, oll builds an inactive generation containing the
+UUID-v4 `ReplicaId`, catalog and fixed root, fresh local `LoroPeerId`, and first
+imported entries. It then publishes `replica.json` and activates that generation
+with the recovery protocol below. No Admin client can observe a catalog without
+its identity or a first document without its catalog entry. If activation
+fails, the slot remains uninitialized and the filesystem entries remain
+untouched for a later reconciliation.
 
-An uninitialized deployment reports that state through status. It cannot sync,
-export, inspect a document, or list document operations; those operations fail
-with `FAILED_PRECONDITION`. Snapshot import is allowed and initializes the slot
-directly without first creating a throwaway local replica.
+An uninitialized deployment reports that state through status. It may receive
+sync bootstrap, but it cannot perform normal sync, export, inspect a document,
+or list document operations; those operations fail with `FAILED_PRECONDITION`.
+Snapshot import is also allowed and initializes the slot directly without first
+creating a throwaway local replica.
+
+## Replica identity authority and recovery
+
+`<config-root>/replica.json` is the unique user-facing authority for
+`ReplicaId`. SQL stores the same value beside an active generation because
+generation comparison, bootstrap, snapshot replacement, and crash recovery need
+a transactional consistency check. A mismatch is never silently resolved by
+choosing whichever location was read first.
+
+Creating or replacing a replica crosses a filesystem/SQL boundary that cannot
+be one transaction. oll therefore uses a durable SQL identity-transition record
+with `old_replica_id`, `new_replica_id`, candidate generation, and transition
+kind:
+
+1. while holding the identity and replica coordinators, build and fully validate
+   the inactive candidate;
+2. in SQL, record a prepared transition and the expected active generation;
+3. write and synchronize a strict sibling temporary `replica.json`, atomically
+   rename it into place, and synchronize the parent directory before SQL
+   activation;
+4. in one SQL transaction, compare the active generation with the expected old
+   value, activate the complete candidate, cache the new ID, set any required
+   whole-tree projection marker, and mark the transition committed;
+5. after re-reading the published identity file, clear the committed transition
+   record in a later cleanup transaction.
+
+Step 4's SQL commit is the only logical-replica linearization point. Publishing
+the identity file in step 3 is preparation, not activation. Startup recovery
+examines the active-generation pointer and the transition before ordinary
+identity validation:
+
+- if activation did not commit, the previous generation remains authoritative;
+  oll restores the previous `replica.json` or removes a newly created file only
+  when its bytes still exactly match the prepared new record, then removes the
+  inactive candidate and transition;
+- if activation committed but transition cleanup did not, its transaction
+  already names the new generation and ID; oll requires or atomically restores
+  the matching new identity record from the committed transition data before
+  serving work, then clears that record;
+- if the file was independently changed and no longer matches either expected
+  transition record, recovery stops with a configuration/store consistency
+  error instead of overwriting the user's edit.
+
+For first initialization and sync bootstrap the expected active generation is
+`NULL`; for snapshot replacement it is the current generation. Candidate and
+transition cleanup is idempotent on SQLite and PostgreSQL.
+
+The daemon watches `replica.json` after recovery. A valid user edit acquires the
+same identity coordinator, pauses new local/filesystem/remote commits, and
+updates the active generation's cached ID with a SQL
+compare-and-swap from the last accepted value. Only after that transaction does
+the in-memory identity and node-owned identity epoch change and do future commits
+resume. Sync sessions added later bind that epoch and close themselves when it
+changes; the replica stage has no placeholder sync dependency. Historical Loro
+operations, catalog IDs, document IDs, binary IDs, and binary writer stamps are
+not rewritten. The user has deliberately reidentified the logical replica and
+is responsible for the resulting mismatch with peers.
+
+If the SQL update fails, the file remains user-owned and is not rolled back.
+The running daemon retains its last coherent identity, emits a structured error,
+and retries after another final-state observation; startup reconciles a valid
+file value into the SQL cache before admitting work. A missing or invalid
+runtime file likewise leaves the last coherent identity active, whereas startup
+without a recoverable valid file is `EX_CONFIG`. Identity changes serialize
+with snapshot import and bootstrap rather than racing either activation.
 
 ## Local Loro identity
 
@@ -334,14 +413,19 @@ SQLite file or pretending PostgreSQL has a filesystem layout:
 
 1. the importer allocates a new generation ID and builds all candidate rows
    under that inactive generation;
-2. a single SQL transaction rechecks that the active generation has not
-   changed, points `active_generation` at the candidate, stores its fresh local
-   `LoroPeerId`, and sets `projection_pending`;
-3. a crash before that transaction leaves the old generation active; the
-   incomplete inactive candidate is cleanup state;
-4. a crash after it leaves the imported generation authoritative, so startup
-   rebuilds the working tree from it and never scans the old projection;
-5. the former active generation may be retained internally until projection
+2. the importer prepares the identity transition and atomically publishes the
+   candidate `ReplicaId` in `replica.json`;
+3. a single SQL transaction rechecks that the active generation has not
+   changed, points `active_generation` at the candidate, caches the new ID,
+   stores its fresh local `LoroPeerId`, sets `projection_pending`, and marks the
+   identity transition committed;
+4. a crash before that transaction leaves the old generation active and
+   restores the old identity file; the incomplete inactive candidate is cleanup
+   state;
+5. a crash after it leaves the imported generation authoritative, so startup
+   recovers the new identity file, rebuilds the working tree from it, and never
+   scans the old projection;
+6. the former active generation may be retained internally until projection
    completes, but it is never mounted as a second replica or automatically
    reactivated after the switch; it and other inactive generations may then be
    deleted.
@@ -385,6 +469,11 @@ Replica persistence tests cover both SQLite and PostgreSQL logical behavior:
   failed path's marker or allow stale working-tree bytes to overwrite the
   committed store state;
 - restart completes a targeted projection before importing that path;
+- first initialization and replacement recover `replica.json` plus SQL identity
+  transitions before and after the active-generation linearization point;
+- valid `node.json` and `replica.json` atomic replacements hot-load under the
+  coordinator, close sync sessions, and preserve historical writer IDs, while
+  invalid or partial runtime files retain the last coherent identities;
 - snapshot replacement crashes immediately before and immediately after the
   active-generation switch, and each restart selects the documented generation
   without importing the old working tree;

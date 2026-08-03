@@ -5,24 +5,33 @@ package oll.protocol;
 import "google/protobuf/timestamp.proto";
 import "oll/common.proto";
 
-// gRPC determines which peer opens the transport, but neither endpoint has a
-// privileged replication role. Both sides send the same messages.
-service Replication {
-  rpc Synchronize(stream SyncEnvelope) returns (stream SyncEnvelope);
-}
+// SyncEnvelope is carried directly inside an encrypted oll transport frame over
+// TCP + Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s. Sync does not use gRPC.
+
+message NoLocalReplica {}
 
 message SyncHello {
   NodeIdentity node = 1;
-  ReplicaId replica_id = 2;
+
+  oneof replica_state {
+    ReplicaId replica_id = 2;
+    NoLocalReplica no_local_replica = 6;
+  }
+
   bytes protocol_schema_sha256 = 3;
-  uint64 max_chunk_bytes = 4;
-  repeated Compression supported_compressions = 5;
-  reserved 6;
+  // Maximum bytes accepted in ReplicaTransferChunk.data or
+  // BlobTransferChunk.data. Version 1 advertises at most 61440.
+  uint32 max_chunk_bytes = 4;
+
+  reserved 5, 7;
 }
 
 message SyncReady {
-  Compression compression = 1;
-  uint64 max_chunk_bytes = 2;
+  reserved 1;
+
+  uint32 max_chunk_bytes = 2;
+  // Semantically required. Both peers send the same session replica ID.
+  ReplicaId session_replica_id = 3;
 }
 
 message LoroId {
@@ -46,12 +55,6 @@ message LoroFrontier {
   repeated LoroId ids = 1;
 }
 
-enum Compression {
-  COMPRESSION_UNSPECIFIED = 0;
-  COMPRESSION_NONE = 1;
-  COMPRESSION_ZSTD = 2;
-}
-
 message CatalogObject {}
 
 message ReplicaObjectRef {
@@ -63,36 +66,65 @@ message ReplicaObjectRef {
 
 message ReplicaObjectSummary {
   ReplicaObjectRef object = 1;
-  // These fields belong only to the replication wire protocol. Plugins never
-  // receive them and must use catalog/document revision tokens instead.
+  // These fields belong only to sync. Applications and plugins use opaque
+  // catalog/document revision tokens instead.
   LoroVersionVector loro_version_vector = 2;
   LoroFrontier loro_frontier = 3;
 }
 
-message AdvertiseReplica { repeated ReplicaObjectSummary objects = 1; }
-
-message RequestReplicaDelta {
-  ReplicaObjectRef object = 1;
-  LoroVersionVector from_loro_version_vector = 2;
-  bool allow_snapshot_fallback = 3;
+message BlobRef {
+  // Exactly 32 SHA-256 bytes.
+  bytes sha256 = 1;
+  uint64 size_bytes = 2;
 }
 
-enum ReplicaTransferKind {
-  REPLICA_TRANSFER_KIND_UNSPECIFIED = 0;
-  REPLICA_TRANSFER_KIND_LORO_UPDATE_BATCH = 1;
-  REPLICA_TRANSFER_KIND_LORO_SNAPSHOT = 2;
+enum SyncRoundMode {
+  SYNC_ROUND_MODE_UNSPECIFIED = 0;
+  SYNC_ROUND_MODE_NORMAL = 1;
+  SYNC_ROUND_MODE_BOOTSTRAP = 2;
+}
+
+message SyncRoundStart {
+  string round_id = 1;
+  SyncRoundMode mode = 2;
+}
+
+message SyncRoundInventory {
+  string round_id = 1;
+  uint32 batch_index = 2;
+  repeated ReplicaObjectSummary objects = 3;
+  repeated BlobRef blobs = 4;
+}
+
+message SyncRoundInventoryComplete {
+  string round_id = 1;
+  uint32 batch_count = 2;
+  uint64 object_count = 3;
+  uint64 blob_count = 4;
+}
+
+message RequestReplicaUpdates {
+  string round_id = 1;
+  ReplicaObjectRef object = 2;
+  // Empty when the receiver has no retained operations for this object.
+  LoroVersionVector from_loro_version_vector = 3;
+}
+
+message RequestBlob {
+  string round_id = 1;
+  // Exactly 32 SHA-256 bytes and present in the captured inventory.
+  bytes sha256 = 2;
 }
 
 message ReplicaTransferStart {
   string transfer_id = 1;
-  ReplicaObjectRef object = 2;
-  ReplicaTransferKind kind = 3;
-  Compression compression = 4;
-  uint64 uncompressed_size = 5;
-  uint32 chunk_count = 6;
-  LoroVersionVector resulting_loro_version_vector = 7;
-  // Hash of the complete uncompressed Loro export blob.
-  bytes uncompressed_payload_sha256 = 8;
+  string round_id = 2;
+  ReplicaObjectRef object = 3;
+  uint64 payload_size = 4;
+  uint32 chunk_count = 5;
+  LoroVersionVector resulting_loro_version_vector = 6;
+  // SHA-256 of the complete uncompressed Loro update batch.
+  bytes payload_sha256 = 7;
 }
 
 message ReplicaTransferChunk {
@@ -106,12 +138,91 @@ message ReplicaTransferComplete { string transfer_id = 1; }
 message ReplicaTransferAck {
   string transfer_id = 1;
   ReplicaObjectRef object = 2;
-  LoroFrontier imported_loro_frontier = 3;
+  // This frontier is staged in the private round candidate; the active
+  // generation has not necessarily changed yet.
+  LoroFrontier staged_loro_frontier = 3;
 }
 
-message FlowControl {
-  // Additional bytes the receiver is prepared to buffer across transfers.
-  uint64 grant_bytes = 1;
+enum ReplicaTransferRejectCode {
+  REPLICA_TRANSFER_REJECT_CODE_UNSPECIFIED = 0;
+  REPLICA_TRANSFER_REJECT_CODE_INVALID_REQUEST = 1;
+  REPLICA_TRANSFER_REJECT_CODE_UNKNOWN_ROUND = 2;
+  REPLICA_TRANSFER_REJECT_CODE_UNKNOWN_OBJECT = 3;
+  REPLICA_TRANSFER_REJECT_CODE_CHUNK_SEQUENCE = 4;
+  REPLICA_TRANSFER_REJECT_CODE_SIZE_MISMATCH = 5;
+  REPLICA_TRANSFER_REJECT_CODE_HASH_MISMATCH = 6;
+  REPLICA_TRANSFER_REJECT_CODE_LORO_DECODE_FAILED = 7;
+  REPLICA_TRANSFER_REJECT_CODE_LORO_IMPORT_FAILED = 8;
+  REPLICA_TRANSFER_REJECT_CODE_STORE_FAILED = 9;
+}
+
+message ReplicaTransferReject {
+  string transfer_id = 1;
+  ReplicaTransferRejectCode code = 2;
+  // Redacted diagnostic; never contains payload bytes.
+  string message = 3;
+}
+
+message BlobTransferStart {
+  string transfer_id = 1;
+  string round_id = 2;
+  // Exactly 32 SHA-256 bytes.
+  bytes sha256 = 3;
+  uint64 size_bytes = 4;
+  uint32 chunk_count = 5;
+}
+
+message BlobTransferChunk {
+  string transfer_id = 1;
+  uint32 chunk_index = 2;
+  bytes data = 3;
+}
+
+message BlobTransferComplete { string transfer_id = 1; }
+
+message BlobTransferAck {
+  string transfer_id = 1;
+  bytes sha256 = 2;
+}
+
+enum BlobTransferRejectCode {
+  BLOB_TRANSFER_REJECT_CODE_UNSPECIFIED = 0;
+  BLOB_TRANSFER_REJECT_CODE_INVALID_REQUEST = 1;
+  BLOB_TRANSFER_REJECT_CODE_UNKNOWN_ROUND = 2;
+  BLOB_TRANSFER_REJECT_CODE_UNKNOWN_BLOB = 3;
+  BLOB_TRANSFER_REJECT_CODE_CHUNK_SEQUENCE = 4;
+  BLOB_TRANSFER_REJECT_CODE_SIZE_MISMATCH = 5;
+  BLOB_TRANSFER_REJECT_CODE_HASH_MISMATCH = 6;
+  BLOB_TRANSFER_REJECT_CODE_STORE_FAILED = 7;
+}
+
+message BlobTransferReject {
+  string transfer_id = 1;
+  BlobTransferRejectCode code = 2;
+  // Redacted diagnostic; never contains blob bytes.
+  string message = 3;
+}
+
+message SyncRoundCommitted {
+  string round_id = 1;
+  uint64 object_count = 2;
+  uint64 blob_count = 3;
+  uint64 transferred_bytes = 4;
+}
+
+enum SyncRoundRejectCode {
+  SYNC_ROUND_REJECT_CODE_UNSPECIFIED = 0;
+  SYNC_ROUND_REJECT_CODE_INVALID_INVENTORY = 1;
+  SYNC_ROUND_REJECT_CODE_INCOMPLETE_CANDIDATE = 2;
+  SYNC_ROUND_REJECT_CODE_CANDIDATE_INVALID = 3;
+  SYNC_ROUND_REJECT_CODE_ACTIVE_GENERATION_CHANGED = 4;
+  SYNC_ROUND_REJECT_CODE_STORE_FAILED = 5;
+}
+
+message SyncRoundReject {
+  string round_id = 1;
+  SyncRoundRejectCode code = 2;
+  string message = 3;
 }
 
 message SyncPing {
@@ -121,25 +232,60 @@ message SyncPing {
 
 message SyncPong { uint64 nonce = 1; }
 
+enum SyncCloseCode {
+  SYNC_CLOSE_CODE_UNSPECIFIED = 0;
+  SYNC_CLOSE_CODE_NORMAL = 1;
+  SYNC_CLOSE_CODE_SHUTTING_DOWN = 2;
+  SYNC_CLOSE_CODE_PROTOCOL_VIOLATION = 3;
+  SYNC_CLOSE_CODE_SCHEMA_MISMATCH = 4;
+  SYNC_CLOSE_CODE_IDENTITY_COLLISION = 5;
+  SYNC_CLOSE_CODE_SELF_CONNECTION = 6;
+  SYNC_CLOSE_CODE_DUPLICATE_SESSION = 7;
+  SYNC_CLOSE_CODE_REPLICA_MISMATCH = 8;
+  SYNC_CLOSE_CODE_NO_REPLICA_AVAILABLE = 9;
+  SYNC_CLOSE_CODE_BOOTSTRAP_IN_PROGRESS = 10;
+  SYNC_CLOSE_CODE_NEGOTIATION_FAILED = 11;
+  SYNC_CLOSE_CODE_RESOURCE_EXHAUSTED = 12;
+  SYNC_CLOSE_CODE_INTERNAL_ERROR = 13;
+}
+
+message SyncClose {
+  SyncCloseCode code = 1;
+  // Redacted authenticated diagnostic. Preface and Noise failures close before
+  // this message can be sent.
+  string message = 2;
+}
+
 message SyncEnvelope {
+  // Nonzero and unique per sender for the connection.
   uint64 message_id = 1;
   optional uint64 reply_to = 2;
-  // Propagated across peers for distributed log aggregation. All messages that
-  // belong to one delta/transfer/import operation use the same value.
+  // Nonempty and propagated across both peers. One bootstrap uses one inherited
+  // correlation ID for all of its transfers and activation work.
   string correlation_id = 3;
 
   oneof payload {
     SyncHello hello = 10;
     SyncReady ready = 11;
-    AdvertiseReplica advertise_replica = 12;
-    RequestReplicaDelta request_delta = 13;
-    ReplicaTransferStart transfer_start = 14;
-    ReplicaTransferChunk transfer_chunk = 15;
-    ReplicaTransferComplete transfer_complete = 16;
-    ReplicaTransferAck transfer_ack = 17;
-    FlowControl flow_control = 18;
-    SyncPing ping = 19;
-    SyncPong pong = 20;
-    ProtocolError error = 21;
+    SyncRoundStart round_start = 12;
+    SyncRoundInventory round_inventory = 13;
+    SyncRoundInventoryComplete round_inventory_complete = 14;
+    RequestReplicaUpdates request_updates = 15;
+    RequestBlob request_blob = 16;
+    ReplicaTransferStart replica_transfer_start = 17;
+    ReplicaTransferChunk replica_transfer_chunk = 18;
+    ReplicaTransferComplete replica_transfer_complete = 19;
+    ReplicaTransferAck replica_transfer_ack = 20;
+    ReplicaTransferReject replica_transfer_reject = 21;
+    BlobTransferStart blob_transfer_start = 22;
+    BlobTransferChunk blob_transfer_chunk = 23;
+    BlobTransferComplete blob_transfer_complete = 24;
+    BlobTransferAck blob_transfer_ack = 25;
+    BlobTransferReject blob_transfer_reject = 26;
+    SyncRoundCommitted round_committed = 27;
+    SyncRoundReject round_reject = 28;
+    SyncPing ping = 29;
+    SyncPong pong = 30;
+    SyncClose close = 31;
   }
 }

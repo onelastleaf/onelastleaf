@@ -80,6 +80,25 @@ All oll-level replica object IDs use canonical lower-case UUID-v4 strings.
 | `NodeIdentity` | deployment identity | no |
 | `LoroPeerId` | local store's Loro actor | no |
 
+`ReplicaId` is uniquely authoritative in the strict user-owned
+`<config-root>/replica.json` record:
+
+```json
+{
+  "format_version": 1,
+  "replica_id": "44d62c47-0d82-42f0-a767-e3d6d5e75858"
+}
+```
+
+The file is absent while the deployment is uninitialized. `format_version` is
+the integer `1`; `replica_id` is a canonical lower-case UUID v4; unknown,
+missing, duplicate, wrongly typed, or malformed fields are rejected. The active
+SQL generation caches the same ID so transactions can validate consistency, and
+the SQL store journals cross-filesystem identity transitions, but callers and
+configuration tools do not choose between two identity authorities. Creation,
+replacement, recovery, and hot-edit rules are in
+[replica-store.md](replica-store.md).
+
 Renaming or moving a visible text document changes catalog state only; its
 `DocumentId` does not change when oll observes a reliable live rename. A binary
 similarly retains its `BinaryId` across a reliable live move. A move made while

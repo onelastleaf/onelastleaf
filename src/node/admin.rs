@@ -34,10 +34,11 @@ use crate::{
             ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
             ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
             ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
-            NativePath, NodeLifecycleState, PeerConnectionState, PeerStatus, ReplicaId,
-            ReplicaOperation, ReplicaOperationKind, ReplicaOperationSource,
-            ReplicaState as ProtoReplicaState, SetLogFilterRequest, SetLogFilterResponse,
-            TraceContext,
+            NativePath, NodeLifecycleState, PeerConnectionDirection, PeerConnectionState,
+            PeerStatus, PingPeerRequest, PingPeerResponse, ReplicaId, ReplicaOperation,
+            ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
+            SetLogFilterRequest, SetLogFilterResponse, SynchronizePeersRequest,
+            SynchronizePeersResponse, TraceContext,
             admin_client::AdminClient,
             admin_server::{Admin, AdminServer},
         },
@@ -234,9 +235,10 @@ impl Admin for AdminService {
             .connect
             .iter()
             .map(|url| PeerStatus {
-                connect_url: url.to_string(),
+                connect_target: Some(url.to_string()),
                 node: None,
                 connection_state: PeerConnectionState::Pending as i32,
+                direction: PeerConnectionDirection::Outbound as i32,
             })
             .collect();
         let (replica_state, replica_id) = match self.state.replica.status().await {
@@ -445,6 +447,33 @@ impl Admin for AdminService {
                 value: replica_id.to_string(),
             }),
         }))
+    }
+
+    async fn synchronize_peers(
+        &self,
+        request: Request<SynchronizePeersRequest>,
+    ) -> Result<Response<SynchronizePeersResponse>, Status> {
+        let started = Instant::now();
+        let correlation_id = self.validate_context(request.into_inner().context)?;
+        self.require_serving()?;
+        self.log_rpc(
+            &correlation_id,
+            "SynchronizePeers",
+            "unimplemented",
+            started,
+        );
+        Err(Status::unimplemented("command is not implemented"))
+    }
+
+    async fn ping_peer(
+        &self,
+        request: Request<PingPeerRequest>,
+    ) -> Result<Response<PingPeerResponse>, Status> {
+        let started = Instant::now();
+        let correlation_id = self.validate_context(request.into_inner().context)?;
+        self.require_serving()?;
+        self.log_rpc(&correlation_id, "PingPeer", "unimplemented", started);
+        Err(Status::unimplemented("command is not implemented"))
     }
 }
 
@@ -814,6 +843,20 @@ mod tests {
                 replica_id: None,
             }))
         }
+
+        async fn synchronize_peers(
+            &self,
+            _request: Request<SynchronizePeersRequest>,
+        ) -> Result<Response<SynchronizePeersResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
+
+        async fn ping_peer(
+            &self,
+            _request: Request<PingPeerRequest>,
+        ) -> Result<Response<PingPeerResponse>, Status> {
+            Err(Status::unimplemented("not used by deadline test"))
+        }
     }
 
     #[tokio::test(start_paused = true)]
@@ -912,6 +955,14 @@ mod tests {
             "home-node"
         );
         assert_eq!(status.peers.len(), 1);
+        assert_eq!(
+            status.peers[0].connect_target.as_deref(),
+            Some("https://peer.example/")
+        );
+        assert_eq!(
+            status.peers[0].direction,
+            PeerConnectionDirection::Outbound as i32
+        );
         assert_eq!(status.lifecycle, NodeLifecycleState::Running as i32);
         assert_eq!(
             status.replica_state,

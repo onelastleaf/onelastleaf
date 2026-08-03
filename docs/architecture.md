@@ -53,7 +53,8 @@ with an ASCII letter or digit, with hyphens allowed internally. `NodeId` is a
 UUID v4. `oll init` generates the initial pair in the user-owned
 `<config-root>/node.json` record described in [node.md](node.md). The record is
 validated, not treated as an immutable host-owned secret: its deployment user
-may edit it, and a valid edit takes effect at the next daemon start.
+may edit it, and a valid edit is hot-loaded by a running daemon under the
+identity coordinator.
 
 At every protocol boundary one `NodeId` has exactly one `NodeName`, and one
 `NodeName` identifies exactly one `NodeId`. Replacing either field in
@@ -74,6 +75,14 @@ by replica snapshot import.
 The complete logical document tree owned by a node. It has one stable
 `ReplicaId`. Nodes that synchronize the same logical library use the same
 `ReplicaId` while retaining different `NodeId` values.
+
+The authoritative identity spelling is the strict user-owned
+`<config-root>/replica.json` record. It is absent while the deployment is
+uninitialized and is created when a complete replica is atomically activated.
+The SQL store caches the same ID with its active generation and carries durable
+transition recovery state, but that cache is not a second user-facing identity
+authority. Valid runtime edits are coordinated into SQL and close existing sync
+sessions before future commits use the new identity.
 
 An oll replica is not one `LoroDoc`. Its user-editable working tree is separate
 from the oll-managed replica store. The store contains a collection of CRDT
@@ -119,8 +128,8 @@ Clap CLI / daemon entry
       /      |      \
  replica    sync    plugin supervisor
     |         |          |
- catalog +   gRPC bidi   plugin gRPC bidi
- docs/blobs  peers       + Lua callbacks
+ catalog +   TCP +       plugin gRPC bidi
+ docs/blobs  Noise PSK   + Lua callbacks
 ```
 
 The node runtime owns lifecycle, configuration, the single replica, peer
@@ -152,6 +161,9 @@ starting replica, sync, or plugin work. See
 - Runtime APIs do not expose Loro container IDs or library APIs to plugins.
 - Replication may carry Loro-specific version vectors, frontiers, and encoded
   blobs because that boundary is internal to oll nodes.
+- The shared sync key authenticates network membership, not an individual node.
+  Any holder can read/write the replica and impersonate `NodeIdentity`; oll has
+  no certificate or CA trust model.
 
 ## Compatibility policy
 

@@ -35,8 +35,8 @@ binary replacement, as intended.
 - `oll/document.proto`: stable catalog/document/binary identities, paths,
   directory access, full document access, oll's CRDT abstraction, and
   optimistic host commits.
-- `oll/replication.proto`: symmetric peer replication using opaque Loro update
-  and snapshot payloads.
+- `oll/replication.proto`: symmetric Noise-protected peer replication using
+  opaque Loro update batches and hash-addressed blob chunks over TCP.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
 
 Package installation, Git remote parsing, source recipes, direct release
@@ -56,9 +56,11 @@ match. This catches a newly installed CLI connecting to an older still-running
 daemon; it does not introduce version negotiation or compatibility promises.
 
 The node stage initially implements `GetStatus`, `Shutdown`, and
-`SetLogFilter`. Typed methods for replica, sync, and plugin management are added
-only in their respective implementation stages. Future CLI arguments must not
-be tunneled as generic strings to avoid extending this schema.
+`SetLogFilter`. The replica stage adds its four typed methods. The sync stage
+adds only `SynchronizePeers` and `PingPeer`; `oll psk` and `oll sync --log` are
+local operations. Plugin management methods are added only in their
+implementation stage. Future CLI arguments must not be tunneled as generic
+strings to avoid extending this schema.
 
 The replica protocol defines three explicit status states
 (`uninitialized`, `initialized_empty`, and `initialized_populated`) plus
@@ -73,9 +75,9 @@ not reused by the portable document/plugin API.
 `GetStatus` returns `NodeIdentity`, the durable one-to-one pairing of UUID-v4
 `NodeId` and human-readable `NodeName`, plus the configured listen address when
 present. The name is node-declared and globally consistent, not a receiver-local
-label or a value inferred from a connect URL. Its peer entries associate each
-configured connect URL with connection state and, after `SyncHello`, the
-optional remote `NodeIdentity` learned from that endpoint.
+label or a value inferred from a connect target. Peer rows expose direction,
+connection state, optional `oll://` target, and the optional remote identity.
+An authenticated inbound-only row has no connect target.
 
 Admin failures are direct gRPC statuses. In particular, a request whose
 descriptor fingerprint differs returns `FAILED_PRECONDITION` with a message
@@ -132,44 +134,48 @@ entries are not accepted by document operations and never receive a LoroDoc.
 CRDT commit and external side effects are not atomic. The runtime provides no
 rollback, compensation, saga, or exactly-once guarantee for external systems.
 
-## Replication stream
+## Synchronization transport
 
-The gRPC client/server distinction describes only who opened the connection.
-Both peers are replicas with identical read/write authority and run this state
-machine:
+`replication.proto` defines messages only. It deliberately has no gRPC service.
+Peers exchange them over TCP protected by
+`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s`, using the exact cleartext preface and
+Noise prologue `b"OLLSYNC\x01"`. Handshake messages and transport ciphertexts
+are each prefixed by one unsigned big-endian u16 length. Handshake messages have
+a 1024-byte limit. Transport ciphertext is at most 65535 bytes; its decrypted
+plaintext is exactly one ordinary prost-encoded `SyncEnvelope`, not another
+length-delimited protobuf record.
 
-1. Each side sends one `SyncHello` and verifies the remote `NodeIdentity`, one
-   `ReplicaId`, and exact schema hash. A contradictory known name-to-ID or
-   ID-to-name binding closes the stream, as does another mismatch; there is no
-   downgrade or receiver-local rename.
-2. Each side chooses parameters supported by the other and sends `SyncReady`.
-3. Either side may advertise catalog/document object summaries and request
-   missing updates for each object's LoroDoc.
-4. A sender starts a transfer, sends numbered chunks, and completes it. The
-   receiver verifies chunk count, size, and SHA-256 before importing it.
-5. After a successful Loro import, the receiver sends `ReplicaTransferAck` and
-   advertises its new summary when it changes.
-6. The sync stage will add separate hash-addressed streaming messages for
-   catalog-referenced binary blobs. They will be verified by SHA-256 and will
-   never be modeled as Loro objects. Those blob-transfer messages are not part
-   of the current replica-stage descriptor in `replication.proto`.
+Both peers send `SyncHello` immediately after Noise. It carries `NodeIdentity`,
+the exact descriptor hash, maximum chunk-data bytes, and either one `ReplicaId`
+or `NoLocalReplica`. `SyncReady` confirms the selected chunk size and one common
+session replica. There is no compression negotiation, session nonce, protocol
+downgrade, or application flow-control message. TCP backpressure plus bounded
+local staging provides flow control.
 
-The sender must not have more unacknowledged transfer bytes in flight than the
-receiver granted through `FlowControl`. A Loro object snapshot is only a
-transport fallback when retained update history cannot satisfy a delta request;
-it is not an authoritative state replacement. It is distinct from the tar+zstd
-oll replica snapshot documented in `docs/snapshot-format.md`. Importing
-concurrent updates still follows Loro merge semantics.
+An authenticated session carries finite inventory rounds. `SyncRoundStart`,
+numbered `SyncRoundInventory` batches, and `SyncRoundInventoryComplete` capture
+the source object/blob set. The receiver requests missing Loro update ranges and
+SHA-256-addressed blobs. Start/chunk/complete messages transfer each payload;
+typed ACK means verified private staging, while typed reject identifies a
+transfer failure without exposing content. `SyncRoundCommitted` alone means the
+fully validated inactive candidate was atomically made active. A base-generation
+CAS failure rejects and retries the round rather than publishing partial state.
 
-Every `SyncEnvelope` carries a non-empty `correlation_id`. A delta request and
-its transfer, import result, and acknowledgement reuse one ID across both peers
-so their structured logs can be aggregated into one distributed operation.
+Normal and bootstrap rounds use the same transfers. Normal rounds export updates
+after the receiver's version vector. Bootstrap exports the complete retained
+updates from an empty vector and all referenced blobs into an uninitialized
+receiver's inactive generation. Neither mode carries a Loro snapshot or an oll
+`.ollsnap` archive. Binary bytes are never modeled as a Loro object.
 
-Only the replication protocol carries Loro version vectors, frontiers, and
-encoded update/snapshot bytes. Applications and plugins use catalog/document
-revisions. Loro compatibility is determined by actual decode/import of a
-verified payload, not by a separate encoding fingerprint. `SyncHello`
-therefore has no Loro encoding-fingerprint field.
+Every `SyncEnvelope` carries a nonempty `correlation_id`. One update request and
+its chunks, staging, candidate commit, and acknowledgement reuse an ID across
+both peers. All files and the activation of one bootstrap reuse the inherited
+bootstrap correlation ID.
+
+Only this internal protocol carries Loro version vectors, frontiers, and encoded
+update batches. Applications and plugins use catalog/document revisions. Loro
+compatibility is determined by actual decode/import of a verified payload, not
+by a separate encoding fingerprint.
 
 ## Plugin stream
 

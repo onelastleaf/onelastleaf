@@ -29,6 +29,7 @@ from editing it.
 <config-root>/
   config.lua                 trusted executable configuration
   node.json                  durable NodeIdentity record
+  replica.json               durable ReplicaId record; absent while uninitialized
   run/                       0700 runtime directory when used locally
     admin.sock               transient Admin UDS
 
@@ -62,12 +63,31 @@ uses the DNS-label syntax in [architecture.md](architecture.md). Unknown fields,
 missing fields, non-string values, malformed JSON, and unsupported versions are
 configuration errors.
 
-`node_id` and `node_name` form one identity pair. The daemon does not rewrite
-either member. A user who edits either one has deliberately created a different
-pair for the next daemon start; this is not an automatic identity migration.
-Remote nodes that already learned the old binding will reject a contradictory
-pair during the later sync handshake. Editing a file while a daemon is running
-has no effect until its next start.
+`node_id` and `node_name` form one identity pair. The daemon does not rewrite a
+user edit. A user who edits either one has deliberately created a different
+pair; this is not an automatic identity migration. Remote nodes that already
+learned the old binding will reject a contradictory pair during a later sync
+handshake.
+
+The daemon watches `node.json` and the replica-stage `replica.json` with
+`notify`. An event is only a trigger: oll reopens the final path, strictly parses
+the complete file, and compares it with the last accepted identity. A valid
+atomic replacement or in-place edit is hot-loaded under one identity
+coordinator. The coordinator pauses admission of replica commits, serializes
+with bootstrap and snapshot identity transitions, advances a node-owned identity
+epoch, and publishes the new identity before future local writes or handshakes.
+Sync sessions added later bind that epoch and close themselves when it changes;
+the node identity loader does not call a placeholder sync implementation. Historical
+Loro operations and binary-version writer IDs are not rewritten.
+
+A missing, transiently partial, or invalid runtime edit leaves the last accepted
+identity active and emits a structured redacted error; a later watcher event or
+periodic final-state check may accept a corrected file. Startup has no prior
+valid identity to retain, so an invalid or missing `node.json` remains
+`EX_CONFIG`. Active-replica startup also requires a valid `replica.json`; the
+uninitialized state requires it to be absent except during a recognized durable
+identity transition. Replica-specific SQL reconciliation is defined in
+[replica-store.md](replica-store.md).
 
 ## Single-instance lock
 
@@ -130,16 +150,23 @@ writes, the deployment is incomplete rather than ambiguously initialized:
 - rerunning `oll init` detects the existing initialization material and offers
   repair through the normal replacement confirmation.
 
-If either `<config-root>/config.lua` or `<config-root>/node.json` already
-exists, `init` warns that it will replace both files and generate a new identity
-pair. It asks for `y`/`yes` or `n`/`no`; the default, EOF, and unavailable input
-are negative and leave the configuration and identity files unchanged. No
-bypass flag exists in the first implementation. A running daemon or concurrent
-`init` holds the lock and causes an immediate failure instead of a prompt.
+If `<config-root>/config.lua`, `<config-root>/node.json`, or
+`<config-root>/replica.json` already exists, `init` warns that it will replace
+the first two, generate a new node identity pair, and remove the current replica
+identity so the selected store slot is uninitialized. It does not delete the
+working tree or old SQL store. It asks for `y`/`yes` or `n`/`no`; the default,
+EOF, and unavailable input are negative and leave all three files unchanged. On
+confirmation it writes the two new initialization files first and removes an
+existing `replica.json` last; a crash before the final removal leaves an
+incomplete deployment that a repeated `init` can repair, not a silently mixed
+identity. No bypass flag exists in the first implementation. A running daemon
+or concurrent `init` holds the lock and causes an immediate failure instead of a
+prompt.
 
 This initialization sequence does not claim a replica has been created. It
-establishes only the configured empty working-tree/store slot; replica
-initialization begins in the replica stage.
+establishes only the configured empty working-tree/store slot and does not write
+`replica.json`; replica initialization creates that file with the first complete
+active replica.
 
 ## Startup
 
@@ -151,13 +178,17 @@ The foreground `oll run` sequence is:
 4. evaluate and validate `config.lua`, then apply environment and CLI runtime
    overrides;
 5. initialize the required log directory and sinks;
-6. in the replica stage, open and recover the configured store, complete any
+6. in the replica stage, open and recover the configured store and
+   `replica.json` identity transition, complete any
    pending targeted or whole-tree projection before treating those paths as
    input, then register the recursive watcher, perform the initial scan, and
    reconcile events queued during that scan;
-7. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
+7. register final-state identity watches for `node.json` and `replica.json`;
+8. in the sync stage, bind the configured sync listener and start outbound
+   connection management;
+9. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
    the node ready;
-8. when invoked by `oll start`, complete the one-use nonce pingback only after
+10. when invoked by `oll start`, complete the one-use nonce pingback only after
    the Admin service can answer requests.
 
 Configuration evaluation remains before every node service, but it is no
@@ -198,10 +229,11 @@ The accepted response is written before shutdown begins. The ordered sequence
 then is:
 
 1. stop accepting new Admin connections and new node work;
-2. close node listeners, stop accepting filesystem events, and notify owned
+2. close node listeners, including sync, stop accepting filesystem and identity
+   events, send best-effort authenticated sync close frames, and notify owned
    tasks to stop;
-3. wait for in-flight node work, including replica reconciliation and
-   projection tasks added by the replica stage, through the 10-second
+3. wait for in-flight node work, including replica reconciliation, projection,
+   sync sessions, and bootstrap tasks, through the 10-second
    graceful-shutdown deadline, then abort remaining local tasks;
 4. write and flush the final structured lifecycle events;
 5. remove the Admin socket and release the lock by dropping its descriptor;
@@ -218,8 +250,8 @@ remaining Admin work and replica-owned tasks, and Tokio blocking-task teardown
 must not add a second unbounded wait before the socket and deployment lock are
 released.
 
-The node stage has no replica, sync, or plugin work to drain yet. Later stages
-extend the owned-work set but must preserve this externally visible ordering.
+Each completed stage extends the owned-work set but must preserve this
+externally visible ordering.
 The daemon does not use an Admin "kill" method. If `oll stop` reaches its
 deadline, it reports failure and does not escalate to an operating-system signal
 on a daemon it did not spawn.
@@ -247,4 +279,4 @@ node-only stage.
 Dynamic log filtering is part of node lifecycle: `oll log set
 <target>=<level>` changes the live daemon through the typed Admin API and is
 defined in [observability.md](observability.md). It is not persisted in
-`config.lua` or `node.json`.
+`config.lua`, `node.json`, or `replica.json`.

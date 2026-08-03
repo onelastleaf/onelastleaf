@@ -48,8 +48,8 @@ Completion criteria:
 The node stage establishes the long-running daemon shell without implementing
 replica behavior:
 
-- atomic creation and durable loading of the user-owned `node.json`
-  `NodeIdentity` record;
+- atomic creation, durable loading, and final-state hot watching of the
+  user-owned `node.json` `NodeIdentity` record;
 - process lifecycle and graceful shutdown;
 - the typed Admin gRPC service over UDS;
 - detached `start` launch, single-instance enforcement, and nonce pingback;
@@ -76,12 +76,16 @@ Completion criteria:
   Admin UDS without restarting the daemon;
 - a second replica cannot be attached to the same process;
 - configuration distinguishes connection topology from node authority.
+- a valid runtime `node.json` replacement is adopted under the identity
+  coordinator, while an invalid transient edit retains the last coherent
+  identity.
 
 ## 3. Replica
 
 The replica stage implements:
 
-- persistent `ReplicaId`;
+- persistent, user-owned `<config-root>/replica.json` `ReplicaId` identity,
+  SQL transition recovery, and coordinated hot edits;
 - the catalog `LoroDoc` and its `LoroTree` namespace;
 - stable `DocumentId` values and one `LoroDoc` per text document;
 - `BinaryId` values, LWW binary metadata, and content-addressed binary blobs;
@@ -101,19 +105,31 @@ Completion criteria:
 - snapshot round trips preserve catalog, every retained document CRDT, and
   every retained binary blob;
 - malformed archives cannot escape the import staging directory.
+- first initialization and snapshot replacement recover the identity file and
+  active generation on both sides of the SQL linearization point;
+- a valid runtime `replica.json` edit updates the active SQL cache before future
+  commits use it.
 
 ## 4. Sync
 
 Sync is implemented only after the replica object model is stable. It adds:
 
-- symmetric bidi gRPC sessions;
+- symmetric TCP sessions protected by
+  `Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s` and a configured shared network key;
+- u16-length Noise transport frames carrying prost-encoded `SyncEnvelope`
+  messages, with allocation limits checked before reads;
 - exact protocol-schema fingerprint checks and actual Loro decode/import
   validation;
-- catalog and document object advertisements;
+- finite catalog/document object inventory rounds and atomic candidate
+  activation;
 - content-addressed binary-blob transfer after catalog metadata arrives;
-- per-object delta or snapshot transfer;
-- chunk validation, flow control, import acknowledgement, and reconnection;
+- per-object Loro update batches without Loro or `.ollsnap` snapshot fallback;
+- chunk validation, staging/commit acknowledgement, TCP backpressure, and
+  reconnection;
+- atomic bootstrap of an uninitialized receiver from one authenticated source;
 - durable remote `NodeIdentity` bindings and collision rejection;
+- local `oll psk` and typed sync/ping Admin operations;
+- session invalidation when the earlier node-owned identity epoch changes;
 - offline edits and concurrent multi-writer convergence tests.
 
 Completion criteria:
@@ -121,10 +137,13 @@ Completion criteria:
 - neither transport endpoint has replication authority;
 - contradictory remote name-to-ID or ID-to-name bindings are rejected;
 - independently edited nodes converge for catalog and document changes;
-- a missing document object is requested after its catalog entry arrives;
+- active state never exposes a catalog entry whose retained document object or
+  binary blob is missing;
 - interrupted transfers resume by re-advertising state, not by trusting partial
   files;
-- one correlation ID links a delta request, transfer, import, and acknowledgement
+- bootstrap has one SQL active-generation compare-and-swap linearization point
+  and recovers correctly on either side of it;
+- one correlation ID links an update request, transfer, import, and acknowledgement
   across both peers.
 
 ## 5. Plugin system
