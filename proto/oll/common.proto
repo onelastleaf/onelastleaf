@@ -38,6 +38,21 @@ message CatalogNodeId { string value = 1; }
 
 message BinaryId { string value = 1; }
 
+// Immutable publisher identity used for package, process, job, and filesystem
+// ownership. Its dotted path-safe grammar is defined in plugin-storage.md.
+message PluginId { string value = 1; }
+
+// Mutable unique human-facing selector. Changing it never changes PluginId or
+// moves PluginId-keyed storage.
+message PluginName { string value = 1; }
+
+// Host-generated canonical UUID v4 for one asynchronous plugin job.
+message PluginJobId { string value = 1; }
+
+// Plugin-generated canonical UUID v4, unique within the deployment, for one
+// verified artifact transfer and result.
+message PluginArtifactId { string value = 1; }
+
 message CatalogRevision {
   // An opaque token representing the observed catalog state of one
   // CatalogNodeId. This intentionally does not expose Loro's frontier or

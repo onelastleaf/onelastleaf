@@ -18,9 +18,9 @@ message ConfigList { repeated ConfigValue values = 1; }
 message ConfigMap { map<string, ConfigValue> entries = 1; }
 
 // The structured value format crossing the configuration boundary and used by
-// Lua, scheduler, structured results, and log fields. Generic plugin actions
-// use shell-style string argv instead. Lua adapters must reject cyclic tables
-// and values that cannot be represented here.
+// Lua, structured results, and log fields. Generic plugin actions use
+// shell-style string argv instead. Lua adapters must reject cyclic tables and
+// values that cannot be represented here.
 message ConfigValue {
   oneof kind {
     google.protobuf.NullValue null_value = 1;
@@ -44,6 +44,8 @@ message ConfigPathSegment {
   }
 }
 
+// Relative to the caller's own live per-plugin Lua result. List indexes are
+// zero-based at this language-neutral boundary.
 message ConfigPath { repeated ConfigPathSegment segments = 1; }
 
 message GetConfigRequest { ConfigPath path = 1; }

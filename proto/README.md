@@ -28,8 +28,9 @@ binary replacement, as intended.
 
 - `oll/admin.proto`: the local typed gRPC administration service, request
   context, node status, and graceful daemon shutdown.
-- `oll/common.proto`: identities, opaque catalog/document revisions, shared log
-  severity, tracing/depth metadata, and shared errors.
+- `oll/common.proto`: node, replica, document, binary, and plugin identities;
+  opaque catalog/document revisions; shared log severity, tracing/depth
+  metadata, and errors.
 - `oll/config.proto`: the language-neutral Lua/plugin value boundary and remote
   configuration-function handles.
 - `oll/document.proto`: stable catalog/document/binary identities, paths,
@@ -39,9 +40,10 @@ binary replacement, as intended.
   opaque Loro update batches and hash-addressed blob chunks over TCP.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
 
-Package installation, Git remote parsing, source recipes, direct release
-downloads, process spawning, and plugin manifests are not wire protocols and
-are therefore outside this directory.
+Package file formats, Git execution, source-recipe mechanics, archive extraction,
+process spawning, and filesystem publication are not wire protocols and remain
+in the design documents. Typed Admin requests orchestrating that work are added
+with the plugin implementation.
 
 ## Local administration
 
@@ -61,6 +63,11 @@ adds only `SynchronizePeers` and `PingPeer`; `oll psk` and `oll sync --log` are
 local operations. Plugin management methods are added only in their
 implementation stage. Future CLI arguments must not be tunneled as generic
 strings to avoid extending this schema.
+
+At the present design checkpoint, `admin.proto` is intentionally still the
+implemented pre-plugin service. The approved plugin Admin methods listed in
+`docs/admin-api.md` do not yet exist in the descriptor and must be added with
+their runtime implementation. This README does not claim otherwise.
 
 The replica protocol defines three explicit status states
 (`uninitialized`, `initialized_empty`, and `initialized_populated`) plus
@@ -181,13 +188,16 @@ by a separate encoding fingerprint.
 
 ## Plugin stream
 
-The plugin process hosts `PluginRuntime`. oll starts the process and opens
-`Connect`; once open, either endpoint can initiate messages on the same stream.
-The session starts as follows:
+oll binds an instance-owned loopback listener on port `0`, starts the plugin,
+and passes the endpoint through `OLL_PLUGIN_ENDPOINT`. oll hosts
+`PluginRuntime`; the plugin is the gRPC client and opens `Connect`. Once open,
+either endpoint can initiate messages on the same bidirectional stream. The
+session starts as follows:
 
-1. oll sends `HostHello`.
-2. The plugin validates the schema and instance identifiers, then sends
-   `PluginHello` with its actions and event subscriptions.
+1. oll sends `HostHello` with the expected PluginId, effective PluginName,
+   session and instance identifiers, schema fingerprint, and limits.
+2. The plugin validates those values, then sends `PluginHello` repeating its
+   identity and declaring actions and event subscriptions.
 3. Both endpoints send `SessionReady`. No job or host call is valid before both
    ready messages have been observed.
 
@@ -200,8 +210,13 @@ After readiness, a `Heartbeat` request is answered by a `Heartbeat` with the
 same nonce and `reply_to` set to the request message ID. oll uses a response
 deadline to detect a process that still exists but no longer services its
 protocol. Normal process exit is observed from the host-owned child-process
-handle, not by heartbeat or process-table polling. The plugin does not supply a
-reverse liveness FD.
+handle, not by heartbeat or process-table polling.
+
+The child's stdin is the parent-liveness pipe. oll keeps its write end open and
+the plugin contract requires exit after EOF. Runtime stdout/stderr go to plugin
+logs. Endpoint environment variables, stdin EOF, OS process groups, and signal
+delivery are spawn-time operating-system contracts and do not belong in
+protobuf. No one-time bearer token is added to the loopback protocol.
 
 `StartJobRequest` is asynchronous. `JobAccepted` only confirms ownership of the
 job ID. Completion is a later terminal `JobUpdate`; the host does not hold a
@@ -211,56 +226,50 @@ provided, oll applies the default 24-hour deadline.
 Generic action invocations carry an action name plus ordered shell-style UTF-8
 argv strings. Empty arguments, duplicate arguments, and values beginning with
 `-` are preserved verbatim; oll does not infer argument types. `ConfigValue`
-continues to carry recursive structured data for Lua configuration, scheduler
-inputs, structured job results, and log fields. Large binary results such as PDF
-and `.apkg` files use the artifact sub-protocol. The plugin announces the size,
+continues to carry recursive structured data for Lua configuration, structured
+job results, and log fields. Large binary results such as PDF and `.apkg` files
+use the artifact sub-protocol. The plugin announces the ID, safe filename, size,
 hash, and chunk count; waits for `ArtifactTransferAccepted`; sends zero-based
-chunks within the host's advertised size; and finishes with
-`ArtifactTransferComplete`. oll verifies the complete size and SHA-256 before
-replying with `ArtifactStored`. A terminal job update may reference only stored
-artifacts. Failed and partial transfers are discarded.
+chunks within the host's advertised limit; and finishes with
+`ArtifactTransferComplete`. oll verifies and publishes the complete artifact
+before replying with `ArtifactStored`. A terminal job update may reference only
+stored artifacts. Failed and partial transfers are discarded.
 
-Nested calls increment `call_depth`. Events caused by another event increment
-`causal_depth`, including events deferred through the scheduler. The initial
-protocol uses a maximum of 10 for both values. A receiver rejects a message over
-the negotiated limit with the matching depth error and does not execute it.
-Known recursive event patterns may be rejected before reaching the limit.
+Nested calls increment `call_depth`; derived events increment `causal_depth`.
+The initial protocol uses a maximum of 10 for both. A receiver rejects an
+over-limit message without executing it, and known cycles may be rejected
+earlier. Scheduling is deferred and has no message placeholder in this version.
 
-The optional scheduler is owned by oll's Tokio runtime. A host without it returns
-`UNSUPPORTED`. A scheduled task inherits the envelope's `task_group_id` unless
-the host assigns a new group. The first implementation does not promise fairness,
-queue bounds, quotas, or CFS-like scheduling.
-
-Lua configuration executes inside oll. `ConfigFunctionRef` is a session-scoped
-remote handle, not a serialized closure. It becomes invalid when the session or
-Lua runtime ends. Config adapters reject cyclic tables, unsupported userdata,
-threads, and functions not converted to a function handle. Reentrant calls are
-allowed: after a nested call returns, oll must re-read and validate relevant
-state instead of trusting state captured before entering Lua.
+Lua configuration executes inside oll's one LuaJIT state. The caller's
+PluginId selects its live per-plugin file on each top-level read.
+`ConfigFunctionRef` uses the active `session_id + function_id` to identify a
+closure in that shared registry; it does not serialize a closure or carry a Lua
+runtime generation. Session teardown invalidates its handles. Config adapters
+reject cyclic tables, unsupported userdata, threads, and unconverted functions.
+After a reentrant call returns, oll re-reads and validates relevant host state.
 
 Logs are structured `LogRecord` messages. `PluginEnvelope.trace` supplies the
 correlation, parent-call, causal, task, and task-group fields used by log
 aggregation.
 
-Cancellation does not imply rollback. A queued scheduler task can be removed,
-but an executing job is not cooperatively cancelled over RPC. `stop`, `kill`,
-`killjob`, and timeout all send the same graceful `ShutdownRequest`; there is no
-force-kill RPC or distinct public kill semantic. An unresponsive process is
-escalated through `SIGTERM` and `SIGKILL` as enforcement of that request. The
-parent-liveness FD is a spawn-time OS contract: oll keeps it open and the plugin
-exits after EOF if oll dies. Neither signal delivery nor inherited FDs belong in
-protobuf.
+Job stop and deadline expiry send `CancelJobRequest`; the plugin ceases only
+that job and replies `CancelJobAcknowledged`. This does not change process
+desired state, stop another job, or terminate the process. Cancellation does
+not imply rollback of completed writes or external effects.
 
-Desired and observed plugin process states belong to the local supervisor, not
-this plugin wire protocol. Plugin-level stop and kill both persist desired
-`stopped`; job stop, killjob, timeout, crash, and protocol failure leave desired
-state unchanged. A desired-running plugin is therefore restarted after the
-current instance exits, while a desired-stopped plugin is not.
+Process-scoped stop sends `ShutdownRequest`. If necessary, the supervisor
+enforces that request through the documented Unix process-group signals, which
+remain outside protobuf. Desired and observed process states belong to local
+Admin/supervisor state rather than this stream. Crash or protocol failure leaves
+desired state unchanged; an explicit plugin stop persists `stopped`.
 
 Plugins are trusted. This protocol intentionally has no permission grants,
 signatures, marketplace identity, or document capability tokens. Session and
 instance identifiers prevent accidental cross-wiring; they are not a sandbox or
 authentication mechanism.
+
+Remote plugin invocation, input-file upload, and scheduling are deferred and
+have no version-1 messages.
 
 ## Validation
 

@@ -7,8 +7,9 @@ import "oll/common.proto";
 import "oll/config.proto";
 import "oll/document.proto";
 
-// The plugin hosts this service. oll starts the process, connects as the gRPC
-// transport client, and all calls in either direction share this one stream.
+// oll hosts this service on an instance-owned loopback listener. The spawned
+// plugin receives OLL_PLUGIN_ENDPOINT, connects as the gRPC client, and all
+// calls in either direction share this one stream.
 service PluginRuntime {
   rpc Connect(stream PluginEnvelope) returns (stream PluginEnvelope);
 }
@@ -21,6 +22,8 @@ message HostHello {
   uint32 maximum_call_depth = 5;
   uint32 maximum_causal_depth = 6;
   uint64 maximum_artifact_chunk_bytes = 7;
+  PluginId plugin_id = 8;
+  PluginName plugin_name = 9;
 }
 
 message ActionDescriptor {
@@ -43,11 +46,13 @@ message EventSubscription {
 }
 
 message PluginHello {
-  string plugin_name = 1;
-  string plugin_version = 2;
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
   bytes protocol_schema_sha256 = 3;
   repeated ActionDescriptor actions = 4;
   repeated EventSubscription subscriptions = 5;
+  // Informational build string only; package/release selection never parses it.
+  string plugin_version = 6;
 }
 
 message SessionReady {}
@@ -92,23 +97,16 @@ message HostEvent {
 
 message EventInvocation { HostEvent event = 1; }
 
-message ScheduledInvocation {
-  string scheduled_task_id = 1;
-  string callback = 2;
-  ConfigValue input = 3;
-}
-
 message StartJobRequest {
-  string job_id = 1;
+  PluginJobId job_id = 1;
   optional google.protobuf.Timestamp deadline = 2;
   oneof invocation {
     ActionInvocation action = 3;
     EventInvocation event = 4;
-    ScheduledInvocation scheduled = 5;
   }
 }
 
-message JobAccepted { string job_id = 1; }
+message JobAccepted { PluginJobId job_id = 1; }
 
 enum JobState {
   JOB_STATE_UNSPECIFIED = 0;
@@ -118,7 +116,7 @@ enum JobState {
 }
 
 message JobUpdate {
-  string job_id = 1;
+  PluginJobId job_id = 1;
   JobState state = 2;
   optional double progress = 3;
   optional string status_message = 4;
@@ -129,7 +127,7 @@ message JobUpdate {
 }
 
 message ArtifactDescriptor {
-  string artifact_id = 1;
+  PluginArtifactId artifact_id = 1;
   string file_name = 2;
   string media_type = 3;
   uint64 size_bytes = 4;
@@ -137,35 +135,35 @@ message ArtifactDescriptor {
 }
 
 message ArtifactTransferStart {
-  string job_id = 1;
+  PluginJobId job_id = 1;
   ArtifactDescriptor artifact = 2;
   uint32 chunk_count = 3;
 }
 
-message ArtifactTransferAccepted { string artifact_id = 1; }
+message ArtifactTransferAccepted { PluginArtifactId artifact_id = 1; }
 
 message ArtifactTransferChunk {
-  string artifact_id = 1;
+  PluginArtifactId artifact_id = 1;
   uint32 chunk_index = 2;
   bytes data = 3;
 }
 
-message ArtifactTransferComplete { string artifact_id = 1; }
+message ArtifactTransferComplete { PluginArtifactId artifact_id = 1; }
 
-message ArtifactStored { string artifact_id = 1; }
+message ArtifactStored { PluginArtifactId artifact_id = 1; }
 
-message ScheduleTaskRequest {
-  string task_id = 1;
-  string callback = 2;
-  ConfigValue input = 3;
-  google.protobuf.Timestamp not_before = 4;
+enum JobCancellationReason {
+  JOB_CANCELLATION_REASON_UNSPECIFIED = 0;
+  JOB_CANCELLATION_REASON_USER_REQUEST = 1;
+  JOB_CANCELLATION_REASON_DEADLINE = 2;
 }
 
-message ScheduleTaskResponse { string task_id = 1; }
+message CancelJobRequest {
+  PluginJobId job_id = 1;
+  JobCancellationReason reason = 2;
+}
 
-message CancelScheduledTaskRequest { string task_id = 1; }
-
-message CancelScheduledTaskResponse { bool cancelled = 1; }
+message CancelJobAcknowledged { PluginJobId job_id = 1; }
 
 message HostCallRequest {
   oneof call {
@@ -176,8 +174,6 @@ message HostCallRequest {
     CommitDocumentsRequest commit_documents = 5;
     GetConfigRequest get_config = 6;
     InvokeConfigFunctionRequest invoke_config_function = 7;
-    ScheduleTaskRequest schedule_task = 8;
-    CancelScheduledTaskRequest cancel_scheduled_task = 9;
   }
 }
 
@@ -190,8 +186,6 @@ message HostCallResponse {
     CommitDocumentsResponse commit_documents = 5;
     GetConfigResponse get_config = 6;
     InvokeConfigFunctionResponse invoke_config_function = 7;
-    ScheduleTaskResponse schedule_task = 8;
-    CancelScheduledTaskResponse cancel_scheduled_task = 9;
     ProtocolError error = 15;
   }
 }
@@ -210,7 +204,7 @@ message ShutdownRequest {
   string reason = 1;
   // The plugin should acknowledge and exit before this deadline. Host signal
   // escalation after the deadline is enforcement of this same graceful request,
-  // not a separate kill operation.
+  // not another public operation.
   google.protobuf.Timestamp grace_period_deadline = 2;
 }
 
@@ -218,8 +212,7 @@ message ShutdownAcknowledged {}
 
 // message_id is unique per sender within a session. Direct responses set
 // reply_to. New nested calls set parent_call_id and increment call_depth.
-// Derived events increment causal_depth even when execution is deferred through
-// the scheduler.
+// Derived events increment causal_depth.
 message PluginEnvelope {
   uint64 message_id = 1;
   optional uint64 reply_to = 2;
@@ -246,5 +239,7 @@ message PluginEnvelope {
     ArtifactTransferChunk artifact_chunk = 25;
     ArtifactTransferComplete artifact_complete = 26;
     ArtifactStored artifact_stored = 27;
+    CancelJobRequest cancel_job = 28;
+    CancelJobAcknowledged cancel_job_acknowledged = 29;
   }
 }
