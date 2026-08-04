@@ -29,8 +29,8 @@ Consequences:
 - Importing a snapshot never adds a second replica to a running daemon.
 - Users who need multiple replicas MUST isolate multiple oll deployments using
   an external mechanism such as containers. oll itself does not manage them.
-- Plugins, scheduler queues, jobs, logs, and Lua configuration all belong to the
-  daemon's single replica.
+- Plugins, jobs, logs, and Lua configuration all belong to the daemon's single
+  deployment. They are local node state and are not replicated replica data.
 
 The executable exposes administrative CLI commands and one daemon entry point,
 `oll run`, but this does not make it a multi-instance manager. Process role is
@@ -128,7 +128,7 @@ Clap CLI / daemon entry
       /      |      \
  replica    sync    plugin supervisor
     |         |          |
- catalog +   TCP +       plugin gRPC bidi
+ catalog +   TCP +       oll-hosted plugin gRPC bidi
  docs/blobs  Noise PSK   + Lua callbacks
 ```
 

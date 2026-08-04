@@ -2,13 +2,20 @@
 
 ## Boundary and trust
 
-Plugins are trusted independent processes. They may read or write any document,
-inspect the complete directory tree, use oll's abstract CRDT API, access their
-configuration, and perform external side effects.
+Plugins are trusted independent processes. They may read or write documents,
+inspect the complete directory tree, use oll's abstract CRDT API, evaluate their
+own user configuration, emit artifacts, and perform external side effects.
 
-There is no permission sandbox, signature requirement, official marketplace, or
-host intervention in publication. A plugin repository is installed directly
-from a `GitRemote` accepted by the package contract.
+There is no permission sandbox, publisher signature requirement, official
+marketplace, or language-specific ABI. A plugin may be implemented in any
+language with a gRPC client capable of using the protobuf contract. Trust does
+not waive validation at the process, protobuf, revision, path, or artifact
+boundary.
+
+The first implementation is local-only. The local CLI may invoke a plugin
+running under the same daemon. Remote plugin invocation and a separate input-file
+upload protocol are deferred; no unapproved remote authorization or routing
+contract is implied by the local API.
 
 ## Target workflows
 
@@ -26,205 +33,233 @@ The API is designed to support at least these concrete workloads:
 
 Whole-replica search is intentionally local when every node has a complete
 replica. It does not need a server plugin merely to run a grep-like operation.
-Markdown linting is not a planned host responsibility.
 
-## Packaging
+## Package and state ownership
 
-The package manager reads publisher-owned `oll.toml` and `oll.json` files and
-the user-owned `<config-root>/plugins.lua` declaration module. Its complete
-source recipe, direct-release-download, validation, mutation, and diagnostic
-contract is defined in [plugin-packaging.md](plugin-packaging.md). Hosting
-platform APIs are not part of that contract.
+Publisher manifests, source recipes, release indexes, installation declarations,
+typed masks, update rules, and reconciliation are defined in
+[plugin-packaging.md](plugin-packaging.md). Package generations, SQL authority,
+jobs, artifact publication, removal, and crash recovery are defined in
+[plugin-storage.md](plugin-storage.md).
 
-Plugins may use any implementation language that can implement the protobuf
-gRPC service. oll does not load a plugin ABI, inject an SDK, or require a Rust
-dynamic library. Plugin configuration reuses the embedded LuaJIT runtime
-established by [configuration.md](configuration.md); other Lua implementations
-are not supported by the first version. The executable `config.lua` contract
-does not relax the literal-only, safely rewritable `plugins.lua` contract.
+The package manager reads publisher-owned `oll.toml` and `oll-release.json`, the
+user/CLI-owned `<config-root>/plugins.lua`, and an optional typed
+`<config-root>/plugin-masks/<plugin-id>.toml`. Per-plugin runtime configuration
+is a separate live Lua file at `<config-root>/plugins/<plugin-id>.lua`.
+`plugins.lua` contains no process desired state.
 
-## Process lifecycle
+One immutable `PluginId` owns every package, process, job, and filesystem path.
+The effective `PluginName` is a unique mutable selector and display value; a
+typed mask may change it without changing identity or moving storage to a
+name-derived path.
 
-The plugin supervisor is an internal node-runtime component, not an external
-service. It owns one event-driven controller and at most one direct child
-process for each installed plugin. There is no automatic discovery or adoption
-of externally started plugin processes. The plugin hosts
-`PluginRuntime.Connect`, and oll is the transport client.
+## Process supervisor
+
+The plugin supervisor is an internal node-runtime component. It owns one
+event-driven controller and at most one direct child process for each installed
+PluginId. It never discovers or adopts externally started processes.
 
 Each installed plugin has two independent state axes:
 
-- desired state is persistently `running` or `stopped`; the existing term
-  `enabled` means desired `running`;
+- SQL-authoritative desired state is persistently `running` or `stopped`;
 - observed process state is transiently `starting`, `ready`, `stopping`,
-  `exited`, or `failed` and is reconstructed after every daemon start.
+  `exited`, or `failed` and is reconstructed after daemon start.
 
-A newly installed plugin starts with desired `stopped`. `plugin start` first
-persists desired `running`; plugin-level `stop` and `kill` first persist desired
-`stopped`; `plugin restart` persists desired `running` and requests one process
-recycle. If persisting the desired-state change fails, oll MUST NOT report
-success or perform the corresponding process transition. Start, stop, and kill
-are idempotent. Restart starts an absent process and never creates two
-instances.
+A newly installed plugin starts desired-stopped. `plugin start` atomically sets
+desired-running; `plugin stop` atomically sets desired-stopped and reconciles the
+process; `plugin restart` sets or retains desired-running and records one
+edge-triggered recycle sequence. Start and stop are short and idempotent.
+Restart never creates overlapping instances. Their Admin responses acknowledge
+the durable state transition, not eventual readiness or exit.
 
-Only plugin lifecycle commands change desired state. A plugin crash, startup or
-session failure, heartbeat timeout, job timeout, `job stop`, or `killjob`
-terminates the current instance without disabling the plugin. After that
-instance exits, a desired-running plugin is restarted with bounded backoff; a
-desired-stopped plugin remains exited. An explicit plugin-level stop or kill
-cancels pending restart timers. Clean daemon shutdown terminates child processes
-without changing their desired states, so desired-running plugins start again
-on the next daemon start. Plugin calls do not implicitly start stopped plugins.
+Only these lifecycle commands change desired state. Package update, a plugin
+crash, startup/session/heartbeat failure, a failed job, job cancellation, and a
+job timeout leave it unchanged. A desired-running plugin that exits unexpectedly
+restarts with bounded backoff; a desired-stopped plugin remains exited. Clean
+daemon shutdown stops children without changing desired state.
 
-The controller reconciles desired and observed state after every lifecycle
-command or runtime event:
+The controller owns the direct child handle and waits asynchronously for its
+exit. It must not poll the process table. The configured runtime command remains
+the foreground leader of its own Unix process group and must not daemonize,
+detach, or delegate the session to an untracked process.
 
-| Desired | Observed | Required action |
-| --- | --- | --- |
-| `running` | `exited` | Start immediately or after the active restart backoff. |
-| `running` | `failed` | Finish teardown, then restart after backoff. |
-| `running` | `stopping` | Wait for child exit, then restart without overlapping instances. |
-| `running` | `starting` or `ready` | Do not start another instance. |
-| `stopped` | `starting` or `ready` | Begin the graceful shutdown sequence. |
-| `stopped` | `stopping` or `failed` | Finish teardown and do not restart. |
-| `stopped` | `exited` | Do not restart. |
+## Spawn and parent liveness
 
-The controller owns the spawned process handle and asynchronously waits for its
-exit through the operating system (`Child::wait` in the Tokio implementation).
-It also reacts to `SessionReady`, stream closure, lifecycle commands, and
-startup and heartbeat deadlines. It MUST NOT poll the process table, and the
-plugin does not provide a reverse liveness FD. A reverse FD would depend on
-plugin cooperation and could remain open in an inherited descendant even after
-the main plugin process exited.
+For each process instance, oll first binds a private loopback TCP listener on
+port `0`, retains the bound listener, and then spawns the selected package
+generation. The plugin is the gRPC client and oll hosts
+`PluginRuntime.Connect`. The endpoint is supplied only as:
 
-The executable named by a plugin installation MUST remain the foreground plugin
-host process. It MUST NOT daemonize, detach, or exit after delegating the gRPC
-service to an untracked process. This process contract is independent of the
-plugin's implementation language. oll can always observe and reap the direct
-child; protocol cooperation is required only for readiness, heartbeat, and
-graceful shutdown.
+```text
+OLL_PLUGIN_ENDPOINT=http://127.0.0.1:<kernel-selected-port>
+```
 
-At spawn time oll passes the configured endpoint and a parent-liveness file
-descriptor. oll keeps the descriptor open. If oll crashes, the kernel closes it
-and the plugin reads EOF and exits. This one-way pipe lets the plugin observe
-host death; it is not needed for oll to observe child exit.
+The exact loopback address may be the supported platform's IPv6 equivalent.
+The endpoint is neither a public listener nor a Unix socket. The first protocol
+does not add a bearer token: the listener is instance-owned, loopback-only, and
+the local plugin trust model is explicit.
 
-The protobuf session handshake is:
+The child's stdin is reserved as a parent-liveness pipe. oll keeps the write end
+open for the instance and never sends application data through it. The plugin
+contract requires continuously observing stdin and exiting promptly on EOF, so
+a kernel close after host death gives the plugin a liveness signal. oll cannot
+prove that third-party code obeys this contract after oll itself has crashed;
+it trusts the plugin author. During an orderly shutdown oll still uses the
+protobuf shutdown request and signal enforcement described below.
 
-1. oll sends `HostHello` with `NodeIdentity`, session/instance IDs, exact schema
-   hash, depth limits, and artifact chunk limit;
-2. the plugin validates it and sends `PluginHello` with identity, actions, and
-   event subscriptions;
-3. both sides send `SessionReady`;
+Plugin stdout and stderr are piped into `plugin.log`; they are not the liveness
+channel and are not returned as job results. Source-recipe processes are a
+separate package-install boundary and receive closed stdin as defined in
+`plugin-packaging.md`.
+
+## Runtime session
+
+After the plugin connects, the encrypted-localhost assumption is not invented:
+the first local transport is ordinary plaintext HTTP/2 gRPC over loopback. The
+instance-owned listener determines the expected PluginId and instance ID.
+Session and instance identifiers prevent accidental cross-wiring; they are not
+authentication credentials.
+
+The application handshake is:
+
+1. oll sends `HostHello` with `NodeIdentity`, the expected PluginId and effective
+   PluginName, session/instance IDs, exact schema fingerprint, depth limits, and
+   artifact chunk limit;
+2. the plugin validates it and sends `PluginHello` repeating the expected
+   identity and declaring actions and event subscriptions;
+3. both endpoints send `SessionReady`;
 4. jobs and host calls are legal only after both ready messages were observed.
 
-Session and instance IDs prevent accidental cross-wiring; plugins are trusted,
-so these IDs are not authentication.
+The process becomes observed-ready only after step 3. Identity, fingerprint, or
+handshake mismatch, startup deadline expiry, unexpected stream closure, or a
+missed heartbeat changes the instance to failed and begins process teardown.
+The supervisor then reconciles against unchanged desired state.
 
-The plugin reaches observed `ready` only after both `SessionReady` messages.
-Failure to become ready before the startup deadline, unexpected stream closure,
-or a missed heartbeat deadline changes observed state to `failed`, begins the
-same shutdown enforcement sequence when a process remains, and then reconciles
-against desired state. Restart attempts MUST use delayed, bounded backoff rather
-than a tight spawn loop; exact timing is local runtime policy, not protobuf.
+All calls share the one bidirectional stream. `PluginEnvelope.message_id` is
+nonzero and unique per sender within the session; a direct response sets
+`reply_to`. The stream reader keeps dispatching while requests are pending so a
+plugin -> host -> Lua -> plugin call cannot deadlock the reader.
 
-## Multiplexed stream
+After readiness oll may send a `Heartbeat`. The plugin replies with the same
+nonce and sets `reply_to`. Heartbeat detects a live but protocol-unresponsive
+process; normal exit is detected from the owned child handle.
 
-All runtime calls share one bidi stream. `PluginEnvelope.message_id` is non-zero
-and unique per sender in the session; direct responses set `reply_to`.
+Every envelope carries correlation, parent-call, call-depth, causal-depth, task,
+and task-group context. Initial maximum call and causal depths are 10. Messages
+over a limit are rejected before execution, and known event cycles may be
+rejected earlier. There is no scheduler in the first implementation.
 
-After readiness, oll may send `Heartbeat` when it needs to test protocol
-responsiveness. The plugin replies with a `Heartbeat` carrying the same nonce
-and sets `reply_to` to the request message ID. A missing response before the
-host deadline detects a live-but-unresponsive process; it is not used to detect
-normal process exit. Stream closure and the operating-system child-exit event
-remain immediate event sources.
+## Process shutdown
 
-The stream reader must keep dispatching while calls are outstanding. Waiting for
-a response in the reader task would prevent nested plugin -> host -> Lua ->
-plugin calls.
+Process-scoped stop, restart, removal, daemon shutdown, and session-fatal
+stream/framing/identity/heartbeat failure begin with one `ShutdownRequest`.
+When the child remains alive past the grace period, oll sends `SIGTERM` to the
+process group and waits within the node's single absolute shutdown deadline
+where applicable, then sends `SIGKILL` and reaps it. Signals enforce the
+graceful request; there is no separate public force-termination operation for a
+process or job.
 
-Every envelope carries correlation, parent-call, call-depth, causal-depth,
-task, and task-group context. The initial maximum call and causal depths are 10.
-Messages above the limit are rejected and not executed. Known event cycles may
-be rejected earlier.
+Process shutdown is distinct from job cancellation. A job stop or timeout must
+not send `ShutdownRequest`, change desired state, signal the process, or disturb
+another job merely to enforce cancellation.
 
 ## Jobs
 
-An oll invocation is asynchronous:
+A local invocation is asynchronous:
 
 ```text
 StartJobRequest -> JobAccepted -> JobUpdate... -> terminal JobUpdate
 ```
 
-Acceptance does not mean completion. Without an explicit deadline the host uses
-24 hours. A generic action invocation carries an action name and shell-style
-UTF-8 argv strings; oll preserves order, duplicates, empty strings, and leading
-`-` values without type inference. Small structured results and configuration,
-scheduler, and log fields use recursive `ConfigValue`; PDF, `.apkg`, and other
-large results use the chunked artifact protocol with declared size and SHA-256.
+`StartPluginJob` durably admits the normalized operation before sending
+`StartJobRequest`, and its Admin call waits only for `JobAccepted` or a terminal
+admission failure. The same nonempty operation ID and same normalized domain
+payload return the same JobId; the same operation ID with another payload is
+`ALREADY_EXISTS`. Protobuf encoding bytes are never the equality definition.
 
-An executing job is not cooperatively cancelled over RPC. `stop`, `kill`,
-`killjob`, and timeout all begin process termination the same way: oll sends one
-graceful `ShutdownRequest`. There is no separate force-kill request or command
-mode, and `kill` does not skip graceful shutdown. This shared termination
-mechanism is separate from desired state: plugin-level `stop` and `kill` both
-persist desired `stopped`, while `job stop`, `killjob`, timeout, and failure
-leave desired state unchanged.
+One plugin process may own multiple concurrent jobs. An action carries its name
+and ordered shell-style UTF-8 argv strings. Empty strings, duplicates, and
+leading `-` values are preserved without type inference. Without an explicit
+deadline the host uses 24 hours.
 
-If the plugin does not exit, oll enforces that same request with `SIGTERM`, waits
-through the configured OS-signal grace period, and finally uses `SIGKILL`. These
-signals are escalation mechanics for an unresponsive process, not distinct
-management operations. Termination does not roll back CRDT writes or external
-side effects.
+`job stop` and deadline expiry send a job-scoped `CancelJobRequest`. The plugin
+ceases only that job and returns `CancelJobAcknowledged`; the host then records
+`cancelled` or `timed_out` according to the trigger. A rejection, protocol
+violation, or missing acknowledgement fails that job without killing the plugin.
+Cancellation cannot roll back completed replica writes or external effects.
+
+If the plugin process, session, or daemon ends while a job is nonterminal, the
+host records that job as failed. Daemon startup marks every job left nonterminal
+by the preceding process failed before spawning plugins. A retry with the same
+operation ID returns that original terminal job; a deliberate new execution
+uses a new operation ID.
+
+Small structured job results use `ConfigValue`. PDF, `.apkg`, and other file
+results use the verified chunked artifact protocol and become downloadable only
+after host publication. Runtime stdout/stderr are logs, not a result channel.
 
 ## Host document API
 
 Plugins can request complete document content, list directories, read the whole
-tree, read oll CRDT values, and submit mutations.
+tree, read abstract oll CRDT values, and submit mutations. Loro container IDs,
+frontiers, version vectors, and update bytes never enter this API.
 
-A long-running plugin submits the explicit revision pair relevant to the state
-it relied on: `DocumentId` plus `DocumentRevision` for body or abstract-CRDT
-writes, and `CatalogNodeId` plus `CatalogRevision` for a move, rename, delete,
-or metadata change. A conservative operation can include both pairs. If another
-node or client changed a guarded target before commit, oll returns
-`REVISION_CONFLICT` without applying any requested mutation. There is no lock
-wait and no deadlock path.
+A long-running plugin submits the revision pair relevant to the state it relied
+on: `DocumentId` plus `DocumentRevision` for body or abstract-CRDT writes, and
+`CatalogNodeId` plus `CatalogRevision` for a move, rename, delete, or metadata
+change. A conservative operation can include both. If guarded state changed,
+oll returns `REVISION_CONFLICT` without applying the mutation.
 
-## Lua configuration
+## Live Lua configuration
 
-Lua runs inside oll, not in every plugin language. Values crossing the stream
-use `ConfigValue`.
+Lua runs inside oll rather than inside every plugin language. A plugin can read
+only its own `<config-root>/plugins/<plugin-id>.lua` through the host config API.
+The file is reopened and evaluated from current disk contents for each top-level
+configuration request; startup does not freeze all per-plugin values in memory.
+The file may use the controlled config-root `require` mechanism, including to
+compose `config.lua` or `plugins.lua`, but the plugin has no API that names and
+reads arbitrary other configuration files.
 
-A closure is stored in oll's Lua registry and represented remotely by a
-session-scoped `ConfigFunctionRef`. The plugin invokes the reference through a
-host call; oll resolves the registry entry, converts arguments, executes it on
-the Lua-owning thread, and converts results back to protobuf values. Closure
-bytecode and upvalues are never serialized.
+All configuration evaluations use the daemon's one LuaJIT state and registry.
+A returned closure is stored in that registry and represented by
+`ConfigFunctionRef { session_id, function_id }`. No Lua bytecode or upvalue is
+serialized, and no runtime-generation field is needed. The host resolves a
+handle only for the exact active plugin session and removes that session's
+registry entries when it ends. A new evaluation may create new function IDs;
+existing session handles continue to identify their original closures.
 
-Config adapters reject cyclic tables, unsupported userdata, threads, and values
-outside the schema. Function handles expire with their configuration runtime.
-Hot reload requires a runtime generation in the handle, and dynamically created
-handles require a release/lease mechanism before those features are added.
+Adapters reject cyclic tables, unsupported userdata, threads, and values outside
+`ConfigValue`. Synchronous same-thread Lua reentry requires that no Rust mutable
+borrow, Lua stack reference, or assumed host state survive an outward plugin
+call; after nested execution returns, relevant host state is read and validated
+again.
 
-Synchronous same-thread Lua reentry requires a dedicated implementation proof.
-No Rust mutable borrow, Lua stack reference, or assumed host state may be held
-across an outward plugin call. After nested execution returns, host state must be
-read and validated again.
+## Artifacts and logs
 
-## Scheduler and observability
+For an artifact, the plugin declares one ID, safe filename, media type, size,
+SHA-256, and chunk count; waits for host acceptance; sends contiguous bounded
+chunks; and completes the transfer. The host verifies all declared properties,
+publishes with no-replace semantics under the startup-resolved artifact download
+directory, stores metadata, and only then returns `ArtifactStored`. A terminal
+job may reference only stored artifacts. The full recovery and collision rules
+are in `plugin-storage.md`.
 
-An optional Tokio-owned queue implements `schedule_task`. Child tasks inherit
-the current logical task group unless oll assigns another. The first version
-does not promise fairness, quotas, queue bounds, or CFS-like behavior.
-
-Plugins emit structured `LogRecord` messages. oll aggregates them using the
-envelope's correlation, call, causal, task, and group identifiers. Plugin output
-is normalized and routed according to [observability.md](observability.md).
-Additional metrics or tracing systems are not required for the first version.
+Plugins emit structured `LogRecord` messages. oll combines them with the
+envelope correlation context. Runtime stdout/stderr are wrapped into the same
+structured sink, while package build output stays in its per-install build log.
+Routing, redaction, and `oll plugin log` are defined in
+[observability.md](observability.md).
 
 ## External side effects
 
-oll cannot atomically combine a CRDT commit with AnkiWeb, a blog deployment, an
-AI provider, or another external service. Plugins own retry, idempotency, and
-partial-failure behavior for those systems. oll does not pretend to compensate
-operations it cannot understand or reverse.
+oll cannot atomically combine a replica commit with AnkiWeb, a blog deployment,
+an AI provider, or another external service. Plugins own retry, idempotency, and
+partial-failure behavior for those systems. oll does not claim to compensate an
+operation it cannot understand or reverse.
+
+## Deferred work
+
+The first plugin stage does not implement a scheduler, scheduled callbacks,
+fairness, quotas, a remote plugin-call transport, or an independent file-upload
+protocol. These are deferred capabilities, not unsupported variants hidden in
+the initial protobuf contract.

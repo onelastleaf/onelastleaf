@@ -79,11 +79,11 @@ decision that also updates the architecture documentation.
 - Treat observability as part of correctness. New operations need structured
   start/success/failure events, redaction, and correlation propagation according
   to `docs/observability.md`.
-- Never drop correlation context across RPC, sync, plugin, scheduler, or Tokio
-  task boundaries.
-- Do not introduce separate plugin stop and kill semantics. `stop`, `kill`,
-  `killjob`, and timeout all begin with the same graceful `ShutdownRequest`;
-  signals only enforce that request when the process does not exit.
+- Never drop correlation context across RPC, sync, plugin, or Tokio task
+  boundaries.
+- Plugin stop is process-scoped and begins with `ShutdownRequest`; signals only
+  enforce that request when the process does not exit. Job stop and job timeout
+  use the job-scoped `CancelJobRequest` and must not terminate unrelated jobs.
 
 ## Commit discipline
 

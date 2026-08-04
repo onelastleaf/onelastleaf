@@ -2,13 +2,15 @@
 
 ## Boundaries
 
-oll has two Lua files with deliberately different source contracts, plus two
-strict JSON identity records:
+oll has Lua sources with deliberately different contracts, typed plugin masks,
+and two strict JSON identity records:
 
 | File | Contract | Mutation owner |
 | --- | --- | --- |
 | `<config-root>/config.lua` | trusted executable LuaJIT module returning the effective daemon configuration | user; `oll init` creates the initial file |
 | `<config-root>/plugins.lua` | literal-only data module returning desired plugin installations | user and oll plugin installer |
+| `<config-root>/plugins/<plugin-id>.lua` | trusted live per-plugin values and closures | user only |
+| `<config-root>/plugin-masks/<plugin-id>.toml` | strict typed publisher-manifest overrides | user only |
 | `<config-root>/node.json` | strict versioned `NodeId`/`NodeName` record | user; `oll init` creates the initial file |
 | `<config-root>/replica.json` | strict versioned `ReplicaId` record | user; replica initialization, bootstrap, or snapshot import creates it |
 
@@ -21,6 +23,13 @@ configuration assignments and does not read named Lua globals as configuration.
 restricted syntax, stable serialization, locking, and atomic replacement rules
 in [plugin-packaging.md](plugin-packaging.md). Executing `config.lua` does not
 weaken those rules.
+
+A per-plugin Lua file is executable trusted configuration, but it is not part of
+the daemon's returned node schema and oll never rewrites it. Its PluginId-derived
+path, live-read behavior, function handles, and access boundary are defined in
+[plugin-system.md](plugin-system.md). A typed mask is TOML rather than Lua and is
+merged only through the field rules in
+[plugin-packaging.md](plugin-packaging.md).
 
 `node.json` is not executable Lua configuration, but it remains user-owned
 deployment configuration. Its schema, UUID-v4 validation, initialization, and
@@ -47,6 +56,7 @@ return {
             path = "/home/user/.local/share/oll/stores/<node-id>/replica.sqlite3",
         },
         log_dir = "/home/user/.local/state/oll",
+        artifact_download_dir = "/home/user/Downloads/oll",
         listen = "0.0.0.0:17384",
         connect = {
             "oll://node-a.example.com:17384",
@@ -67,6 +77,7 @@ required table with these fields:
 | `replica_root` | string | Required non-empty UTF-8 OS path. |
 | `replica_store` | table | Required tagged SQLite or PostgreSQL store configuration. |
 | `log_dir` | string | Required non-empty UTF-8 OS path. |
+| `artifact_download_dir` | string | Required non-empty UTF-8 OS path used for verified plugin artifact publication. |
 | `listen` | string or `nil` | At most one local bind socket address with an explicit nonzero port. |
 | `connect` | array of strings | Zero or more `oll://host:port` targets in declared order; the port is required. |
 | `network_key` | raw Lua byte string or `nil` | Required only by an effective nonempty sync topology; no text normalization is applied. |
@@ -109,12 +120,17 @@ ownership. `NodeIdentity` and `ReplicaId` are also not Lua configuration: they
 reside in the separate user-editable `node.json` and `replica.json` records
 rather than being inferred from Lua globals or a returned table.
 
+`artifact_download_dir` is loaded only during daemon startup. Before plugin work
+is admitted, its resolved value is stored in the deployment-local SQL plugin
+state; artifact publication reads that cached authority. Editing `config.lua`
+does not hot-reload the directory and takes effect after the next daemon start.
+
 oll converts the validated node table into a Rust-owned `ResolvedNodeConfig`
-before starting the node runtime. Node, replica, and sync code consume this
-typed value and do not read `mlua::Table` values directly. The Lua state and its
-returned configuration table remain owned by the configuration component for
-the daemon lifetime so later plugin configuration closures can be registered
-without rebuilding another configuration model.
+before starting the node runtime. Node, replica, sync, and plugin code consume
+this typed value and do not read `mlua::Table` values directly. The Lua state
+and its returned configuration table remain owned by the configuration
+component for the daemon lifetime so later plugin configuration closures can be
+registered without rebuilding another configuration model.
 
 ## Evaluation
 
@@ -196,14 +212,53 @@ process-ownership guard, not a node service. Ordinary Lua and schema failures
 before file logging is available are written to stderr. Code that never returns
 does not produce an execution-limit error because no such limit exists.
 
+## Per-plugin Lua evaluation
+
+The daemon uses the same LuaJIT state and registry for `config.lua`, controlled
+modules, per-plugin files, and their closures. It does not create a fresh Lua
+runtime for each plugin request and therefore does not add a runtime generation
+to a function handle.
+
+For every top-level plugin configuration read, oll resolves the caller's
+immutable PluginId to `<config-root>/plugins/<plugin-id>.lua`, reopens that final
+path, applies the same symlink-resolved config-root containment rule, evaluates
+its current source, and converts the requested value. The file is the only
+per-plugin configuration authority; its values are not copied into
+SQL or loaded eagerly at daemon startup. A missing file is equivalent to no
+plugin configuration only when the requesting operation permits an absent
+value; malformed source or an invalid returned value is a request error. The
+module returns exactly one representable value. An empty `ConfigPath` selects
+that complete value; a key selects a string-keyed map entry and an index selects
+a zero-based `ConfigList` element. Missing keys and out-of-range indexes are
+`NOT_FOUND`, while applying a segment to another value kind is
+`INVALID_ARGUMENT`.
+
+The controlled `require` loader remains available, so a user file may compose
+other config-root Lua modules. Required modules keep the cache-by-module-name
+semantics described above; the top-level per-plugin file itself is always
+reopened. The plugin wire API cannot choose another filename or directly read
+`config.lua`, `plugins.lua`, a sibling plugin file, or a mask. Any such
+composition is an explicit act of the user's Lua source.
+
+Closures returned to a plugin are stored in the shared registry under the
+active `session_id` and a newly allocated `function_id`. Resolution requires
+both values. Session teardown releases all of that session's handles; a handle
+from an earlier process instance is invalid even though the daemon's Lua state
+still exists. Values and closure internals are never logged.
+
+Per-plugin files and invoked closures have the same trusted-code/no-instruction-
+hook policy as `config.lua`. They execute on the serialized Lua owner and may
+hang or exhaust resources if the user writes nonterminating code; oll does not
+claim a timeout that LuaJIT cannot safely enforce.
+
 ## Path resolution and precedence
 
 The process startup working directory is captured before dispatch. Relative
 root paths from CLI options or `OLL_*` environment variables are joined to this
 directory without checking existence or calling `canonicalize`. Absolute paths
 remain unchanged. This applies to config, replica, and log roots. A relative
-SQLite `replica_store.path` returned by `config.lua` is instead joined to the
-config root. A PostgreSQL store URL is not an OS path.
+SQLite `replica_store.path` or `artifact_download_dir` returned by `config.lua`
+is instead joined to the config root. A PostgreSQL store URL is not an OS path.
 
 `oll init` has no existing deployment configuration. It resolves:
 
@@ -212,32 +267,36 @@ config root:  --config  > OLL_CONFIG  > platform configuration directory / oll
 replica root: --replica > OLL_REPLICA > platform Documents directory / oll
 log dir:      --log-dir > OLL_LOG_DIR > platform state directory / oll
 replica store: generated explicit SQLite path using the in-memory NodeId
+artifact download dir: platform Downloads directory / oll
 ```
 
 The config-root fallback is the platform configuration directory plus `oll`.
 On Linux, the Documents fallback uses `XDG_DOCUMENTS_DIR` when configured and
-otherwise `$HOME/Documents/oll`; the data and state fallbacks use the ordinary
-XDG data/state locations. The platform directory helper provides corresponding
-locations on Darwin. If no needed platform directory can be determined and no
-explicit root supplies it, initialization fails rather than inventing a path.
+otherwise `$HOME/Documents/oll`; the artifact location uses the platform user
+Downloads directory; and the data and state fallbacks use the ordinary XDG
+data/state locations. The platform directory helper provides corresponding
+locations on Darwin. If a needed platform directory cannot be determined,
+initialization fails rather than inventing a path.
 
 The implementation obtains these platform locations through the `directories`
-crate (`UserDirs` for Documents and `ProjectDirs` for configuration, data, and
-state) rather than maintaining a second parser for `user-dirs.dirs` or a table
-of Darwin paths. oll still appends its own `oll` component and applies the
-fallback/error behavior above; the crate chooses only the platform base.
+crate (`UserDirs` for Documents and Downloads, and `ProjectDirs` for
+configuration, data, and state) rather than maintaining a second parser for
+`user-dirs.dirs` or a table of Darwin paths. oll still appends its own `oll`
+component and applies the fallback/error behavior above; the crate chooses only
+the platform base.
 
 The generated SQLite path is
 `<platform-data-dir>/oll/stores/<generated-node-id>/replica.sqlite3`, as
 defined in [replica-store.md](replica-store.md). `init` writes the resolved
-absolute replica root, store path, and log directory into the initial
-`config.lua`. A relative path returned by a hand-written `config.lua` is instead
-resolved relative to the config root, never relative to the daemon's current
-working directory. Because persisted filesystem paths are Lua strings, an
-`init` replica root, log directory, or SQLite path that cannot be represented
-as UTF-8 is rejected as a configuration error. The config root itself and
-document/snapshot arguments remain native `PathBuf` values and are not subject
-to this persisted-config restriction.
+absolute replica root, store path, log directory, and artifact download
+directory into the initial `config.lua`. A relative path returned by a
+hand-written `config.lua` is instead resolved relative to the config root, never
+relative to the daemon's current working directory. Because persisted
+filesystem paths are Lua strings, an `init` replica root, log directory,
+artifact directory, or SQLite path that cannot be represented as UTF-8 is
+rejected as a configuration error. The config root itself and document/snapshot
+arguments remain native `PathBuf` values and are not subject to this
+persisted-config restriction.
 
 `oll run` first resolves only the config root. The node runtime then takes the
 deployment lock, validates `node.json`, evaluates `config.lua`, and applies
@@ -247,6 +306,7 @@ runtime overrides:
 replica root: --replica > OLL_REPLICA > config.lua node.replica_root
 log dir:      --log-dir > OLL_LOG_DIR > config.lua node.log_dir
 replica store: config.lua node.replica_store
+artifact download dir: config.lua node.artifact_download_dir
 listen:       --listen > config.lua node.listen
 connect:      non-empty --connect list > config.lua node.connect
 ```
@@ -269,6 +329,11 @@ daemon-managed filesystem location must be disjoint:
   ancestor of the other;
 - `log_dir` and `replica_root` MUST NOT be equal, and neither may be an ancestor
   of the other;
+- the derived plugin data root and `replica_root` MUST NOT be equal, and neither
+  may be an ancestor of the other;
+- `artifact_download_dir` and `replica_root` MUST NOT be equal, and neither may
+  be an ancestor of the other, because published artifacts are local job output
+  rather than replicated documents;
 - for a SQLite store, the database's management directory (the configured
   database file's immediate parent, which also owns SQLite journal, WAL, shared
   memory, and temporary siblings) and `replica_root` MUST NOT be equal, and
@@ -280,9 +345,9 @@ so two spellings of the same or nested location cannot bypass isolation; this
 does not rewrite the configured paths or require their final components to
 already exist. PostgreSQL has no local store path to compare. `oll init`
 applies the same checks before creating the corresponding deployment
-directories. This prevents configuration, Admin runtime files, logs, SQLite
-files, or a working tree nested beneath their management directories from ever
-entering the recursive watcher namespace.
+directories. This prevents configuration, Admin runtime files, logs, package
+generations, artifact output, SQLite files, or a working tree nested beneath
+their management directories from ever entering the recursive watcher namespace.
 
 `oll start` resolves its config root to an absolute path before detaching and
 passes that path to the `oll run` child. The child must not reinterpret a
@@ -299,8 +364,8 @@ Missing or unreadable files, Lua syntax failures, evaluation failures, a
 non-table or multiple return values, unsupported format versions, unknown or
 missing fields, invalid tagged-store combinations, invalid field types, invalid
 `oll://` targets or socket addresses, a topology without `network_key`, invalid
-paths, and overlapping local storage
-locations are configuration errors and exit with `EX_CONFIG` (`78`).
+paths, and overlapping local storage locations are configuration errors and
+exit with `EX_CONFIG` (`78`).
 Diagnostics identify the config file and field path without printing Lua values
 that may contain secrets. In particular they never print a network-key value,
 file content, derived PSK, or HKDF intermediate.
@@ -309,14 +374,19 @@ Tests cover successful computed returns, wrong return arity and type, schema
 errors including both store variants and missing fields, controlled module
 containment, CLI and environment precedence, relative-path bases, and a
 HOME-less deployment whose absolute config root supplies its persisted replica,
-store, and log paths. They also cover equality, both ancestor directions, and
-existing symlink aliases between the working tree and each local
+store, log, and artifact paths. They also cover equality, both ancestor
+directions, and existing symlink aliases between the working tree and each local
 daemon-managed location, including layouts produced by runtime overrides and
 `oll init`. Sync configuration tests cover raw Lua byte strings, exact key-file
 bytes including a trailing newline, weak-key warning redaction, direct 32-byte
 use, the specified HKDF vector for every other length, omitted-key topology
 failure, and strict explicit-port `oll://` parsing. Tests do not execute
 intentionally non-terminating Lua in-process.
+
+Plugin configuration tests cover a disk edit observed by the next top-level
+read, shared-registry closure invocation by `session_id + function_id`, stale
+session rejection and cleanup, controlled `require` containment, artifact
+download-directory startup-only behavior, and redaction of returned values.
 
 ## Troubleshooting a startup that never becomes ready
 

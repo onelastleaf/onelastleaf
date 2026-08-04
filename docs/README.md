@@ -29,10 +29,12 @@ documents describe the larger runtime and storage model around those messages.
   TCP + Noise PSK, finite object-level rounds, and atomic bootstrap.
 - [Observability](observability.md): structured JSON logs, aggregation,
   correlation propagation, file routing, and retention.
-- [Plugin system](plugin-system.md): process lifecycle, bidi gRPC, jobs,
-  configuration callbacks, scheduling, logs, and package installation.
-- [Plugin packaging](plugin-packaging.md): Git remotes, `oll.toml`, `oll.json`,
-  `plugins.lua`, source recipes, release artifacts, and installation errors.
+- [Plugin system](plugin-system.md): process lifecycle, oll-hosted bidi gRPC,
+  jobs, configuration callbacks, artifacts, and logs.
+- [Plugin storage](plugin-storage.md): deployment-local package generations,
+  SQL authority, recovery, desired state, jobs, and removal.
+- [Plugin packaging](plugin-packaging.md): system Git, `oll.toml`, typed masks,
+  `oll-release.json`, `plugins.lua`, source recipes, and release artifacts.
 
 ## Normative language
 

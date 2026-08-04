@@ -254,7 +254,9 @@ A replica snapshot MUST NOT contain:
 - `connect`/`listen` configuration;
 - the SQL backend's physical layout, connection URL, credentials, locks, or
   operation-history records;
-- plugin executables, source trees, or package-manager state;
+- plugin executables, source trees, build logs, package-manager state, SQL
+  desired/process/restart state, jobs, or artifact metadata;
+- files published beneath `artifact_download_dir`;
 - Lua configuration, secrets, credentials, logs, caches, or temporary
   artifacts.
 

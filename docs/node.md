@@ -28,6 +28,10 @@ from editing it.
 ```text
 <config-root>/
   config.lua                 trusted executable configuration
+  plugins.lua                literal installation declarations; optional
+  plugins/<plugin-id>.lua    live user configuration for one plugin; optional
+  plugin-masks/<plugin-id>.toml
+                             typed package override; optional
   node.json                  durable NodeIdentity record
   replica.json               durable ReplicaId record; absent while uninitialized
   run/                       0700 runtime directory when used locally
@@ -38,13 +42,18 @@ from editing it.
                               oll-managed local store when driver = sqlite
 PostgreSQL URL                external store location when driver = postgres
 <log-dir>/                   user-owned JSON log files
+<plugin-data-root>/          oll-managed PluginId package generations
+<artifact-download-dir>/     user-visible verified plugin job outputs
 ```
 
 The node-stage slot is only the configured `replica_root` directory. `oll init`
 creates it when absent but does not assign a `ReplicaId`, write a catalog, or
 create a replica database. It writes the required `replica_store` configuration
-at the same time, but the replica stage opens that configured store. Existing
-working-tree contents are never deleted or interpreted by the node stage.
+and startup-only `artifact_download_dir` at the same time, but the later stages
+open those locations. The PluginId-keyed package root is derived from the
+platform data directory and deployment key; its exact layout is in
+[plugin-storage.md](plugin-storage.md). Existing working-tree contents are never
+deleted or interpreted by the node stage.
 
 `node.json` is strict JSON with this initial schema:
 
@@ -186,9 +195,14 @@ The foreground `oll run` sequence is:
 7. register final-state identity watches for `node.json` and `replica.json`;
 8. in the sync stage, bind the configured sync listener and start outbound
    connection management;
-9. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
+9. in the plugin stage, recover package publication/removal, cache the
+   startup-resolved artifact download directory in SQL, recover artifact
+   publication intents, mark jobs left nonterminal by the previous process
+   failed, start the supervisor, and queue reconciliation for desired-running
+   plugins;
+10. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
    the node ready;
-10. when invoked by `oll start`, complete the one-use nonce pingback only after
+11. when invoked by `oll start`, complete the one-use nonce pingback only after
    the Admin service can answer requests.
 
 Configuration evaluation remains before every node service, but it is no
@@ -196,8 +210,10 @@ longer part of generic CLI preparation for `run`: the node runtime owns it so
 the lock can precede trusted Lua execution. A Lua configuration that does not
 return therefore holds its acquired lock but cannot create logs, an Admin
 socket, a replica, or a network listener. The node-only implementation skips
-step 6; the replica stage inserts it before the Admin service becomes ready so
-no client can observe a half-recovered replica.
+the later-stage steps. Each stage inserts its owned recovery before the Admin
+service becomes ready so no client can observe half-recovered authority. Plugin
+readiness is per process: node readiness waits for package/job recovery and an
+active supervisor, not for every desired-running plugin to finish its handshake.
 
 Each successful startup step is owned by a resource guard. A later synchronous
 failure drops already acquired file descriptors, listeners, and temporary
@@ -228,27 +244,31 @@ shutdown sequence.
 The accepted response is written before shutdown begins. The ordered sequence
 then is:
 
-1. stop accepting new Admin connections and new node work;
+1. stop accepting new Admin connections and new node work, including package
+   reconciliation, plugin spawns, and job admission;
 2. close node listeners, including sync, stop accepting filesystem and identity
-   events, send best-effort authenticated sync close frames, and notify owned
-   tasks to stop;
+   events, send best-effort authenticated sync close frames, send process-scoped
+   `ShutdownRequest` to plugin instances, cancel active recipe process groups,
+   and notify owned tasks to stop;
 3. wait for in-flight node work, including replica reconciliation, projection,
-   sync sessions, and bootstrap tasks, through the 10-second
-   graceful-shutdown deadline, then abort remaining local tasks;
+   sync sessions, bootstrap tasks, package operations, plugin processes, and
+   artifact staging, through the 10-second graceful-shutdown deadline; enforce
+   outstanding plugin/recipe process-group termination and reap children within
+   that same deadline, then abort remaining local tasks;
 4. write and flush the final structured lifecycle events;
 5. remove the Admin socket and release the lock by dropping its descriptor;
 6. exit the process.
 
 The first accepted request or first termination signal records one absolute
-deadline and one shutdown correlation ID. Admin draining and replica shutdown
-use that same deadline concurrently; replica shutdown is not deferred until the
-Admin server has finished. Stopping the replica first removes the operating
-system watcher and wakes its event loop. Work from the watcher event already
-being handled may drain until the deadline, but queued events do not begin new
-reconciliations after shutdown starts. At the deadline the node aborts both the
-remaining Admin work and replica-owned tasks, and Tokio blocking-task teardown
-must not add a second unbounded wait before the socket and deployment lock are
-released.
+deadline and one shutdown correlation ID. Admin draining, replica shutdown,
+sync shutdown, installer cancellation, and plugin process shutdown use that
+same deadline concurrently; no component waits for another component's full
+deadline before beginning. Stopping the replica removes the operating-system
+watcher and wakes its event loop. Work from an event already being handled may
+drain until the deadline, but queued events do not begin new work after shutdown
+starts. At the deadline the node aborts remaining local tasks, enforces and
+reaps owned child process groups, and does not add a second unbounded wait before
+the socket and deployment lock are released.
 
 Each completed stage extends the owned-work set but must preserve this
 externally visible ordering.

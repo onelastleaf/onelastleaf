@@ -55,8 +55,8 @@ error rather than a silent loss of observability.
 - filesystem scan/reconciliation and catalog/document/binary operation summaries;
 - snapshot export/import/replace lifecycle;
 - sync connection, disconnection, retry, and transfer summaries;
-- plugin process/job lifecycle;
-- scheduler state, panics, and unrecoverable errors.
+- plugin package, process, job, cancellation, and artifact lifecycle;
+- panics and unrecoverable errors.
 
 It MUST NOT contain per-chunk sync traces or raw payloads.
 
@@ -90,6 +90,15 @@ schema. Host-owned lifecycle events such as desired-state changes, observed
 state transitions, spawn, readiness, exit, restart backoff, timeout, shutdown
 request, and signal escalation remain in `oll.log`.
 
+Package reconciliation summaries also remain in `oll.log`: declaration
+admission, Git selection, candidate build/download, verification, publication,
+removal, and recovery each have correlated start/success/failure events. Recipe
+stdout/stderr is not copied there or into `plugin.log`. It is captured in a
+PluginId/install-operation-specific `0600` build log beneath the package data
+root. That retained log may contain arbitrary tool output and secrets emitted by
+the tool, so structured events expose only its sanitized local path and never
+inline its contents.
+
 ## Aggregation model
 
 oll is the local log aggregator. Every daemon component and plugin event is
@@ -102,7 +111,12 @@ The system uses limited, deliberate duplication:
 - `sync.log` receives the complete sync target at its configured level;
 - `plugin.log` receives plugin-produced output;
 - detailed sync/plugin events are not copied wholesale into `oll.log`;
-- replica, snapshot, scheduler, and CLI do not each receive separate files.
+- replica, snapshot, and CLI do not each receive separate files.
+
+`oll plugin log [<selector>]` is a local reader for `plugin.log`. A dotted
+selector filters the immutable `plugin_id`; an undotted selector filters the
+recorded effective `plugin_name`. It does not query Admin, reinterpret historical
+names, or read package build logs.
 
 JSON Lines makes all three files directly ingestible by external tools such as
 Fluent Bit, Vector, or journald forwarding without defining an additional oll
@@ -183,9 +197,12 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 - `node_name`, `node_id`, `peer_node_name`, `peer_node_id`, and `replica_id`;
 - `catalog_node_id`, `document_id`, `binary_id`, and sanitized `path`;
 - `connection_id`, `transfer_id`, and `message_id`;
-- `plugin_instance_id`, `job_id`, `task_id`, and `task_group_id`;
+- `plugin_id`, `plugin_name`, `plugin_instance_id`, `job_id`, `job_state`,
+  `task_id`, and `task_group_id`;
+- `package_operation_id`, `install_generation`, `running_generation`,
+  `package_phase`, and sanitized `build_log_path`;
 - `plugin_desired_state`, `plugin_process_state`, `exit_status`, `signal`,
-  `restart_reason`, and `restart_attempt`;
+  `restart_reason`, `restart_attempt`, and `cancellation_reason`;
 - `parent_call_id`, `call_depth`, and `causal_depth`;
 - `operation_id`, `snapshot_id`, and `artifact_id`;
 - `round_id`, `bootstrap_id`, and connection direction;
@@ -220,10 +237,16 @@ Correlation IDs are mandatory, not an optional logging enhancement.
   triggering Admin command, job operation, or timeout supplies the ID when it
   caused the transition; an unsolicited process or protocol event starts a new
   ID at the supervisor.
+- One package Admin call, each per-PluginId result, its system-Git and recipe
+  process groups, publication/recovery record, and retained build-log metadata
+  preserve the originating correlation ID. A child process never receives the
+  ID through argv merely for logging.
+- Job admission, `StartJobRequest`, updates, job-scoped cancellation, artifact
+  chunks/publication, and the terminal SQL row retain the Admin operation's ID.
 - Nested plugin calls additionally set `parent_call_id` and increment
   `call_depth`.
-- Derived events and scheduled callbacks preserve the ID and increment or carry
-  the documented causal context.
+- Derived events preserve the ID and increment or carry the documented causal
+  context.
 - A sync update request establishes an ID that is propagated over the wire on
   responses, chunks, staging, candidate commit, and acknowledgements. An entire
   bootstrap uses the inherited claim correlation ID across every file and its
@@ -283,6 +306,8 @@ No level, including `TRACE`, may record:
 - raw Loro update/snapshot bytes, binary blob bytes, or complete protobuf
   payloads;
 - Lua configuration values, prompts, credentials, or AI tokens;
+- inherited recipe environment values, Git credential-helper output, or
+  credential-bearing remotes;
 - HTTP authorization, cookies, private keys, or plugin secrets;
 - configured sync network keys, key-file bytes, derived Noise PSKs, handshake
   messages, and HKDF intermediates;
@@ -320,12 +345,13 @@ Tests must verify:
 - batch/periodic visibility and deadline-bounded final draining;
 - logging failures cannot replace a successful business-operation result;
 - required field presence and stable event names;
-- correlation propagation through async tasks, sync envelopes, plugin calls,
-  jobs, and scheduler callbacks;
+- correlation propagation through async tasks, sync envelopes, package process
+  groups, plugin calls, jobs, cancellation, and artifact publication;
 - redaction of representative secrets and document content;
 - correct sink routing and limited duplication;
 - rotation/reopen behavior;
 - useful structured context on working-tree reconciliation, network, import,
   projection, and recovery failures;
-- plugin desired-state persistence, process-state transitions, exit detection,
-  restart decisions, backoff, and graceful-to-signal escalation.
+- plugin package publication/removal, desired-state persistence, process-state
+  transitions, exit detection, restart decisions, job-only cancellation,
+  backoff, and graceful-to-signal escalation.

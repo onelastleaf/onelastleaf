@@ -69,6 +69,13 @@ attempts and valid object/blob transfers may exceed it. Cancelling that Admin
 wait does not implicitly tear down the daemon's persistent background sync
 session.
 
+Plugin list/info, desired-state, restart, job admission/query/cancellation, and
+other bounded plugin methods use the short 10-second request deadline.
+`ReconcilePluginInstallations`, `RemovePlugin`, and `ListPluginReleases` have no
+fixed client request deadline: system Git, a source build, download, archive
+validation, package publication, and process cleanup may all legitimately take
+longer. Connection establishment remains independently bounded to 10 seconds.
+
 The service grows with the required implementation order. The node stage owns
 status, graceful shutdown, and typed live log-filter changes. Replica, sync, and
 plugin RPCs are added only when their domain models have met the preceding
@@ -190,6 +197,101 @@ Admin context propagates through connection attempts, finite rounds, transfers,
 candidate activation, results, and logs. An inbound or background sync action
 without Admin context creates its ID at the first daemon boundary.
 
+## Plugin administration
+
+The plugin stage adds typed methods for package ownership, process desired
+state, and asynchronous jobs:
+
+```proto
+rpc ReconcilePluginInstallations(ReconcilePluginInstallationsRequest)
+    returns (ReconcilePluginInstallationsResponse);
+rpc RemovePlugin(RemovePluginRequest) returns (RemovePluginResponse);
+rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+rpc GetPlugin(GetPluginRequest) returns (GetPluginResponse);
+rpc ListPluginReleases(ListPluginReleasesRequest)
+    returns (ListPluginReleasesResponse);
+rpc SetPluginDesiredState(SetPluginDesiredStateRequest)
+    returns (SetPluginDesiredStateResponse);
+rpc RestartPlugin(RestartPluginRequest) returns (RestartPluginResponse);
+rpc StartPluginJob(StartPluginJobRequest) returns (StartPluginJobResponse);
+rpc ListPluginJobs(ListPluginJobsRequest) returns (ListPluginJobsResponse);
+rpc GetPluginJob(GetPluginJobRequest) returns (GetPluginJobResponse);
+rpc StopPluginJob(StopPluginJobRequest) returns (StopPluginJobResponse);
+```
+
+There is no generic plugin-management/action RPC, confirmation RPC, validation
+RPC, or log RPC. `plugin validate` and `plugin log` are local file operations.
+Every installed object is addressed internally by immutable PluginId. A typed
+selector may contain either PluginId or current unique PluginName; resolution
+occurs once at request admission and all subsequent work carries the ID.
+
+`ReconcilePluginInstallations` has a typed operation variant for no-argument
+install, remote install, selected-plugin update, and exact-set reconciliation.
+All variants enter one package reconciliation owner; the daemon does not parse
+CLI argv or run separate installer/update implementations. A multi-plugin call
+returns one domain result and zero or more diagnostics per PluginId. An ordinary
+fetch/build/download failure is an item failure and does not discard successful
+items. A global `plugins.lua` syntax/schema failure rejects the request because
+there is no coherent declaration set to admit.
+
+When remote installation would replace a declaration, the first call returns
+`confirmation_required`, the resolved PluginId, a redacted change summary, and
+the SHA-256 of the normalized current declaration. After the user confirms, the
+client calls the same method with overwrite authorization and that expected
+digest. The daemon performs a compare-and-set before mutation; a changed digest
+returns `ABORTED` and requires a fresh read/prompt. Confirmation is never a
+daemon-side terminal interaction.
+
+`RemovePlugin` uses the durable removal state machine, stops/reaps a running
+instance, removes its declaration, package directory, SQL state, jobs, and
+identity binding, and reports completion. Client cancellation after the durable
+destructive intent begins cannot resurrect partial state.
+`ListPluginReleases` resolves the plugin's declaration, reads the selected
+repository's explicit `oll-release.json`, and returns opaque release IDs and
+declared targets without selecting or parsing a newest version. A PluginId may
+select an uninstalled declaration whose release field is intentionally absent;
+a name selector requires an existing SQL identity binding.
+
+`ListPlugins` returns compact identity, desired/observed state, current/running
+generation, and last-failure summaries. `GetPlugin` returns the complete
+normalized declaration with its remote sanitized, effective manifest summary,
+package/recovery state, restart state, process instance, and job counters, but
+never credentials, inherited environment values, build output, or per-plugin
+Lua values.
+
+`SetPluginDesiredState` atomically stores `running` or `stopped` and queues
+reconciliation. It is short and idempotent; success does not claim the process
+has already become ready or exited. `RestartPlugin` sets or retains
+desired-running, atomically advances one restart sequence, and queues exactly
+one recycle without allowing overlapping instances.
+
+`StartPluginJob` requires a nonempty operation ID and a typed plugin selector,
+action, ordered argument list, and optional deadline. The daemon validates and
+normalizes this domain request, resolves the selector to PluginId, and compares
+that normalized value rather than serialized protobuf bytes. An omitted
+deadline normalizes as a default-policy marker, so retrying it later does not
+invent a different payload by recalculating `now + 24 hours`. The same operation
+ID and payload return the original JobId and current state; the same ID with a
+different payload returns `ALREADY_EXISTS`. A new call returns only after the
+durable row was admitted and the plugin replied `JobAccepted`, or after a
+terminal admission failure. Once admission is durable, client timeout or
+disconnect does not cancel the job; the caller resolves uncertainty by retrying
+the same operation ID.
+
+`ListPluginJobs` returns newest-first host-persisted summaries under the typed
+positive limit (default 100, maximum 1000); `GetPluginJob` returns one job's
+detailed timestamps, state, normalized invocation summary, error, and
+stored-artifact metadata. Neither returns artifact bytes or arbitrary plugin
+logs. `StopPluginJob` idempotently records and dispatches job-scoped
+cancellation. It sends `CancelJobRequest` to the owning session and never sends
+`ShutdownRequest`, signals the process, changes desired state, or cancels another
+job. Completion or failure arrives through the normal persisted job state.
+
+Every method inherits `AdminCallContext.trace` through package work, child
+process groups, supervisor commands, plugin envelopes, jobs, artifacts, SQL
+recovery records, and logs. An implementation must not create an unrelated
+correlation ID at any of those boundaries.
+
 ## Errors
 
 Admin method failures use gRPC status codes directly. They do not wrap every
@@ -204,6 +306,10 @@ types. The request context is validated before method-specific work:
 | replica operation requires an initialized replica | `FAILED_PRECONDITION` | Add a working-tree file and run oll, or import a snapshot first. |
 | sync selector names no learned node | `NOT_FOUND` | Establish a configured authenticated connection or choose a name from status. |
 | sync-all captures no configured peers | `FAILED_PRECONDITION` | Configure a connect target or select a learned peer. |
+| plugin selector or JobId is unknown | `NOT_FOUND` | Choose an installed plugin or stored job. |
+| operation ID was admitted with another normalized job payload | `ALREADY_EXISTS` | Reuse it only for the same logical request or generate a new operation ID. |
+| overwrite digest changed before authorization | `ABORTED` | Review the current declaration and confirm again. |
+| plugin is stopped, not ready, or being removed when a job is admitted | `FAILED_PRECONDITION` | Start or recover the plugin before invoking an action. |
 | daemon is stopping or the UDS cannot serve a request | `UNAVAILABLE` | Retry only after the daemon is ready again. |
 | unexpected daemon failure | `INTERNAL` | Inspect the correlated daemon log event. |
 

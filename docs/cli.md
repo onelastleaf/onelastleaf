@@ -30,6 +30,8 @@ config root:  platform configuration directory / oll
 replica store: SQLite at
                <platform-data-dir>/oll/stores/<new-node-id>/replica.sqlite3
 log dir:      platform state directory / oll
+plugin data:  platform data directory / oll / deployments / <deployment-key> / plugins
+artifact downloads: platform Downloads directory / oll
 ```
 
 On Linux, the default replica root uses the XDG user Documents directory when
@@ -117,7 +119,8 @@ is no `client`/`server` profile wrapper and no topology-derived authority level.
 shared argument group: future command-specific options need not be added to both
 commands. `init` creates the selected directories, writes a complete
 `config.lua` containing the replica root, default SQLite replica store, log
-directory, and topology, and writes `<config-root>/node.json`. It establishes
+directory, artifact download directory, and topology, and writes
+`<config-root>/node.json`. It establishes
 only an empty replica slot; `ReplicaId` and replica data are created later. A
 PostgreSQL store is selected by replacing the generated `replica_store` table in
 `config.lua` with the documented tagged configuration. When `config.lua`,
@@ -283,52 +286,89 @@ background peer connection.
 ## Plugin commands
 
 ```text
-oll plugin install
+oll plugin install [--json]
 oll plugin install <git-remote>
   [--rev <revision> | --branch <branch>]
-  [--release | --source]
+  [--release <release-id> | --source] [--json]
+oll plugin reconcile [--json]
 oll plugin validate
-oll plugin list
-oll plugin info <plugin-id>
-oll plugin start <plugin-id>
-oll plugin stop <plugin-id>
-oll plugin restart <plugin-id>
-oll plugin update <plugin-id>
-oll plugin remove <plugin-id>
-oll plugin --log [<plugin-id>]
-oll plugin call <plugin-id> <action> [arguments...]
+oll plugin list [--json]
+oll plugin info <plugin-id-or-name> [--json]
+oll plugin releases <plugin-id-or-name> [--json]
+oll plugin start <plugin-id-or-name>
+oll plugin stop <plugin-id-or-name>
+oll plugin restart <plugin-id-or-name>
+oll plugin update <plugin-id-or-name> [--json]
+oll plugin remove <plugin-id-or-name> [--json]
+oll plugin log [<plugin-id-or-name>]
+oll plugin call [--operation-id <operation-id>] [--json]
+  <plugin-id-or-name> <action> [--] [arguments...]
 ```
 
 `git-remote` accepts standard Git URLs and SCP-style SSH syntax such as
 `git@github.com:example/oll-anki.git`. Source installation is the default.
-`--release` and `--source` conflict; `--rev` and `--branch` conflict. Selection
-applies to both modes: source reads `oll.toml`, while release reads `oll.toml`
-and the direct artifact URLs in `oll.json` from the same selected repository
-state. Version ranges and Git tags have no oll semantics; publishers may expose
-version branches such as `release/v0.3.1`.
+`--release <release-id>` and `--source` conflict; `--rev` and `--branch`
+conflict. Source mode reads `oll.toml`; release mode also reads the explicit
+opaque release map in `oll-release.json` from the same selected repository
+state. oll neither parses semantic versions nor infers releases from filenames,
+URLs, tags, or branches.
 
-Without a remote, `plugin install` reads `<config-root>/plugins.lua` and
-reconciles its declarations. With a remote, the daemon resolves the `PluginId`,
-atomically adds the declaration to that file, and then invokes the same
-file-driven reconciliation. An identical declaration is left unchanged. A
-different declaration for the same ID requires an interactive overwrite
-confirmation; a negative answer, EOF, or unavailable input changes neither the
-file nor the installation. Installation failure after a successful write does
-not roll back desired configuration.
+Without a remote, `plugin install` installs missing or changed declarations from
+`<config-root>/plugins.lua`; it neither removes undeclared installations nor
+advances an otherwise unchanged branch. With a remote, the daemon resolves
+`oll.toml`, atomically adds that immutable PluginId's declaration, and installs
+from the newly reread file. If that ID already has another declaration, the
+first reconciliation RPC returns a digest-bound confirmation requirement. The
+CLI prompts and, only after a positive answer, repeats the same RPC with the
+authorization and expected digest. A negative answer, EOF, unavailable input,
+or concurrent declaration change leaves it untouched. There is no confirmation
+RPC.
+
+`plugin update` advances the selected named/default branch and rebuilds only
+when the remote commit or local declaration/mask input changed. An exact `rev`
+never advances remotely, but a changed mask may still publish a new local
+generation. Update failure keeps the old current generation; success does not
+restart a running process, and a later startup failure does not silently roll
+back. Both PluginId and the current unique PluginName are accepted as selectors,
+but all filesystem and SQL ownership remains keyed by PluginId.
+
+`plugin reconcile` makes the installed set exactly match `plugins.lua`: it
+installs missing declarations, applies declaration changes, and removes
+installed IDs absent from the file. It preserves SQL desired process state for
+surviving IDs and does not advance an otherwise unchanged branch. The daemon
+does not watch `plugins.lua`; this command is how manual edits become an exact
+set transition. `plugin remove` stops the process, removes its declaration,
+package tree, SQL desired state, jobs, and identity binding through the same
+durable removal owner.
+
+No-argument install and reconcile can return one result and diagnostics per
+PluginId. One download/build failure does not erase another item's success, but
+the CLI exits nonzero if any requested item failed or remained unresolved.
 
 `plugin validate` is local and read-only. It validates the literal-only syntax
-and schema of `<config-root>/plugins.lua` without opening the Admin API,
-accessing a remote, running a recipe, or rewriting the file. Publisher and user
-file formats, source/release behavior, LuaJIT requirements, and stable error
-codes are defined in `plugin-packaging.md`.
+and schema of `<config-root>/plugins.lua` and every present typed mask without
+opening Admin, accessing a remote, running a recipe, or rewriting a file.
+`plugin releases` reads the selected repository's explicit release index and
+lists opaque IDs; an uninstalled release declaration may intentionally omit its
+selection for this discovery step. The command does not choose a newest release
+or change installation state. Publisher and user formats, system-Git behavior,
+and diagnostics are defined in `plugin-packaging.md`.
 
-A generic plugin call returns a job ID after the plugin stage is implemented.
-Its arguments are shell-style UTF-8 argv strings; the client preserves their
-order, duplicates, empty strings, and leading `-` characters without parsing or
-inferring types.
+A generic plugin call waits only until the host has durably admitted the job and
+the plugin has returned `JobAccepted`, then prints its JobId. Arguments after
+`--` are shell-style UTF-8 argv strings; the client preserves order, duplicates,
+empty strings, and leading `-` values without type inference. If
+`--operation-id` is omitted, the CLI generates a collision-resistant value. A
+caller retrying an uncertain admission reuses the same operation ID: the same
+normalized request returns the same JobId, while another payload returns
+`ALREADY_EXISTS`.
 
-`plugin --log` reads `<log-dir>/plugin.log` locally, optionally filtering for
-one plugin ID. It does not require node configuration or an Admin connection.
+`plugin log` reads `<log-dir>/plugin.log` locally. A dotted selector filters the
+recorded immutable PluginId; an undotted selector filters the effective
+PluginName recorded on each event. It does not use Admin, reinterpret historical
+name bindings, or return a job's artifact bytes. Runtime stdout/stderr and
+structured plugin records appear in this file; source build output remains in
+its retained per-install build log.
 
 A newly installed plugin is initially stopped. `plugin start` persistently sets
 its desired state to running; `plugin stop` persistently sets it to stopped
@@ -341,19 +381,76 @@ desired-running unless explicitly stopped.
 
 Plugin `stop` uses the same graceful `ShutdownRequest` and signal-enforcement
 sequence documented in `plugin-system.md`; it does not introduce a stronger
-kill operation. Desired state is a separate concern from this common process
-termination sequence.
+kill operation. A process stop is distinct from job cancellation.
+
+Human plugin list/info/releases and multi-item operation output uses
+terminal-aware `anstream` color, compact tables, and stderr spinner/progress only
+on an interactive terminal. `NO_COLOR` is honored. Every tabular plugin/job
+query and multi-item result has a stable `--json` form; JSON stdout contains
+exactly one document with no ANSI escapes or progress output.
+
+The stable summary shapes are:
+
+```json
+{
+  "plugins": [
+    {
+      "plugin_id": "oll.anki",
+      "plugin_name": "oll-anki",
+      "desired_state": "running",
+      "process_state": "ready",
+      "current_generation": "9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3",
+      "running_generation": "9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3",
+      "last_error": null
+    }
+  ]
+}
+```
+
+```json
+{
+  "results": [
+    {
+      "plugin_id": "oll.anki",
+      "plugin_name": "oll-anki",
+      "outcome": "updated",
+      "diagnostics": []
+    }
+  ]
+}
+```
+
+Plugin outcomes are `installed`, `updated`, `removed`, `already_satisfied`,
+`confirmation_required`, or `failed`. A diagnostic has stable `code`, `phase`,
+`message`, and nullable `hint` and `build_log_path` fields. Release JSON is
+`{"plugin_id": ..., "releases": [{"release_id": ..., "targets": [...]}]}`.
+`plugin info --json` uses one `plugin` object containing the same summary fields
+plus `declaration`, `effective_manifest`, `package_state`, `restart_state`,
+`process_instance`, and `job_counts` objects. The declaration's remote is
+sanitized. A present `last_error` is a diagnostic object. Absent generations,
+instances, and errors are JSON `null`, not omitted fields. `plugin call --json`
+returns exactly `{"job_id": ..., "state": "running"}` after `JobAccepted`.
 
 ## Job commands
 
 ```text
-oll job list
-oll job info <job-id>
+oll job list [--limit <count>] [--json]
+oll job info <job-id> [--json]
 oll job stop <job-id>
 ```
 
-`job stop` uses the same graceful plugin-process shutdown path as plugin stop,
-kill, timeout, and `killjob`. It does not promise rollback of completed writes or
-external effects. It does not change the plugin's desired state, so a plugin
-whose desired state remains running is restarted after its current process
-exits.
+`job stop` sends the job-scoped `CancelJobRequest` and waits only for the Admin
+operation to record/dispatch cancellation. It never sends process
+`ShutdownRequest`, kills or restarts the plugin, changes desired state, or
+cancels another job. Timeout follows the same job-scoped path. Cancellation
+does not promise rollback of completed replica writes or external effects.
+
+`job list` is newest-first, defaults to 100 rows, and accepts a positive limit
+up to 1000. `job info` is the detailed lookup for one retained JobId.
+
+`job list --json` returns `{"jobs": [...]}`. Every summary has `job_id`,
+`plugin_id`, `plugin_name`, `operation_id`, `action`, `state`, `created_at`, and
+`updated_at`. `job info --json` returns one `job` object and adds the ordered
+arguments, nullable deadline/error, and an `artifacts` array containing each
+artifact ID, filename, media type, byte size, SHA-256, and published path.
+Timestamps are RFC 3339 UTC strings and all fields are present.

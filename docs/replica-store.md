@@ -86,6 +86,14 @@ changes for one host-level mutation are committed in one SQL transaction. This
 is the durable host-level commit boundary. It does not make remote delivery or
 working-tree materialization part of one distributed transaction.
 
+The plugin stage reuses the configured SQL backend for deployment-local plugin
+tables, but those rows are outside `active_generation` and outside the logical
+replica described above. Package state, desired process state, jobs, and
+artifact metadata are not synchronized, bootstrapped, exported, or replaced by
+snapshot import. Their authority and recovery model are defined separately in
+[plugin-storage.md](plugin-storage.md); adding them must not alter replica
+generation transactions or snapshot semantics.
+
 ## Initialization state
 
 The replica slot has three externally observable states:

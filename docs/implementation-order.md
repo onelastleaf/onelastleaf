@@ -150,29 +150,43 @@ Completion criteria:
 
 The final stage adds:
 
-- plugin installation from typed Git remotes and data-only `plugins.lua`;
-- `oll.toml` source recipes and direct-URL `oll.json` release artifacts;
-- literal-only `plugins.lua` validation and reuse of the established LuaJIT
-  configuration runtime for plugin values and closures;
-- process spawning and parent-liveness pipes;
+- plugin installation through the system Git client and data-only `plugins.lua`;
+- `oll.toml` source recipes, typed user masks, and direct-URL
+  `oll-release.json` release artifacts;
+- typed Admin reconciliation, removal, query, lifecycle, release-list, and job
+  methods behind the corresponding CLI commands;
+- PluginId-keyed package generations, atomic `current` publication, SQL
+  transition/removal recovery, and exact-set `plugin reconcile`;
+- literal-only `plugins.lua` validation and live per-plugin Lua configuration;
+- process spawning, loopback gRPC sessions hosted by oll, and stdin
+  parent-liveness pipes;
 - persistent plugin desired state and event-driven child-process supervision;
-- `PluginRuntime.Connect` multiplexing;
+- `PluginRuntime.Connect` multiplexing initiated by the spawned plugin;
 - asynchronous jobs, host document calls, Lua configuration callbacks,
-  scheduling, artifact output, logs, and process termination;
+  artifact output, logs, and process termination;
 - recursion-depth and causal-depth enforcement.
 
 Completion criteria:
 
 - a plugin can read the tree and atomically attempt a revision-guarded write;
+- source and release candidates either publish one complete PluginId-keyed
+  generation or leave the previous `current` generation active across failure
+  and restart;
+- `plugins.lua` contains no process desired state; SQL start/stop authority and
+  package removal survive daemon restart on both supported store backends;
 - stale plugin output is rejected without blocking;
 - nested calls do not stop the stream reader;
-- plugin stop survives daemon restart, stopped plugins are not respawned, and
+- desired-stopped state survives daemon restart, stopped plugins are not
+  respawned, and
   unexpected exits of desired-running plugins trigger a bounded-backoff restart
-  without process-table polling or a plugin-supplied reverse liveness FD;
+  without process-table polling; the stdin EOF liveness contract is covered by
+  process tests;
 - PDF/`.apkg`-sized outputs use verified artifact chunks;
-- `stop`, `kill`, `killjob`, and timeout all issue the same graceful
-  `ShutdownRequest`; an unresponsive process is escalated through `SIGTERM` and
-  `SIGKILL` without creating another public termination semantic;
+- retrying the same normalized job admission with one operation ID returns one
+  JobId, while reuse for another payload is rejected;
+- plugin stop issues a graceful process `ShutdownRequest`, while job stop and
+  timeout issue a job-scoped `CancelJobRequest` without terminating unrelated
+  jobs;
 - plugin logs are normalized into `plugin.log` while lifecycle summaries remain
   correlated in `oll.log`.
 
@@ -183,5 +197,6 @@ The first implementation does not include:
 - multi-replica process management;
 - a plugin marketplace, signatures, or permission sandbox;
 - backward-compatible protobuf negotiation;
-- fair scheduling, quotas, or a CFS-like scheduler;
+- plugin scheduling, fair scheduling, quotas, or a CFS-like scheduler;
+- remote plugin invocation and separate file-upload/download protocols;
 - distributed transactions with external services.
