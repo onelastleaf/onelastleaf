@@ -1,0 +1,175 @@
+// Focused C4 component view of replica responsibilities inside the oll daemon.
+// The view follows production modules under src/replica/ and their actual
+// callers in node Admin, identity watching, and sync.
+
+digraph C4_Replica_Components {
+  graph [
+    label="oll Node Daemon - Replica Components - Current Codebase",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.65,
+    ranksep=0.9,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=9.2, margin="0.16,0.10"];
+  edge [fontname="Helvetica", fontsize=7.8, color="#555555", fontcolor="#333333", arrowsize=0.7];
+
+  admin_api [
+    label="Admin API Adapter\n[Component]\nStatus, inspect/history, import/export",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  sync_runtime [
+    label="Peer Sync Runtime\n[Component]\nNormal rounds and authenticated bootstrap",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  identity_watch [
+    label="Identity Watcher\n[Component]\nFinal-state node.json/replica.json reloads",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  logger [
+    label="Structured Logging Service\n[Component]",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  replica_identity_file [
+    shape=cylinder,
+    label="Replica Identity\n[Container: File]\nreplica.json",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  working_tree [
+    shape=cylinder,
+    label="Working Tree\n[Container: File System]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  sql_store [
+    shape=cylinder,
+    label="Replica Store\n[Container: SQLite or PostgreSQL]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  snapshot_archive [
+    shape=cylinder,
+    label="Replica Snapshot\n[Container: File]\n.ollsnap",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+
+  subgraph cluster_replica {
+    label="Replica subsystem inside oll Node Daemon [Container scope]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#438DD5";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=20;
+
+    runtime_api [
+      label="Replica Runtime and API Coordinator\n[Component]\nReplicaRuntime startup/shutdown and optional ActiveReplica RwLock;\nstatus/inspection/history; typed document, directory, CRDT read APIs;\nrevision-guarded commits, retained idempotent results, and commit gate.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    working_tree_runtime [
+      label="Working-Tree Reconciler and Projector\n[Component]\nRecursive debounced notify watcher, scan/classification,\nreliable rename handling, final-state reconciliation,\ntargeted/full materialization, and crash recovery.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    model [
+      label="Catalog and Object Model\n[Component]\nOne catalog LoroDoc/LoroTree, one LoroDoc per retained document,\nCatalogNodeId/DocumentId/BinaryId identities, binary LWW metadata,\nopaque revisions, namespace and invariant validation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    persistence [
+      label="Persistence and Replica-Identity Coordinator\n[Component]\nReplicaStore over sqlx Any plus strict ReplicaIdentity.\nGenerations/state tokens, catalog/documents, chunked blobs, history,\nprojection markers, peer bindings/claims, replica.json hot edits,\nand recoverable file/SQL identity-transition activation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    replication [
+      label="Replica Replication Gateway\n[Component]\nCaptures inventories, exports Loro update batches, stages/validates blobs\nand object candidates, binds peer identities, manages bootstrap claims,\nand commits normal or bootstrap candidates.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    snapshot_service [
+      label="Snapshot Service\n[Component]\nStreaming archive inspect/verify/export/import, safe staging,\nmanifest/checksum and Loro validation, complete logical replacement.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+  }
+
+  { rank=source; identity_watch; admin_api; sync_runtime; }
+
+  admin_api -> runtime_api [label="Status, document inspection, operation history"];
+  admin_api -> snapshot_service [label="Imports or exports complete snapshots"];
+  sync_runtime -> replication [
+    label="Inventory/update/blob/bootstrap APIs with staged activation"
+  ];
+  identity_watch -> persistence [label="Requests coordinated replica.json reload"];
+
+  runtime_api -> model [label="Reads, clones, imports, validates, and mutates CRDT state"];
+  runtime_api -> persistence [
+    label="Loads active state; checks retained commits; atomically saves results"
+  ];
+  runtime_api -> working_tree_runtime [label="Owns watcher and projects committed paths"];
+
+  working_tree_runtime -> working_tree [
+    dir=both,
+    label="Scans, watches, classifies, and materializes"
+  ];
+  working_tree_runtime -> model [label="Initializes or reconciles final filesystem state"];
+  working_tree_runtime -> persistence [
+    label="Commits model/blobs/history and activates first generation"
+  ];
+
+  snapshot_service -> snapshot_archive [dir=both, label="Reads/writes tar+zstd archive"];
+  snapshot_service -> model [label="Captures or validates complete logical state"];
+  snapshot_service -> persistence [
+    label="Reads blobs or atomically activates replacement generation/ReplicaId"
+  ];
+  snapshot_service -> working_tree_runtime [label="Projects imported state"];
+
+  replication -> model [label="Exports/imports catalog and document Loro updates"];
+  replication -> persistence [
+    label="Stages blobs/generations, bindings/claims, and activates candidate"
+  ];
+  replication -> working_tree_runtime [label="Projects committed normal/bootstrap candidate"];
+
+  persistence -> replica_identity_file [
+    dir=both,
+    label="Loads, writes, watches, and recovers strict JSON"
+  ];
+  persistence -> sql_store [
+    dir=both,
+    label="Executes backend-neutral SQL transactions"
+  ];
+  runtime_api -> logger [label="Emits correlated replica and snapshot events"];
+}

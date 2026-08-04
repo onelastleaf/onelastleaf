@@ -1,10 +1,10 @@
-// C4 bounded-client component model for the architecture currently implemented in src/.
-// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
-// they do not yet have runtime components in the current implementation.
+// C4 component model of bounded oll client executions derived from src/.
+// Plugin and job intents are parsed but intentionally excluded here because
+// execute_client currently has no production handler for them.
 
 digraph C4_Bounded_Client_Components {
   graph [
-    label="Bounded oll Client - C4 Component Diagram - Current Implementation",
+    label="Bounded oll Client - C4 Component Diagram - Current Codebase",
     labelloc=t,
     labeljust=l,
     fontsize=20,
@@ -30,9 +30,9 @@ digraph C4_Bounded_Client_Components {
     fontcolor="white",
     color="#2E6295"
   ];
-  deployment_files [
+  deployment_state [
     shape=cylinder,
-    label="Deployment Files\n[Container: File Store]",
+    label="Deployment State\n[Container: File Store]\nconfig.lua, node.json, replica.json,\nrun lock/socket and configuration modules",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -40,6 +40,13 @@ digraph C4_Bounded_Client_Components {
   working_tree [
     shape=cylinder,
     label="Working Tree\n[Container: File System]",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  logs [
+    shape=cylinder,
+    label="Structured Log Files\n[Container: File Store]\nsync.log",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -64,60 +71,74 @@ digraph C4_Bounded_Client_Components {
     margin=20;
 
     cli_adapter [
-      label="Command-Line Adapter\n[Component]\nInterface: Clap command schema.\nParses argv once and produces a validated CliIntent.",
+      label="Command-Line Adapter\n[Component]\nClap command schema and value parsers.\nParses argv once and produces a validated CliIntent.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     intent_preparer [
-      label="Intent Preparation Service\n[Component]\nInterface: CliIntent::prepare(Environment, cwd) -> PreparedCliIntent.\nResolves only the paths and dependencies required by the selected intent.",
+      label="Intent Preparation Service\n[Component]\nCliIntent::prepare(Environment, cwd) -> PreparedCliIntent.\nResolves only None, ConfigRoot, or LogDir dependencies and\nnormalizes paths/overrides before runtime work.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     client_app [
-      label="Bounded Command Application Service\n[Component]\nInterface: node::execute(PreparedCliIntent).\nDispatches client work, owns confirmations, rendering, and exit mapping.",
+      label="Bounded Command Application Service\n[Component]\nnode::execute / execute_client.\nDispatches implemented init/start/stop/status/log/replica/sync/ping/psk,\nowns confirmations, output rendering, PSK generation, and exit mapping.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     admin_adapter [
-      label="Admin Client Adapter\n[Component]\nInterface: typed get_status/request_shutdown/set_log_filter/replica calls.\nHides UDS connection setup, protobuf context, and request deadlines.",
+      label="Admin Client Adapter\n[Component]\nTyped 9-method Admin client with schema fingerprint,\ntrace context, UDS transport setup, and request deadlines.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     bootstrap [
-      label="Deployment Bootstrap and Launcher\n[Component]\nInterfaces: initialization and start operations.\nEncapsulates atomic config/identity creation, process spawn, and pingback.",
+      label="Deployment Bootstrap and Launcher\n[Component]\nCreates config.lua/node.json and deployment directories, removes an old\nreplica.json on approved re-init, manages detached process launch,\nnonce pingback, readiness, and graceful stop waiting.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     snapshot_reader [
-      label="Local Snapshot Reader\n[Component]\nInterfaces: inspect_snapshot and verify_snapshot.\nEncapsulates streaming tar/zstd, manifest, hash, and Loro validation.",
+      label="Local Snapshot Inspector\n[Component]\ninspect_snapshot / verify_snapshot.\nStreams tar+zstd, validates archive safety, manifest/checksums,\nand Loro catalog/document objects without a daemon.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
   }
 
-  user -> cli_adapter [label="Supplies argv and interactive input"];
+  user -> cli_adapter [
+    dir=both,
+    label="Supplies argv/interactive input and receives rendered output"
+  ];
   cli_adapter -> intent_preparer [label="Passes validated CliIntent"];
   intent_preparer -> client_app [label="Passes PreparedCliIntent"];
 
-  client_app -> admin_adapter [label="Performs one typed operational request"];
-  admin_adapter -> daemon [label="Calls Admin API\n[protobuf/gRPC over UDS]"];
+  client_app -> admin_adapter [
+    label="Performs one typed operational request for daemon-backed commands"
+  ];
+  admin_adapter -> daemon [
+    label="Lifecycle, status, log, replica, sync, and ping calls\n[protobuf/gRPC over UDS]"
+  ];
 
-  client_app -> bootstrap [label="Initializes or starts a deployment"];
-  bootstrap -> deployment_files [dir=both, label="Creates/replaces files and checks lock/socket"];
+  client_app -> bootstrap [label="Initializes, starts, or stops a deployment"];
+  bootstrap -> deployment_state [
+    dir=both,
+    label="Creates/replaces identities/config and inspects lock/socket"
+  ];
   bootstrap -> working_tree [label="Creates configured root when absent"];
-  bootstrap -> daemon [label="Spawns same executable and checks readiness\n[process + nonce pingback]", style=dashed];
+  bootstrap -> daemon [
+    label="Spawns same executable and checks readiness\n[process + nonce pingback]",
+    style=dashed
+  ];
 
-  client_app -> snapshot_reader [label="Inspects or verifies without a daemon"];
+  client_app -> snapshot_reader [label="Inspects or verifies locally"];
   snapshot_reader -> snapshot [label="Reads and validates streaming archive"];
+  client_app -> logs [label="Streams sync.log for oll sync --log"];
 }

@@ -1,0 +1,141 @@
+// Focused C4 component view of authenticated peer synchronization inside the
+// oll daemon. The view follows src/sync/ plus the replica APIs it calls.
+// Sync uses its own framed TCP protocol; it does not use gRPC.
+
+digraph C4_Sync_Components {
+  graph [
+    label="oll Node Daemon - Sync Components - Current Codebase",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.65,
+    ranksep=0.9,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=9.2, margin="0.16,0.10"];
+  edge [fontname="Helvetica", fontsize=7.8, color="#555555", fontcolor="#333333", arrowsize=0.7];
+
+  admin_api [
+    label="Admin API Adapter\n[Component]\nPeer status, synchronize, and ping",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  identities [
+    label="Identity Coordinator\n[Component]\nHot NodeIdentity, commit gate, and epoch",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  replica [
+    label="Replica Runtime\n[Component]\nStatus, peer bindings, inventory/update/blob,\ncandidate, bootstrap, and activation APIs",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  logger [
+    label="Structured Logging Service\n[Component]\nRoutes oll::sync events to sync.log",
+    fillcolor="#85BBF0",
+    fontcolor="#111111",
+    color="#5B88B2"
+  ];
+  peer_daemon [
+    label="Peer oll Node Daemon\n[External Container Instance]",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+
+  subgraph cluster_sync {
+    label="Sync subsystem inside oll Node Daemon [Container scope]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#438DD5";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=20;
+
+    control [
+      label="Sync Lifecycle and Control\n[Component]\nSyncRuntime start/status/synchronize/ping/shutdown.\nOwns configured targets, task registry, peer status,\ncommand admission, retries, deadlines, and graceful cancellation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    connections [
+      label="Connection and Session Manager\n[Component]\nTCP listener, outbound connector with bounded backoff,\nactive-session registry, durable binding refresh,\ndirection preference, duplicate arbitration, and task cleanup.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    transport [
+      label="Authenticated Transport\n[Component]\nOLLSYNC v1 preface; Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s;\nPSK derived/direct from network_key; u16-bounded encrypted frames\ncarrying prost SyncEnvelope messages.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    session [
+      label="Session Negotiator and Dispatcher\n[Component]\nSyncHello/SyncReady, schema fingerprint and identity validation,\nReplicaId/bootstrap mode negotiation, message/reply/correlation checks,\nping/pong, ready-session command loop, close and epoch invalidation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    rounds [
+      label="Finite Bidirectional Round Engine\n[Component]\nBatched object/blob inventories; update and blob requests;\nchunked transfers with size/hash/Loro validation; staged candidate;\nack/reject/commit messages and deterministic simultaneous-request handling.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    bootstrap [
+      label="Authenticated Bootstrap Coordinator\n[Component]\nNegotiates source/receiver when one replica slot is uninitialized,\nacquires durable single-source claim and identity commit guard,\ntransfers a complete inventory, activates once, projects, then reconnects.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+  }
+
+  admin_api -> control [label="Reads status or requests synchronize/ping"];
+  control -> connections [label="Starts listener/outbound tasks and selects ready sessions"];
+  control -> session [label="Sends ping or bidirectional-round commands"];
+
+  connections -> transport [label="Wraps accepted or connected TcpStream"];
+  transport -> peer_daemon [
+    dir=both,
+    label="Encrypted length-bounded frames\n[TCP]"
+  ];
+  transport -> session [dir=both, label="Authenticated SyncEnvelope channel"];
+
+  session -> identities [
+    label="Presents current NodeIdentity and subscribes identity epoch"
+  ];
+  session -> replica [
+    label="Reads ReplicaStatus and durably validates/binds remote identity"
+  ];
+  session -> connections [label="Registers/removes ready session and resolves duplicates"];
+  session -> rounds [label="Dispatches normal requested/reverse finite rounds"];
+  session -> bootstrap [label="Dispatches negotiated source or receiver mode"];
+
+  rounds -> replica [
+    label="Captures inventory, exports updates, stages blobs,\nvalidates and commits active-generation candidate"
+  ];
+  bootstrap -> replica [
+    label="Captures complete source or commits a bootstrap candidate\nunder durable claim and active-generation activation"
+  ];
+  bootstrap -> identities [
+    label="Holds commit gate and advances epoch after receiver activation"
+  ];
+
+  connections -> logger [label="Connection, retry, handshake, and session events"];
+  control -> logger [label="Status-control, ping, and synchronization outcomes"];
+  rounds -> logger [label="Round, inventory, transfer, and commit events"];
+  bootstrap -> logger [label="Bootstrap claim, activation, and failure events"];
+}

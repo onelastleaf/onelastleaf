@@ -1,37 +1,49 @@
-// C4 system-context model for the architecture currently implemented in src/.
-// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
-// they do not yet have runtime components in the current implementation.
+// C4 system-context model derived from the production code in src/.
+// Plugin and job CLI/protobuf declarations are omitted because the current
+// executable has no production handler or runtime component for them.
 
 digraph C4_System_Context {
   graph [
-    label="onelastleaf (oll) - C4 System Context - Current Implementation",
+    label="onelastleaf (oll) - C4 System Context - Current Codebase",
     labelloc=t,
     labeljust=l,
     fontsize=20,
     fontname="Helvetica",
     bgcolor="white",
     pad=0.35,
-    nodesep=0.9,
-    ranksep=1.1
+    nodesep=1.0,
+    ranksep=1.15
   ];
   node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=11, margin="0.18,0.12"];
   edge [fontname="Helvetica", fontsize=9, color="#555555", fontcolor="#333333", arrowsize=0.8];
 
   deployment_user [
-    label="Deployment User\n[Person]\nRuns oll and edits the local document tree",
+    label="Deployment User\n[Person]\nRuns oll, owns its configuration and identities,\nand edits the local working tree",
     fillcolor="#08427B",
     fontcolor="white",
     color="#052E56"
   ];
 
   oll [
-    label="onelastleaf (oll)\n[Software System]\nA user-owned, offline document library with one daemon,\none node, and exactly one CRDT replica per deployment",
+    label="onelastleaf (oll)\n[Software System]\nA user-owned CRDT document library. Each deployment runs\none writable node with exactly one local replica slot.",
     fillcolor="#1168BD",
     fontcolor="white",
     color="#0B4884"
   ];
 
+  peer_oll [
+    label="Peer oll Deployment\n[External Instance of the Same Software System]\nAn equal writable node that either shares the ReplicaId\nor supplies the first authenticated bootstrap",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+
   deployment_user -> oll [
-    label="Runs bounded commands or the daemon;\nreads and edits documents\n[CLI and local filesystem]"
+    label="Initializes and operates the node;\nreads and edits documents\n[CLI and local filesystem]"
+  ];
+
+  oll -> peer_oll [
+    dir=both,
+    label="Authenticates, pings, bootstraps, and exchanges\nfinite CRDT update/blob rounds\n[TCP + Noise NNpsk0 + prost SyncEnvelope]"
   ];
 }

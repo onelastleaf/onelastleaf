@@ -1,10 +1,10 @@
-// C4 daemon-component model for the architecture currently implemented in src/.
-// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
-// they do not yet have runtime components in the current implementation.
+// C4 component model of the oll node daemon derived from production src/.
+// Replica and sync internals are expanded in replica-components.dot and
+// sync-components.dot. No plugin process runtime exists in the current code.
 
 digraph C4_Daemon_Components {
   graph [
-    label="oll Node Daemon - C4 Component Diagram - Current Implementation",
+    label="oll Node Daemon - C4 Component Diagram - Current Codebase",
     labelloc=t,
     labeljust=l,
     fontsize=20,
@@ -19,14 +19,20 @@ digraph C4_Daemon_Components {
   edge [fontname="Helvetica", fontsize=8, color="#555555", fontcolor="#333333", arrowsize=0.72];
 
   admin_client [
-    label="Bounded oll Client\n[Container]\nIssues typed administrative requests",
+    label="Bounded oll Client\n[Container]\nIssues typed local administrative requests",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
   ];
-  deployment_files [
+  peer_daemon [
+    label="Peer oll Node Daemon\n[External Container Instance]",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+  deployment_state [
     shape=cylinder,
-    label="Deployment Files\n[Container: File Store]\nconfig.lua, node.json, node.lock",
+    label="Deployment State and Key Material\n[Container: File Store]\nconfig.lua/modules, node.json, replica.json,\nrun/node.lock/admin.sock, optional key file",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -40,14 +46,14 @@ digraph C4_Daemon_Components {
   ];
   sql_store [
     shape=cylinder,
-    label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL",
+    label="Replica Store\n[Container: SQLite or PostgreSQL]",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
   ];
   logs [
     shape=cylinder,
-    label="Structured Log Files\n[Container: File Store]",
+    label="Structured Log Files\n[Container: File Store]\noll.log and sync.log",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -72,73 +78,105 @@ digraph C4_Daemon_Components {
     margin=20;
 
     lifecycle [
-      label="Node Lifecycle Orchestrator\n[Component]\nInterface: PreparedRunIntent, Unix signals, and ShutdownNotice.\nOwns startup order, readiness, one-replica construction, and shutdown.",
-      fillcolor="#85BBF0",
-      fontcolor="#111111",
-      color="#5B88B2"
-    ];
-
-    admin_api [
-      label="Admin API Adapter\n[Component]\nInterface: oll.protocol.Admin gRPC service (7 RPCs).\nValidates context and translates transport requests to domain APIs.",
+      label="Node Lifecycle Orchestrator\n[Component]\nPreparedRunIntent, DeploymentLock, Unix signals, readiness pingback,\nand ordered construction/shutdown of one replica and sync runtime.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     configuration [
-      label="Configuration Runtime\n[Component]\nInterface: ConfigRuntime::load -> ResolvedNodeConfig.\nEncapsulates embedded LuaJIT, schema conversion, and path validation.",
+      label="Configuration Runtime\n[Component]\nConfigRuntime::load -> ResolvedNodeConfig.\nEmbedded LuaJIT, controlled require/getenv/read_network_key,\nstrict schema conversion, topology and storage-layout validation.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
-    deployment_state [
-      label="Deployment State Gateway\n[Component]\nInterfaces: DeploymentLock and NodeIdentity APIs.\nEncapsulates single-instance locking, identity persistence, and runtime paths.",
+    identities [
+      label="Identity Coordinator and Watcher\n[Component]\nIdentityCoordinator + IdentityWatch.\nHot-reloads node.json and replica.json under a commit gate,\nupdates logger identity, and publishes invalidation epochs.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    admin_api [
+      label="Admin API Adapter\n[Component]\noll.protocol.Admin: 9 unary RPCs over UDS.\nValidates schema/trace context and adapts lifecycle, status,\nlogging, replica snapshot/query, synchronize, and ping calls.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     replica [
-      label="Replica Runtime\n[Component]\nInterface: ReplicaRuntime lifecycle, Admin-facing operations, and typed\ndocument/CRDT API. Encapsulates catalog/document Loro state, binary LWW,\nworking-tree reconciliation/projection, and snapshot coordination.",
+      label="Replica Runtime\n[Component]\nReplicaRuntime owns optional ActiveReplica state, recursive working-tree\nwatch/projection, typed document APIs, SQL persistence, snapshots,\nand the inventory/candidate APIs consumed by sync.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
-    persistence [
-      label="Replica Persistence Gateway\n[Component]\nInterface: ReplicaStore API.\nHides SQL schema, SQLite/PostgreSQL selection, transactions, blobs,\ngenerations, history, and recovery markers.",
+    sync [
+      label="Peer Sync Runtime\n[Component]\nSyncRuntime owns listener/outbound tasks, Noise sessions, durable peer\nbindings, status/ping control, finite bidirectional rounds,\nand authenticated first-replica bootstrap.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     logger [
-      label="Structured Logging Service\n[Component]\nInterface: NodeLogger open/emit/set_filter/flush.\nHides bounded queue, writer thread, filtering, routing, and file sinks.",
+      label="Structured Logging Service\n[Component]\nNodeLogger open/emit/set_identity/set_filter/flush.\nBounded queue, dynamic filters, normalized correlation fields,\nrouting, writer thread, and file sinks.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
+
   }
 
-  admin_client -> admin_api [label="Calls GetStatus, Shutdown, SetLogFilter,\nInspectReplicaDocument, ListReplicaOperations,\nExportReplica, or ImportReplica\n[gRPC over UDS]"];
+  admin_client -> admin_api [
+    label="Calls GetStatus, Shutdown, SetLogFilter, replica query/import/export,\nSynchronizePeers, or PingPeer\n[gRPC over UDS]"
+  ];
 
-  lifecycle -> deployment_state [label="Acquires lock and loads identity\n[DeploymentLock / NodeIdentity APIs]"];
-  deployment_state -> deployment_files [dir=both, label="flock and strict JSON I/O"];
-  lifecycle -> configuration [label="Loads typed effective configuration\n[ConfigRuntime API]"];
-  configuration -> deployment_files [label="Evaluates config.lua and contained modules\n[embedded LuaJIT]"];
+  lifecycle -> deployment_state [
+    label="Acquires run lock and binds Admin socket\n[DeploymentLock / UnixListener]"
+  ];
+  lifecycle -> configuration [label="Loads and validates effective configuration"];
+  configuration -> deployment_state [
+    label="Evaluates config.lua/modules and optional key file\n[embedded LuaJIT + file I/O]"
+  ];
+  lifecycle -> identities [label="Creates coordinator and starts final-state watcher"];
+  identities -> deployment_state [
+    dir=both,
+    label="Loads, watches, and atomically coordinates identity records\n[strict JSON + notify]"
+  ];
+  lifecycle -> logger [label="Opens sinks, emits lifecycle events, and flushes"];
+  lifecycle -> replica [label="Starts before sync and drains during shutdown"];
+  lifecycle -> sync [label="Starts after replica and drains before process exit"];
+  lifecycle -> admin_api [label="Constructs AdminState and serves UDS"];
 
-  lifecycle -> logger [label="Opens, emits lifecycle events, and flushes\n[NodeLogger API]"];
-  lifecycle -> replica [label="Starts exactly one instance and shuts it down\n[ReplicaRuntime API]"];
-  lifecycle -> admin_api [label="Constructs with AdminState and serves UDS"];
-  admin_api -> lifecycle [label="Requests ordered shutdown\n[ShutdownNotice watch channel]"];
-  admin_api -> replica [label="Status, inspection, history, export, import\n[ReplicaRuntime API]"];
-  admin_api -> logger [label="Emits RPC events and changes live filters\n[NodeLogger API]"];
+  admin_api -> lifecycle [label="Requests ordered shutdown\n[ShutdownNotice]"];
+  admin_api -> identities [label="Reads current hot NodeIdentity for status"];
+  admin_api -> replica [label="Status, inspection, history, snapshot import/export"];
+  admin_api -> sync [label="Peer status, synchronize, and ping"];
+  admin_api -> logger [label="Emits RPC events and changes live filters"];
 
-  replica -> persistence [label="Loads, commits, replaces, and recovers state\n[ReplicaStore API]"];
-  persistence -> sql_store [dir=both, label="Executes backend-neutral SQL operations\n[sqlx]"];
-  replica -> working_tree [dir=both, label="Scans, watches, reconciles, and projects\n[notify + filesystem I/O]"];
-  replica -> snapshot [dir=both, label="Streams validated import/export\n[tar + zstd]"];
-  replica -> logger [label="Emits correlated replica and snapshot events\n[NodeLogger API]"];
+  identities -> replica [
+    dir=both,
+    label="Coordinates NodeId/ReplicaId hot changes and commit serialization"
+  ];
+  identities -> logger [label="Replaces identity fields after valid node.json edits"];
+  sync -> identities [
+    label="Reads identity, holds bootstrap commit guard,\nand cancels sessions on epoch changes"
+  ];
+  sync -> replica [
+    label="Binds peers; captures inventories; transfers and activates\nnormal/bootstrap candidates"
+  ];
+
+  replica -> deployment_state [dir=both, label="Recovers and updates replica.json"];
+  replica -> working_tree [dir=both, label="Watches, reconciles, and projects"];
+  replica -> sql_store [dir=both, label="Persists generations, objects, blobs, and recovery state"];
+  replica -> snapshot [dir=both, label="Stages, verifies, exports, and imports .ollsnap"];
+  replica -> logger [label="Emits correlated replica/snapshot events"];
+
+  sync -> peer_daemon [
+    dir=both,
+    label="Encrypted SyncEnvelope sessions\n[TCP + Noise NNpsk0]"
+  ];
+  sync -> logger [label="Emits correlated connection, round, and bootstrap events"];
   logger -> logs [label="Writes and flushes normalized JSON Lines"];
 }

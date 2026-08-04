@@ -1,10 +1,10 @@
-// C4 container model for the architecture currently implemented in src/.
-// Sync and plugin protobuf contracts and CLI syntax are intentionally absent:
-// they do not yet have runtime components in the current implementation.
+// C4 container model derived from the production code in src/.
+// One oll executable acts either as a bounded client or as the node daemon.
+// Plugin and job declarations are excluded because no runtime implements them.
 
 digraph C4_Containers {
   graph [
-    label="onelastleaf (oll) - C4 Container Diagram - Current Implementation",
+    label="onelastleaf (oll) - C4 Container Diagram - Current Codebase",
     labelloc=t,
     labeljust=l,
     fontsize=20,
@@ -25,8 +25,15 @@ digraph C4_Containers {
     color="#052E56"
   ];
 
+  peer_daemon [
+    label="Peer oll Node Daemon\n[External Container Instance]\nEqual writable peer with its own node identity,\nworking tree, replica slot, and durable store",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+
   subgraph cluster_oll_system {
-    label="onelastleaf (oll) [Software System]";
+    label="Local onelastleaf (oll) Deployment [Software System]";
     labelloc=t;
     labeljust=l;
     fontsize=14;
@@ -37,22 +44,22 @@ digraph C4_Containers {
     margin=22;
 
     bounded_client [
-      label="Bounded oll Client\n[Container: Process]\nSame Rust executable; parses one command, performs\nlocal/bootstrap work or one Admin call, renders, and exits",
+      label="Bounded oll Client\n[Container: Process]\nThe same Rust executable; prepares one command, performs\nlocal utility/bootstrap work or one Admin RPC, renders, and exits",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
     ];
 
     node_daemon [
-      label="oll Node Daemon\n[Container: Process]\nSame Rust executable with Tokio; owns lifecycle,\nAdmin UDS, one node, and exactly one replica",
+      label="oll Node Daemon\n[Container: Rust + Tokio Process]\nOwns lifecycle, hot identities, Admin UDS, exactly one\nreplica runtime, and authenticated peer synchronization",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
     ];
 
-    deployment_files [
+    deployment_state [
       shape=cylinder,
-      label="Deployment Files\n[Container: File Store]\nconfig.lua, node.json, node.lock",
+      label="Deployment State and Key Material\n[Container: File Store]\nconfig.lua/modules, node.json, replica.json,\nrun/node.lock + admin.sock, and an optional referenced key file",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -60,7 +67,7 @@ digraph C4_Containers {
 
     working_tree [
       shape=cylinder,
-      label="Working Tree\n[Container: File System]\nUser-editable ordinary directories and files;\nprojection of the logical replica",
+      label="Working Tree\n[Container: File System]\nUser-editable ordinary files and directories;\nprojection of the active logical replica",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -68,7 +75,7 @@ digraph C4_Containers {
 
     replica_store [
       shape=cylinder,
-      label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL; durable catalog/document CRDTs,\nblobs, operation history, and recovery state",
+      label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL generations, catalog/document CRDTs,\nblobs, history, identity transitions, and peer bindings",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -84,26 +91,54 @@ digraph C4_Containers {
 
     snapshot_archive [
       shape=cylinder,
-      label="Replica Snapshot\n[Container: File]\n.ollsnap tar+zstd logical-replica checkpoint",
+      label="Replica Snapshot\n[Container: File]\n.ollsnap tar+zstd archive with manifest,\nLoro objects, and content-addressed blobs",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
     ];
   }
 
-  user -> bounded_client [label="Invokes commands\n[terminal / stdin / stdout / stderr]"];
+  user -> bounded_client [label="Invokes bounded commands\n[terminal / stdin / stdout / stderr]"];
   user -> node_daemon [label="May run in foreground\n[oll run]"];
-  user -> deployment_files [label="Owns and may edit configuration and identity\n[Lua and JSON]"];
-  user -> working_tree [label="Reads and edits documents\n[filesystem tools]"];
+  user -> deployment_state [label="Owns and may edit configuration,\nidentity records, and network-key material"];
+  user -> working_tree [dir=both, label="Reads and edits documents\n[filesystem tools]"];
 
-  bounded_client -> node_daemon [label="Administrative operations\n[typed protobuf/gRPC over Unix domain socket]"];
-  bounded_client -> node_daemon [label="Starts detached daemon and verifies readiness\n[process spawn + one-use nonce pingback]", style=dashed];
-  bounded_client -> deployment_files [label="Initializes deployment or locates Admin socket\n[filesystem]"];
-  bounded_client -> snapshot_archive [label="Inspects or verifies locally\n[streaming file I/O]"];
+  bounded_client -> node_daemon [
+    label="Lifecycle, status, logging, replica, sync, and ping calls\n[typed protobuf/gRPC over Unix domain socket]"
+  ];
+  bounded_client -> node_daemon [
+    label="Starts the same executable and verifies readiness\n[process spawn + one-use nonce pingback]",
+    style=dashed
+  ];
+  bounded_client -> deployment_state [
+    dir=both,
+    label="Initializes deployment and locates lock/socket\n[filesystem]"
+  ];
+  bounded_client -> working_tree [label="Creates the configured root during init"];
+  bounded_client -> log_files [label="Streams sync.log directly\n[file I/O]"];
+  bounded_client -> snapshot_archive [
+    label="Inspects or verifies without a daemon\n[streaming tar/zstd file I/O]"
+  ];
 
-  node_daemon -> deployment_files [label="Locks deployment; loads identity and configuration\n[flock, JSON, embedded LuaJIT]"];
-  node_daemon -> working_tree [dir=both, label="Watches/reconciles edits and projects replica state\n[notify + filesystem I/O]"];
-  node_daemon -> replica_store [dir=both, label="Persists and recovers authoritative replica state\n[SQL transactions via sqlx]"];
-  node_daemon -> log_files [label="Appends normalized events asynchronously\n[JSON Lines]"];
-  node_daemon -> snapshot_archive [dir=both, label="Exports or imports complete replica checkpoints\n[tar + zstd]"];
+  node_daemon -> deployment_state [
+    dir=both,
+    label="Locks deployment, evaluates config, and loads/watches identities\n[flock, LuaJIT, strict JSON, notify]"
+  ];
+  node_daemon -> working_tree [
+    dir=both,
+    label="Scans, watches, reconciles, and projects\n[notify + filesystem I/O]"
+  ];
+  node_daemon -> replica_store [
+    dir=both,
+    label="Loads, commits, activates, and recovers replica state\n[backend-neutral SQL via sqlx]"
+  ];
+  node_daemon -> log_files [label="Appends and flushes normalized events\n[JSON Lines]"];
+  node_daemon -> snapshot_archive [
+    dir=both,
+    label="Exports and imports complete logical checkpoints\n[tar + zstd]"
+  ];
+  node_daemon -> peer_daemon [
+    dir=both,
+    label="Maintains equal peer sessions; pings, bootstraps, and syncs\n[oll:// TCP + Noise NNpsk0 + prost frames]"
+  ];
 }
