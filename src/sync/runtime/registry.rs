@@ -66,10 +66,11 @@ impl SyncRuntime {
         Ok(())
     }
 
-    pub(super) fn log_transport_failure(
+    pub(super) fn log_session_failure(
         &self,
         correlation_id: &str,
         direction: Direction,
+        failure_stage: &'static str,
         error: &SessionError,
     ) {
         self.logger.emit(
@@ -77,10 +78,7 @@ impl SyncRuntime {
             "oll::sync",
             "sync_session_failed",
             correlation_id,
-            json!({
-                "direction": match direction { Direction::Inbound => "inbound", Direction::Outbound => "outbound" },
-                "error_code": session_error_code(error),
-            }),
+            session_failure_fields(error, direction, failure_stage),
         );
     }
 }

@@ -336,6 +336,40 @@ background connection or inbound operation without an external ID creates one
 at its first local boundary. Network keys, handshake material, raw frames, Loro
 updates, and blobs are never logged.
 
+`sync_session_failed` is an actionable local diagnostic, not one generic
+`protocol` bucket. It always records:
+
+- `failure_stage`: `transport_handshake`, `sync_hello`, or `sync_ready`;
+- `failure_source`: `transport`, `local_validation`, or `remote_close`;
+- a stable `error_code` naming the specific locally known cause.
+
+Transport error codes are `transport_io`, `handshake_deadline_exceeded`,
+`invalid_preface`, `invalid_frame_length`, `noise_handshake_failed`,
+`noise_transport_authentication_failed`, `envelope_too_large`, and
+`invalid_protobuf_envelope`. `transport_io` additionally records the
+non-sensitive operating-system I/O error kind.
+
+Application-handshake validation uses specific codes rather than collapsing
+them into `protocol_violation`: `hello_reply_to_present`,
+`expected_sync_hello`, `schema_mismatch`, `invalid_max_chunk_bytes`,
+`invalid_node_identity`, `self_connection`, `invalid_replica_id`,
+`missing_replica_state`, `replica_mismatch`, `no_replica_available`,
+`ready_reply_to_present`, `bootstrap_correlation_mismatch`,
+`expected_sync_ready`, and `ready_negotiation_mismatch`. Channel invariant
+failures likewise retain `empty_local_correlation_id`, `message_id_exhausted`,
+or `invalid_envelope_metadata`. A locally generated failure may add its static,
+host-authored `message` and the normalized `sync_close_code` sent to the peer.
+
+For an authenticated remote `SyncClose`, `error_code` and `sync_close_code`
+contain its normalized enum reason, such as `schema_mismatch`,
+`replica_mismatch`, or `bootstrap_in_progress`; `failure_source` makes clear
+that the reason came from the peer. The peer-controlled free-text close message
+is never copied into local logs. Before authentication, the local log may say
+that the Noise handshake failed, but it does not claim that the PSK differed:
+wrong key bytes, malformed Noise traffic, and authentication failure remain
+indistinguishable and no key bytes, derived PSK, hash, or handshake material are
+recorded.
+
 ## Required tests
 
 Sync tests cover:
@@ -358,4 +392,6 @@ Sync tests cover:
 - bounded userspace buffering that relies on TCP backpressure without a wire
   credit protocol;
 - inherited correlation through a normal transfer and an entire bootstrap;
+- stable, cause-specific session-failure diagnostics, including redaction of a
+  peer-controlled close message and all network-key material;
 - listener/session shutdown under the node's single absolute deadline.

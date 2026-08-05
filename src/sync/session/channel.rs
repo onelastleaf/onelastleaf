@@ -32,6 +32,7 @@ where
         if correlation_id.is_empty() {
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ProtocolViolation,
+                error_code: "empty_local_correlation_id",
                 message: "local sync correlation_id is empty",
             });
         }
@@ -41,6 +42,7 @@ where
                 .checked_add(1)
                 .ok_or(SessionError::LocalProtocol {
                     code: SyncCloseCode::ResourceExhausted,
+                    error_code: "message_id_exhausted",
                     message: "sync message ID space is exhausted",
                 })?;
         self.transport
@@ -68,6 +70,7 @@ where
         {
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ProtocolViolation,
+                error_code: "invalid_envelope_metadata",
                 message: "received sync envelope has invalid metadata",
             });
         }

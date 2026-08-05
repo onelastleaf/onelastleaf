@@ -78,6 +78,7 @@ async fn two_uninitialized_nodes_close_without_entering_ready_state() {
         left,
         Err(SessionError::LocalProtocol {
             code: SyncCloseCode::NoReplicaAvailable,
+            error_code: "no_replica_available",
             ..
         })
     ));
@@ -85,6 +86,7 @@ async fn two_uninitialized_nodes_close_without_entering_ready_state() {
         right,
         Err(SessionError::LocalProtocol {
             code: SyncCloseCode::NoReplicaAvailable,
+            error_code: "no_replica_available",
             ..
         })
     ));
@@ -139,6 +141,7 @@ async fn schema_self_and_replica_mismatches_are_authenticated_close_reasons() {
         local,
         Err(SessionError::LocalProtocol {
             code: SyncCloseCode::SchemaMismatch,
+            error_code: "schema_mismatch",
             ..
         })
     ));
@@ -178,6 +181,7 @@ async fn schema_self_and_replica_mismatches_are_authenticated_close_reasons() {
             result,
             Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::SelfConnection,
+                error_code: "self_connection",
                 ..
             })
         ));
@@ -216,6 +220,7 @@ async fn schema_self_and_replica_mismatches_are_authenticated_close_reasons() {
             result,
             Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ReplicaMismatch,
+                error_code: "replica_mismatch",
                 ..
             })
         ));

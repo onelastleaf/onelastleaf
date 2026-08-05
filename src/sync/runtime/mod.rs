@@ -36,7 +36,7 @@ use crate::{
 use super::{
     HANDSHAKE_DEADLINE, NoiseTransport, PendingSession, RoundError, RoundResult, SessionChannel,
     SessionError, SessionReplicaMode, derive_noise_psk, receive_bootstrap_round, receive_round,
-    security::NoisePsk, send_bootstrap_round, send_round,
+    security::NoisePsk, send_bootstrap_round, send_round, transport::TransportError,
 };
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);

@@ -62,10 +62,76 @@ pub(super) fn jittered(base: Duration) -> Duration {
     ))
 }
 
-pub(super) fn session_error_code(error: &SessionError) -> &'static str {
+pub(super) fn session_failure_fields(
+    error: &SessionError,
+    direction: Direction,
+    failure_stage: &'static str,
+) -> serde_json::Value {
+    let direction = match direction {
+        Direction::Inbound => "inbound",
+        Direction::Outbound => "outbound",
+    };
+    let close_code_name = |code| match code {
+        SyncCloseCode::Unspecified => "unspecified",
+        SyncCloseCode::Normal => "normal",
+        SyncCloseCode::ShuttingDown => "shutting_down",
+        SyncCloseCode::ProtocolViolation => "protocol_violation",
+        SyncCloseCode::SchemaMismatch => "schema_mismatch",
+        SyncCloseCode::IdentityCollision => "identity_collision",
+        SyncCloseCode::SelfConnection => "self_connection",
+        SyncCloseCode::DuplicateSession => "duplicate_session",
+        SyncCloseCode::ReplicaMismatch => "replica_mismatch",
+        SyncCloseCode::NoReplicaAvailable => "no_replica_available",
+        SyncCloseCode::BootstrapInProgress => "bootstrap_in_progress",
+        SyncCloseCode::NegotiationFailed => "negotiation_failed",
+        SyncCloseCode::ResourceExhausted => "resource_exhausted",
+        SyncCloseCode::InternalError => "internal_error",
+    };
     match error {
-        SessionError::Transport(_) => "transport",
-        SessionError::LocalProtocol { .. } => "protocol",
-        SessionError::RemoteClosed { .. } => "remote_close",
+        SessionError::Transport(error) => {
+            let (error_code, io_error_kind) = match error {
+                TransportError::Io(kind) => ("transport_io", Some(format!("{kind:?}"))),
+                TransportError::DeadlineExceeded => ("handshake_deadline_exceeded", None),
+                TransportError::InvalidPreface => ("invalid_preface", None),
+                TransportError::InvalidFrameLength => ("invalid_frame_length", None),
+                TransportError::NoiseHandshake => ("noise_handshake_failed", None),
+                TransportError::NoiseTransport => ("noise_transport_authentication_failed", None),
+                TransportError::EnvelopeTooLarge => ("envelope_too_large", None),
+                TransportError::InvalidEnvelope => ("invalid_protobuf_envelope", None),
+            };
+            let mut fields = json!({
+                "direction": direction,
+                "failure_stage": failure_stage,
+                "failure_source": "transport",
+                "error_code": error_code,
+                "message": error.to_string(),
+            });
+            if let Some(kind) = io_error_kind {
+                fields["io_error_kind"] = kind.into();
+            }
+            fields
+        }
+        SessionError::LocalProtocol {
+            code,
+            error_code,
+            message,
+        } => json!({
+            "direction": direction,
+            "failure_stage": failure_stage,
+            "failure_source": "local_validation",
+            "error_code": error_code,
+            "sync_close_code": close_code_name(*code),
+            "message": message,
+        }),
+        SessionError::RemoteClosed { code, .. } => {
+            let code = close_code_name(*code);
+            json!({
+                "direction": direction,
+                "failure_stage": failure_stage,
+                "failure_source": "remote_close",
+                "error_code": code,
+                "sync_close_code": code,
+            })
+        }
     }
 }

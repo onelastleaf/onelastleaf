@@ -29,9 +29,10 @@ pub(super) async fn run_connection(
     let transport = match transport {
         Ok(transport) => transport,
         Err(error) => {
-            runtime.log_transport_failure(
+            runtime.log_session_failure(
                 &correlation_id,
                 direction,
+                "transport_handshake",
                 &SessionError::Transport(error),
             );
             return;
@@ -50,7 +51,7 @@ pub(super) async fn run_connection(
     {
         Ok(pending) => pending,
         Err(error) => {
-            runtime.log_transport_failure(&correlation_id, direction, &error);
+            runtime.log_session_failure(&correlation_id, direction, "sync_hello", &error);
             return;
         }
     };
@@ -214,7 +215,7 @@ pub(super) async fn run_connection(
                 .release_bootstrap_claim(claim.claim_id)
                 .await;
         }
-        runtime.log_transport_failure(&correlation_id, direction, &error);
+        runtime.log_session_failure(&correlation_id, direction, "sync_ready", &error);
         return;
     }
     let remote = pending.remote.clone();

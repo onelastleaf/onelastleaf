@@ -32,6 +32,7 @@ pub(crate) enum SessionError {
     Transport(TransportError),
     LocalProtocol {
         code: SyncCloseCode,
+        error_code: &'static str,
         message: &'static str,
     },
     RemoteClosed {

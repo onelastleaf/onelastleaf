@@ -206,7 +206,8 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 - `parent_call_id`, `call_depth`, and `causal_depth`;
 - `operation_id`, `snapshot_id`, and `artifact_id`;
 - `round_id`, `bootstrap_id`, and connection direction;
-- `error_code`, `retryable`, `attempt`, and `backoff_ms`;
+- `error_code`, `failure_stage`, `failure_source`, `sync_close_code`,
+  `retryable`, `attempt`, and `backoff_ms`;
 - `bytes`, `object_count`, `chunk_count`, and `duration_ms`.
 
 Each delayed working-tree projection retry is a structured `WARN` event with a
@@ -317,6 +318,13 @@ Network addresses and sanitized document paths may be logged because they are
 needed for diagnosis, but file permissions remain non-world-readable. Error
 objects must be redacted before structured serialization, not afterward by a
 text filter.
+
+Sync failure logs distinguish transport, local validation, and authenticated
+remote-close causes as specified in [synchronization.md](synchronization.md).
+They may include a static host-authored explanation for a local validation
+failure. They never copy a peer-controlled `SyncClose.message` into a sink and
+never infer or log whether configured network-key bytes match merely from a
+Noise authentication failure.
 
 ## Rotation and retention
 

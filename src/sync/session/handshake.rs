@@ -50,6 +50,7 @@ where
             return fail_handshake(
                 channel,
                 SyncCloseCode::ProtocolViolation,
+                "hello_reply_to_present",
                 "SyncHello must not reply to another message",
                 correlation_id,
                 deadline,
@@ -60,6 +61,7 @@ where
             return fail_handshake(
                 channel,
                 SyncCloseCode::ProtocolViolation,
+                "expected_sync_hello",
                 "first encrypted sync message must be SyncHello",
                 correlation_id,
                 deadline,
@@ -70,6 +72,7 @@ where
             return fail_handshake(
                 channel,
                 SyncCloseCode::SchemaMismatch,
+                "schema_mismatch",
                 "protocol schema fingerprint differs",
                 correlation_id,
                 deadline,
@@ -80,6 +83,7 @@ where
             return fail_handshake(
                 channel,
                 SyncCloseCode::NegotiationFailed,
+                "invalid_max_chunk_bytes",
                 "peer max_chunk_bytes is invalid",
                 correlation_id,
                 deadline,
@@ -95,6 +99,7 @@ where
                 return fail_handshake(
                     channel,
                     SyncCloseCode::ProtocolViolation,
+                    "invalid_node_identity",
                     "peer NodeIdentity is invalid",
                     correlation_id,
                     deadline,
@@ -106,6 +111,7 @@ where
             return fail_handshake(
                 channel,
                 SyncCloseCode::SelfConnection,
+                "self_connection",
                 "peer presented the local NodeId",
                 correlation_id,
                 deadline,
@@ -121,6 +127,7 @@ where
                         return fail_handshake(
                             channel,
                             SyncCloseCode::ProtocolViolation,
+                            "invalid_replica_id",
                             "peer ReplicaId is invalid",
                             correlation_id,
                             deadline,
@@ -133,6 +140,7 @@ where
                 return fail_handshake(
                     channel,
                     SyncCloseCode::ProtocolViolation,
+                    "missing_replica_state",
                     "SyncHello is missing replica state",
                     correlation_id,
                     deadline,
@@ -151,6 +159,7 @@ where
                 return fail_handshake(
                     channel,
                     SyncCloseCode::ReplicaMismatch,
+                    "replica_mismatch",
                     "peer ReplicaId differs from the local replica",
                     correlation_id,
                     deadline,
@@ -163,6 +172,7 @@ where
                 return fail_handshake(
                     channel,
                     SyncCloseCode::NoReplicaAvailable,
+                    "no_replica_available",
                     "neither peer has a local replica",
                     correlation_id,
                     deadline,
@@ -218,6 +228,7 @@ where
                 .await;
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ProtocolViolation,
+                error_code: "ready_reply_to_present",
                 message: "SyncReady must not reply to another message",
             });
         }
@@ -232,6 +243,7 @@ where
                 .await;
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ProtocolViolation,
+                error_code: "bootstrap_correlation_mismatch",
                 message: "bootstrap SyncReady correlation differs from SyncHello",
             });
         }
@@ -246,6 +258,7 @@ where
                 .await;
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::ProtocolViolation,
+                error_code: "expected_sync_ready",
                 message: "expected SyncReady after SyncHello",
             });
         };
@@ -263,6 +276,7 @@ where
                 .await;
             return Err(SessionError::LocalProtocol {
                 code: SyncCloseCode::NegotiationFailed,
+                error_code: "ready_negotiation_mismatch",
                 message: "peer SyncReady differs from negotiated values",
             });
         }
@@ -273,6 +287,7 @@ where
 async fn fail_handshake<S, T>(
     mut channel: SessionChannel<S>,
     code: SyncCloseCode,
+    error_code: &'static str,
     message: &'static str,
     correlation_id: &str,
     deadline: Instant,
@@ -283,7 +298,11 @@ where
     channel
         .close(code, message, correlation_id, Some(deadline))
         .await;
-    Err(SessionError::LocalProtocol { code, message })
+    Err(SessionError::LocalProtocol {
+        code,
+        error_code,
+        message,
+    })
 }
 
 fn parse_replica_id(value: &str) -> Option<Uuid> {

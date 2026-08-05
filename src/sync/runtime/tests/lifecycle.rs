@@ -17,6 +17,51 @@ fn reconnect_backoff_is_bounded_even_after_saturation() {
     assert_eq!(backoff, MAXIMUM_BACKOFF);
 }
 
+#[test]
+fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
+    let transport = session_failure_fields(
+        &SessionError::Transport(TransportError::NoiseHandshake),
+        Direction::Outbound,
+        "transport_handshake",
+    );
+    assert_eq!(transport["direction"], "outbound");
+    assert_eq!(transport["failure_stage"], "transport_handshake");
+    assert_eq!(transport["failure_source"], "transport");
+    assert_eq!(transport["error_code"], "noise_handshake_failed");
+    assert_eq!(transport["message"], "Noise handshake failed");
+
+    let local = session_failure_fields(
+        &SessionError::LocalProtocol {
+            code: SyncCloseCode::ReplicaMismatch,
+            error_code: "replica_mismatch",
+            message: "peer ReplicaId differs from the local replica",
+        },
+        Direction::Inbound,
+        "sync_hello",
+    );
+    assert_eq!(local["failure_source"], "local_validation");
+    assert_eq!(local["error_code"], "replica_mismatch");
+    assert_eq!(local["sync_close_code"], "replica_mismatch");
+    assert_eq!(
+        local["message"],
+        "peer ReplicaId differs from the local replica"
+    );
+
+    let remote = session_failure_fields(
+        &SessionError::RemoteClosed {
+            code: SyncCloseCode::SchemaMismatch,
+            message: "attacker-controlled network key material".to_owned(),
+        },
+        Direction::Outbound,
+        "sync_hello",
+    );
+    assert_eq!(remote["failure_source"], "remote_close");
+    assert_eq!(remote["error_code"], "schema_mismatch");
+    assert_eq!(remote["sync_close_code"], "schema_mismatch");
+    assert!(remote.get("message").is_none());
+    assert!(!remote.to_string().contains("network key material"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn shutdown_aborts_a_silent_handshake_at_the_supplied_absolute_deadline() {
     let deployment = SyncDeployment::new("shutdown-listener");
