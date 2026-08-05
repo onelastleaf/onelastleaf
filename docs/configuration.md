@@ -293,6 +293,12 @@ replica store: generated explicit SQLite path using the in-memory NodeId
 artifact download dir: platform Downloads directory / oll
 ```
 
+An `init --connect` value is CLI shorthand rather than persisted configuration.
+It defaults a missing scheme to `oll://` and a missing port to `17384`, then
+validates the result with the strict `ConnectUrl` rules above. The generated
+`config.lua` always records an explicit `oll://host:port` entry. Runtime CLI
+overrides and Lua configuration do not receive these defaults.
+
 The config-root fallback is the platform configuration directory plus `oll`.
 On Linux, the Documents fallback uses `XDG_DOCUMENTS_DIR` when configured and
 otherwise `$HOME/Documents/oll`; the artifact location uses the platform user
@@ -404,7 +410,8 @@ daemon-managed location, including layouts produced by runtime overrides and
 bytes including a trailing newline, weak-key warning redaction, direct 32-byte
 use, the specified HKDF vector for every other length, omitted-key topology
 failure, and strict explicit-port `oll://` parsing. Tests do not execute
-intentionally non-terminating Lua in-process.
+intentionally non-terminating Lua in-process. CLI tests additionally cover
+`init` normalization of omitted schemes and ports.
 
 Plugin configuration tests cover a disk edit observed by the next top-level
 read, shared-registry closure invocation by `session_id + function_id`, stale

@@ -47,9 +47,12 @@ SHA-256 hashes, and immutable blob files transfer separately by hash.
 `listen` is an operating-system bind endpoint such as `0.0.0.0:17384` or
 `[::]:17384`. `connect` entries are remote targets such as
 `oll://203.0.113.10:17384`, `oll://[2001:db8::10]:17384`, or
-`oll://node.example:17384`. Both require an explicit nonzero port; there is no
-default port. A connect URL has no user information, query, fragment, or path
-other than the URI parser's empty/root path.
+`oll://node.example:17384`. Persisted values and runtime overrides require an
+explicit nonzero port. As an initialization convenience only,
+`oll init --connect` defaults a missing scheme to `oll://` and a missing port
+to `17384`, then writes the complete target into `config.lua`. A connect URL
+has no user information, query, fragment, or path other than the URI parser's
+empty/root path.
 
 The daemon binds its configured listener before Admin readiness. Failure to
 bind `listen` is a startup failure. Outbound failures are nonfatal and use

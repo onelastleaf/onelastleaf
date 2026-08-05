@@ -165,6 +165,49 @@ fn parses_init_and_run_topologies() {
 }
 
 #[test]
+fn init_connect_defaults_scheme_and_port_before_persistence() {
+    let CliIntent::Init(init) = intent(&[
+        "oll",
+        "init",
+        "test-node",
+        "--connect",
+        "123.123.123.123",
+        "--connect",
+        "peer.example:19000",
+        "--connect",
+        "oll://named.example",
+        "--connect",
+        "2001:db8::10",
+    ]) else {
+        panic!()
+    };
+    assert_eq!(
+        init.connect
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>(),
+        [
+            "oll://123.123.123.123:17384",
+            "oll://peer.example:19000",
+            "oll://named.example:17384",
+            "oll://[2001:db8::10]:17384",
+        ]
+    );
+
+    for invalid in [
+        "http://peer.example:17384",
+        "oll://peer.example:0",
+        "peer.example/path",
+    ] {
+        assert!(
+            parse_from(["oll", "init", "test-node", "--connect", invalid]).is_err(),
+            "accepted {invalid:?}"
+        );
+    }
+    assert!(parse_from(["oll", "run", "--connect", "peer.example"]).is_err());
+}
+
+#[test]
 fn validates_node_names_as_lowercase_dns_labels() {
     let name: NodeName = "home-server-2".parse().unwrap();
     assert_eq!(name.as_str(), "home-server-2");

@@ -90,7 +90,7 @@ oll init home-laptop --replica /path/to/replica/root
 oll init home-laptop --config /path/to/config/root
 oll init home-laptop --log-dir /path/to/log/dir
 oll init home-laptop --listen 0.0.0.0:17384 \
-  --connect oll://peer.example.com:17384
+  --connect peer.example.com
 
 oll run
 oll run --replica /path/to/replica/root
@@ -111,10 +111,16 @@ oll log set oll::sync=trace
 oll psk
 ```
 
-`--connect` is repeatable and accepts only an `oll://host:port` target with an
-explicit nonzero port; `--listen` accepts one local bind socket address with an
-explicit nonzero port. Together they fully express deployment topology. There
-is no `client`/`server` profile wrapper and no topology-derived authority level.
+`--connect` is repeatable. For `init`, a bare host uses the default `oll://`
+scheme and port `17384`; `host:port` supplies only the scheme, and
+`oll://host` supplies only the port. IPv6 literals may be bracketed, while an
+unbracketed bare IPv6 address is also normalized before persistence. The
+generated `config.lua` always contains the canonical explicit
+`oll://host:port` form. `run --connect` remains a temporary low-level override
+and requires that complete form, as do hand-written `config.lua` entries.
+`--listen` accepts one local bind socket address with an explicit nonzero port.
+Together they fully express deployment topology. There is no `client`/`server`
+profile wrapper and no topology-derived authority level.
 
 `init` and `run` each define their own root and topology flags. They are not one
 shared argument group: future command-specific options need not be added to both

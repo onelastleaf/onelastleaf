@@ -1,14 +1,17 @@
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     num::{NonZeroU32, NonZeroUsize},
     path::PathBuf,
 };
 
 use clap::{Args, Parser, Subcommand};
+use url::Url;
 
 use super::{
     ColorMode, ConnectUrl, GitRemote, LogFilterDirective, LoopbackAddr, NodeName, OutputFormat,
 };
+
+const DEFAULT_SYNC_PORT: u16 = 17_384;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -56,7 +59,7 @@ pub struct InitArgs {
     #[arg(value_name = "NODE_NAME")]
     pub node_name: NodeName,
     /// Peer URL to connect to. May be repeated.
-    #[arg(long, value_name = "URL")]
+    #[arg(long, value_name = "HOST[:PORT]", value_parser = parse_init_connect_url)]
     pub connect: Vec<ConnectUrl>,
     /// Socket address to listen on.
     #[arg(long, value_name = "ADDRESS", value_parser = parse_listen_address)]
@@ -70,6 +73,24 @@ pub struct InitArgs {
     /// Log directory. Overrides OLL_LOG_DIR and the user-state default.
     #[arg(long, value_name = "PATH")]
     pub log_dir: Option<PathBuf>,
+}
+
+fn parse_init_connect_url(input: &str) -> Result<ConnectUrl, String> {
+    let normalized = if input.contains("://") {
+        input.to_owned()
+    } else {
+        let authority = match input.parse::<IpAddr>() {
+            Ok(IpAddr::V6(_)) => format!("[{input}]"),
+            _ => input.to_owned(),
+        };
+        format!("oll://{authority}")
+    };
+    let mut url = Url::parse(&normalized).map_err(|error| error.to_string())?;
+    if url.port().is_none() {
+        url.set_port(Some(DEFAULT_SYNC_PORT))
+            .map_err(|()| "connect URL cannot accept a port".to_owned())?;
+    }
+    url.as_str().parse()
 }
 
 #[derive(Debug, Args)]
