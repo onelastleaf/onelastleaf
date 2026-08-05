@@ -77,7 +77,9 @@ stream:
 - payload size/checksum failure;
 - Loro decode/import result and frontier/version summary;
 - binary blob verification, byte counts, and atomic materialization state;
-- EOF, retry, backoff, and reconnection.
+- EOF, retry, backoff, and reconnection;
+- one `sync_session_waiting_for_replica` transition per authenticated waiting
+  connection and the non-error replica-availability renegotiation that ends it.
 
 Normal levels record one event per operation or transfer phase, not one event per
 chunk. Individual chunk events are `TRACE` only.
@@ -130,7 +132,9 @@ not an authoritative log sink and does not change file routing or retention.
 `oll start` suppresses it. The view includes all host `WARN`/`ERROR` outcomes
 and selected `INFO` lifecycle transitions. Per-attempt
 `sync_session_started`/`sync_reconnect_scheduled`, `DEBUG`/`TRACE`, sync chunks,
-and plugin-produced stdout/stderr remain file-only.
+and plugin-produced stdout/stderr remain file-only. The transition into
+`sync_session_waiting_for_replica` is visible once and is not rendered as a
+warning or failure.
 
 Identical rendered `WARN`/`ERROR` outcomes are rate-limited by level, component,
 event, message, error code, and relevant identity/path/target context. The first

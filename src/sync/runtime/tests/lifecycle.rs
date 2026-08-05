@@ -333,7 +333,7 @@ async fn shutdown_cancels_an_inflight_bootstrap_before_its_absolute_deadline() {
             )
             .await
             .unwrap();
-            assert_eq!(session.replica_id, replica_id);
+            assert_eq!(session.replica_id, Some(replica_id));
             session
                 .exchange_ready("shutdown-bootstrap-receiver-handshake", deadline)
                 .await

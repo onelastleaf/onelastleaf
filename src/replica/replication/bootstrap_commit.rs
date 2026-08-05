@@ -103,7 +103,7 @@ impl ReplicaRuntime {
                 .await;
             return Err(error);
         }
-        *self.state.write().await = Some(candidate.clone());
+        self.replace_state(candidate.clone()).await;
         self.identities
             .advance_epoch()
             .map_err(|error| ReplicaError::Internal(error.to_string()))?;

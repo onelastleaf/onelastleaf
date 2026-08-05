@@ -48,7 +48,7 @@ async fn hello_and_ready_select_normal_and_bootstrap_roles_without_compression_o
 }
 
 #[tokio::test]
-async fn two_uninitialized_nodes_close_without_entering_ready_state() {
+async fn two_uninitialized_nodes_enter_waiting_and_keep_the_channel_usable() {
     let left_identity = NodeIdentity::generate("left-empty".parse().unwrap());
     let right_identity = NodeIdentity::generate("right-empty".parse().unwrap());
     let key = derive_noise_psk(&NetworkKey::new_for_test(vec![4; 32]));
@@ -74,21 +74,51 @@ async fn two_uninitialized_nodes_close_without_entering_ready_state() {
             deadline,
         ),
     );
+    let mut left = left.unwrap();
+    let mut right = right.unwrap();
+    assert_eq!(left.mode, SessionReplicaMode::Waiting);
+    assert_eq!(right.mode, SessionReplicaMode::Waiting);
+    assert_eq!(left.replica_id, None);
+    assert_eq!(right.replica_id, None);
+    let (left_ready, right_ready) = tokio::join!(
+        left.exchange_ready("left-empty", deadline),
+        right.exchange_ready("right-empty", deadline),
+    );
+    left_ready.unwrap();
+    right_ready.unwrap();
+
+    let ping_id = left
+        .channel
+        .send(
+            sync_envelope::Payload::Ping(crate::protocol::oll::SyncPing {
+                nonce: 42,
+                sent_at: None,
+            }),
+            "waiting-ping",
+            None,
+            Some(deadline),
+        )
+        .await
+        .unwrap();
+    let ping = right.channel.receive(Some(deadline)).await.unwrap();
+    assert_eq!(ping.message_id, ping_id);
     assert!(matches!(
-        left,
-        Err(SessionError::LocalProtocol {
-            code: SyncCloseCode::NoReplicaAvailable,
-            error_code: "no_replica_available",
-            ..
-        })
+        ping.payload,
+        Some(sync_envelope::Payload::Ping(_))
     ));
+    right
+        .channel
+        .send(
+            sync_envelope::Payload::Pong(crate::protocol::oll::SyncPong { nonce: 42 }),
+            "waiting-ping",
+            Some(ping_id),
+            Some(deadline),
+        )
+        .await
+        .unwrap();
     assert!(matches!(
-        right,
-        Err(SessionError::LocalProtocol {
-            code: SyncCloseCode::NoReplicaAvailable,
-            error_code: "no_replica_available",
-            ..
-        })
+        left.channel.receive(Some(deadline)).await.unwrap().payload,
+        Some(sync_envelope::Payload::Pong(_))
     ));
 }
 

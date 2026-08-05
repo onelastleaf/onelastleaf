@@ -146,20 +146,21 @@ hash, maximum chunk-data size, and exactly one local replica state:
 - `no_local_replica` when the local slot is uninitialized.
 
 There is no compression negotiation or session nonce. After validation both
-peers send the same `SyncReady`, containing the selected chunk size and the one
-`ReplicaId` for the session:
+peers send the same `SyncReady`, containing the selected chunk size and the
+selected `ReplicaId` when one exists:
 
 - equal nonempty IDs select normal synchronization;
 - one initialized peer and one uninitialized peer select bootstrap from the
   initialized source to the uninitialized receiver;
-- two uninitialized peers close with `NO_REPLICA_AVAILABLE`;
+- two uninitialized peers omit `session_replica_id` and enter the authenticated
+  waiting state described below;
 - two different IDs close with `REPLICA_MISMATCH`.
 
 Schema mismatch, invalid chunk limits, identity collision, and self-connection
 also close the session. Application close reasons are sent only after Noise has
 authenticated the shared network key. `SyncClose` includes at least normal,
 shutdown, protocol, schema, identity-collision, self-connection,
-duplicate-session, replica-mismatch, no-replica, bootstrap-in-progress,
+duplicate-session, replica-mismatch, replica-available, bootstrap-in-progress,
 resource-exhausted, and internal-error codes. A received close reason is a
 diagnostic and never changes local authority rules.
 
@@ -169,6 +170,41 @@ canonical `NodeId` is preferred. If more than one connection has that same
 preferred direction, both endpoints keep the one with the lexicographically
 smallest Noise handshake hash and close the rest as duplicates. Both endpoints
 can compute the same choice.
+
+### Waiting for the first replica
+
+When both authenticated peers are uninitialized, the completed connection is a
+long-lived `waiting_for_replica` session. It participates in identity binding,
+duplicate-session arbitration, status, ping, shutdown, and identity-epoch
+invalidation, but it admits no synchronization round. It does not close as a
+failure, enter reconnect backoff, or poll SQL or the working tree. A manual
+`oll sync` receives one peer-local `FAILED_PRECONDITION` result while the
+background session remains connected; the command does not wait indefinitely
+for unrelated future filesystem work.
+
+`ReplicaRuntime` publishes a status transition only after an active replica has
+been atomically committed to the replica store and installed as the in-memory
+active state. A waiting session subscribes to that authoritative notification.
+When either endpoint first becomes initialized, it sends the authenticated
+`SyncClose(REPLICA_AVAILABLE)` and ends the waiting connection normally. The
+configured outbound owner reconnects immediately without failure backoff, and
+the new `SyncHello` pair selects normal synchronization, bootstrap, or
+`REPLICA_MISMATCH` using the ordinary rules above. No session changes its
+selected `ReplicaId` in place and version 1 has no second mid-session replica
+negotiation protocol.
+
+If both endpoints create different replicas concurrently, the next handshake
+rejects the mismatch and neither replica is overwritten. If a local
+initialization races with remote bootstrap admission, the existing durable
+bootstrap claim, commit guard, and active-generation compare-and-swap determine
+which transition linearizes. The working-tree merge policy applies only when
+bootstrap acquired that authority before local replica activation.
+
+"Long-lived" means that a connection is retained while its negotiated state is
+stable; it does not promise that one TCP file descriptor spans the complete
+daemon lifetime. Network failure, identity changes, replica availability,
+bootstrap completion, duplicate arbitration, and shutdown may deliberately
+replace or close a connection.
 
 ## Finite synchronization rounds
 
@@ -322,7 +358,9 @@ down a durable background peer session.
 
 Status lists configured outbound targets even before authentication and also
 authenticated inbound-only peers. A connect target is optional on an inbound
-row; connection direction, state, and learned `NodeIdentity` are explicit.
+row; connection direction, state, and learned `NodeIdentity` are explicit. An
+authenticated peer with neither replica is reported as
+`waiting_for_replica`, not `ready`, `backoff`, or failed.
 
 ## Shutdown and observability
 
@@ -360,7 +398,7 @@ Application-handshake validation uses specific codes rather than collapsing
 them into `protocol_violation`: `hello_reply_to_present`,
 `expected_sync_hello`, `schema_mismatch`, `invalid_max_chunk_bytes`,
 `invalid_node_identity`, `self_connection`, `invalid_replica_id`,
-`missing_replica_state`, `replica_mismatch`, `no_replica_available`,
+`missing_replica_state`, `replica_mismatch`,
 `ready_reply_to_present`, `bootstrap_correlation_mismatch`,
 `expected_sync_ready`, and `ready_negotiation_mismatch`. Channel invariant
 failures likewise retain `empty_local_correlation_id`, `message_id_exhausted`,
@@ -392,9 +430,14 @@ Sync tests cover:
   commit;
 - missing, duplicated, interrupted, reordered, hash-invalid, and decode-invalid
   object/blob transfers without exposing partial active state;
-- bootstrap claim exclusion, arbitrary transfer order, both-uninitialized and
-  different-replica rejection, local-only working-tree merge, remote path-win
-  behavior, and crashes immediately before and after atomic activation;
+- bootstrap claim exclusion, arbitrary transfer order, different-replica
+  rejection, local-only working-tree merge, remote path-win behavior, and
+  crashes immediately before and after atomic activation;
+- both-uninitialized peers retaining one authenticated waiting session without
+  failure/backoff churn, then bootstrapping when either topology side creates
+  its first replica;
+- concurrent first-replica creation selecting normal sync for equal IDs or
+  rejecting different IDs without overwriting either active replica;
 - fresh bootstrap `LoroPeerId` selection and `replica.json` recovery;
 - bounded userspace buffering that relies on TCP backpressure without a wire
   credit protocol;

@@ -211,8 +211,10 @@ replica is uninitialized, initialized with no visible entries, or initialized
 and populated. Both initialized states include the active `ReplicaId`. A target
 learned through `SyncHello` is displayed with the remote node's
 protocol-declared `NodeName` and `NodeId`; a target whose first handshake has
-not completed is displayed by URL as pending. `--json` selects the
-machine-readable schema; human-readable output is the default.
+not completed is displayed by URL as pending. An authenticated connection whose
+two endpoints are both uninitialized is displayed as `waiting_for_replica`.
+`--json` selects the machine-readable schema; human-readable output is the
+default.
 
 `oll log set <target>=<level>` is an Admin client command. It changes only the
 live target filter and does not rewrite `config.lua` or `node.json`. Its accepted

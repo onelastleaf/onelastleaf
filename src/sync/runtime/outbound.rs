@@ -26,7 +26,7 @@ pub(super) async fn run_outbound(
             TcpStream::connect((target.host(), target.port())),
         )
         .await;
-        match connection {
+        let disposition = match connection {
             Ok(Ok(stream)) => {
                 backoff = INITIAL_BACKOFF;
                 run_connection(
@@ -36,7 +36,7 @@ pub(super) async fn run_outbound(
                     Some(target_string.clone()),
                     correlation_id.clone(),
                 )
-                .await;
+                .await
             }
             Ok(Err(error)) => {
                 runtime.logger.emit(
@@ -49,6 +49,7 @@ pub(super) async fn run_outbound(
                         "error_kind": format!("{:?}", error.kind()),
                     }),
                 );
+                ConnectionDisposition::RetryWithBackoff
             }
             Err(_) => {
                 runtime.logger.emit(
@@ -61,10 +62,27 @@ pub(super) async fn run_outbound(
                         "error_kind": "timeout",
                     }),
                 );
+                ConnectionDisposition::RetryWithBackoff
             }
-        }
+        };
         if *shutdown.borrow() {
             break;
+        }
+        if disposition == ConnectionDisposition::ReconnectImmediately {
+            runtime
+                .target_states
+                .write()
+                .await
+                .insert(target_string.clone(), PeerConnectionState::Connecting);
+            runtime.session_changed.notify_waiters();
+            runtime.logger.emit(
+                LogLevel::Info,
+                "oll::sync",
+                "sync_replica_renegotiation_started",
+                &correlation_id,
+                json!({ "connect_target": &target_string }),
+            );
+            continue;
         }
         runtime
             .target_states

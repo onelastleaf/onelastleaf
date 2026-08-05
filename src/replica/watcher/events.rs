@@ -174,7 +174,7 @@ impl ReplicaRuntime {
                 )
                 .await?;
         }
-        *self.state.write().await = Some(change.replica.clone());
+        self.replace_state(change.replica.clone()).await;
         if !change.projection_paths.is_empty() {
             self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;
@@ -200,8 +200,7 @@ impl ReplicaRuntime {
     ) -> Result<bool, ReplicaError> {
         let replacement = ReplicaIdentity::load(&self.config_root)?;
         let _coordinator = self.identities.commit_guard().await;
-        let mut state = self.state.write().await;
-        let replica = state.as_mut().ok_or_else(|| {
+        let mut replica = self.state.read().await.clone().ok_or_else(|| {
             ReplicaError::Configuration(
                 "replica.json cannot identify an uninitialized replica".to_owned(),
             )
@@ -214,6 +213,7 @@ impl ReplicaRuntime {
             .update_active_replica_id(replica.generation_id, previous, replacement.replica_id())
             .await?;
         replica.replica_id = replacement.replica_id();
+        self.replace_state(replica).await;
         let epoch = self
             .identities
             .advance_epoch()
@@ -257,7 +257,7 @@ impl ReplicaRuntime {
                 &change.projection_paths,
             )
             .await?;
-        *self.state.write().await = Some(change.replica.clone());
+        self.replace_state(change.replica.clone()).await;
         if !change.projection_paths.is_empty() {
             self.project_targeted(&change.replica, &change.projection_paths, correlation_id)
                 .await?;

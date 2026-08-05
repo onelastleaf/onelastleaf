@@ -514,6 +514,7 @@ fn peer_state_name(value: i32) -> &'static str {
         PeerConnectionState::Pending => "pending",
         PeerConnectionState::Connecting => "connecting",
         PeerConnectionState::Ready => "ready",
+        PeerConnectionState::WaitingForReplica => "waiting_for_replica",
         PeerConnectionState::Backoff => "backoff",
         PeerConnectionState::Closing => "closing",
         PeerConnectionState::Unspecified => "unknown",

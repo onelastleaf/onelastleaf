@@ -31,15 +31,15 @@ fn renders_readable_plain_and_colored_session_failures() {
         "WARN",
         serde_json::json!({
             "connect_target": "oll://peer.example:17384",
-            "error_code": "no_replica_available",
-            "message": "neither peer has a local replica"
+            "error_code": "replica_mismatch",
+            "message": "peer ReplicaId differs from the local replica"
         }),
     );
     let plain = output(ColorChoice::Never, &record);
     assert!(!plain.contains('\u{1b}'));
     assert!(plain.contains("08:12:43Z  WARN   sync"));
     assert!(plain.contains("sync handshake failed"));
-    assert!(plain.contains("neither peer has a local replica"));
+    assert!(plain.contains("peer ReplicaId differs from the local replica"));
     assert!(plain.contains("oll://peer.example:17384"));
 
     let colored = output(ColorChoice::Always, &record);
@@ -74,14 +74,30 @@ fn auto_mode_strips_styles_for_a_redirected_stream() {
 }
 
 #[test]
+fn waiting_for_a_replica_is_a_readable_info_transition() {
+    let waiting = record(
+        "sync_session_waiting_for_replica",
+        "INFO",
+        serde_json::json!({
+            "remote_node_name": "peer-node",
+            "connect_target": "oll://peer.example:17384"
+        }),
+    );
+    let rendered = output(ColorChoice::Never, &waiting);
+    assert!(rendered.contains("connected to peer-node; waiting for a replica"));
+    assert!(rendered.contains("oll://peer.example:17384"));
+    assert!(!rendered.contains("WARN"));
+}
+
+#[test]
 fn repeated_failures_are_suppressed_then_summarized_and_success_resets_them() {
     let mut presenter = ConsolePresenter::new(Vec::new());
     let failure = record(
         "sync_session_failed",
         "WARN",
         serde_json::json!({
-            "error_code": "no_replica_available",
-            "message": "neither peer has a local replica"
+            "error_code": "replica_mismatch",
+            "message": "peer ReplicaId differs from the local replica"
         }),
     );
     let started = Instant::now();

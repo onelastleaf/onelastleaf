@@ -30,7 +30,9 @@ message SyncReady {
   reserved 1;
 
   uint32 max_chunk_bytes = 2;
-  // Semantically required. Both peers send the same session replica ID.
+  // Present when both peers selected one session replica. Absent only when both
+  // SyncHello messages declared NoLocalReplica and the connection is waiting
+  // for the first authoritative replica activation.
   ReplicaId session_replica_id = 3;
 }
 
@@ -237,6 +239,9 @@ message SyncPing {
 message SyncPong { uint64 nonce = 1; }
 
 enum SyncCloseCode {
+  reserved 9;
+  reserved "SYNC_CLOSE_CODE_NO_REPLICA_AVAILABLE";
+
   SYNC_CLOSE_CODE_UNSPECIFIED = 0;
   SYNC_CLOSE_CODE_NORMAL = 1;
   SYNC_CLOSE_CODE_SHUTTING_DOWN = 2;
@@ -246,11 +251,13 @@ enum SyncCloseCode {
   SYNC_CLOSE_CODE_SELF_CONNECTION = 6;
   SYNC_CLOSE_CODE_DUPLICATE_SESSION = 7;
   SYNC_CLOSE_CODE_REPLICA_MISMATCH = 8;
-  SYNC_CLOSE_CODE_NO_REPLICA_AVAILABLE = 9;
   SYNC_CLOSE_CODE_BOOTSTRAP_IN_PROGRESS = 10;
   SYNC_CLOSE_CODE_NEGOTIATION_FAILED = 11;
   SYNC_CLOSE_CODE_RESOURCE_EXHAUSTED = 12;
   SYNC_CLOSE_CODE_INTERNAL_ERROR = 13;
+  // A waiting peer atomically activated its first replica. Reconnect
+  // immediately and select the immutable session ReplicaId through SyncHello.
+  SYNC_CLOSE_CODE_REPLICA_AVAILABLE = 14;
 }
 
 message SyncClose {

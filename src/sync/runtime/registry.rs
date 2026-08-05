@@ -7,6 +7,7 @@ impl SyncRuntime {
         direction: Direction,
         connect_target: Option<String>,
         handshake_hash: [u8; 32],
+        connection_state: PeerConnectionState,
         commands: mpsc::Sender<SessionCommand>,
         cancel: watch::Sender<Option<SyncCloseCode>>,
     ) -> Result<Uuid, SyncError> {
@@ -35,6 +36,7 @@ impl SyncRuntime {
                 connect_target,
                 preferred_direction,
                 handshake_hash,
+                connection_state,
                 commands,
                 cancel,
             },

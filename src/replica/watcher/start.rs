@@ -15,7 +15,7 @@ use crate::{
 };
 
 use super::{
-    super::{ReplicaError, identity, store::ReplicaStore},
+    super::{ReplicaError, identity, store::ReplicaStore, types::ReplicaStatus},
     WATCH_DEBOUNCE,
     types::ReplicaRuntime,
 };
@@ -36,11 +36,16 @@ impl ReplicaRuntime {
         identity::reconcile_startup_identity(&store, &config_root, &mut active).await?;
         store.ensure_active_state_guard(active.as_ref()).await?;
         let (event_shutdown, event_shutdown_rx) = watch::channel(false);
+        let initial_status = active
+            .as_ref()
+            .map_or(ReplicaStatus::Uninitialized, |replica| replica.status());
+        let (status_tx, _) = watch::channel(initial_status);
         let runtime = Arc::new(Self {
             config_root,
             root,
             store,
             state: RwLock::new(active),
+            status_tx,
             identities,
             logger,
             watcher: StdMutex::new(None),

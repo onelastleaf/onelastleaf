@@ -83,6 +83,12 @@ enum Direction {
     Outbound,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConnectionDisposition {
+    RetryWithBackoff,
+    ReconnectImmediately,
+}
+
 impl Direction {
     fn to_proto(self) -> PeerConnectionDirection {
         match self {
@@ -98,6 +104,7 @@ struct ActiveSession {
     connect_target: Option<String>,
     preferred_direction: bool,
     handshake_hash: [u8; 32],
+    connection_state: PeerConnectionState,
     commands: mpsc::Sender<SessionCommand>,
     cancel: watch::Sender<Option<SyncCloseCode>>,
 }

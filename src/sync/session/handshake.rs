@@ -3,7 +3,7 @@ use super::*;
 pub(crate) struct PendingSession<S> {
     pub channel: SessionChannel<S>,
     pub remote: NodeIdentity,
-    pub replica_id: Uuid,
+    pub replica_id: Option<Uuid>,
     pub mode: SessionReplicaMode,
     pub max_chunk_bytes: u32,
     pub bootstrap_correlation_id: Option<String>,
@@ -154,7 +154,9 @@ where
             | ReplicaStatus::InitializedPopulated { replica_id } => Some(replica_id),
         };
         let (replica_id, mode) = match (local_replica, remote_replica) {
-            (Some(local), Some(remote)) if local == remote => (local, SessionReplicaMode::Normal),
+            (Some(local), Some(remote)) if local == remote => {
+                (Some(local), SessionReplicaMode::Normal)
+            }
             (Some(_), Some(_)) => {
                 return fail_handshake(
                     channel,
@@ -166,19 +168,9 @@ where
                 )
                 .await;
             }
-            (Some(local), None) => (local, SessionReplicaMode::BootstrapSource),
-            (None, Some(remote)) => (remote, SessionReplicaMode::BootstrapReceiver),
-            (None, None) => {
-                return fail_handshake(
-                    channel,
-                    SyncCloseCode::NoReplicaAvailable,
-                    "no_replica_available",
-                    "neither peer has a local replica",
-                    correlation_id,
-                    deadline,
-                )
-                .await;
-            }
+            (Some(local), None) => (Some(local), SessionReplicaMode::BootstrapSource),
+            (None, Some(remote)) => (Some(remote), SessionReplicaMode::BootstrapReceiver),
+            (None, None) => (None, SessionReplicaMode::Waiting),
         };
         Ok(Self {
             channel,
@@ -187,7 +179,7 @@ where
             mode,
             max_chunk_bytes: hello.max_chunk_bytes.min(MAX_CHUNK_BYTES),
             bootstrap_correlation_id: match mode {
-                SessionReplicaMode::Normal => None,
+                SessionReplicaMode::Waiting | SessionReplicaMode::Normal => None,
                 SessionReplicaMode::BootstrapSource => Some(correlation_id.to_owned()),
                 SessionReplicaMode::BootstrapReceiver => Some(remote_correlation_id),
             },
@@ -207,8 +199,8 @@ where
             .send(
                 sync_envelope::Payload::Ready(SyncReady {
                     max_chunk_bytes: self.max_chunk_bytes,
-                    session_replica_id: Some(ReplicaId {
-                        value: self.replica_id.to_string(),
+                    session_replica_id: self.replica_id.map(|replica_id| ReplicaId {
+                        value: replica_id.to_string(),
                     }),
                 }),
                 correlation_id,
@@ -262,10 +254,28 @@ where
                 message: "expected SyncReady after SyncHello",
             });
         };
-        let ready_replica = ready
-            .session_replica_id
-            .and_then(|replica| parse_replica_id(&replica.value));
-        if ready.max_chunk_bytes != self.max_chunk_bytes || ready_replica != Some(self.replica_id) {
+        let ready_replica = match ready.session_replica_id {
+            Some(replica) => match parse_replica_id(&replica.value) {
+                Some(replica_id) => Some(replica_id),
+                None => {
+                    self.channel
+                        .close(
+                            SyncCloseCode::NegotiationFailed,
+                            "peer SyncReady contains an invalid ReplicaId",
+                            correlation_id,
+                            Some(deadline),
+                        )
+                        .await;
+                    return Err(SessionError::LocalProtocol {
+                        code: SyncCloseCode::NegotiationFailed,
+                        error_code: "ready_negotiation_mismatch",
+                        message: "peer SyncReady contains an invalid ReplicaId",
+                    });
+                }
+            },
+            None => None,
+        };
+        if ready.max_chunk_bytes != self.max_chunk_bytes || ready_replica != self.replica_id {
             self.channel
                 .close(
                     SyncCloseCode::NegotiationFailed,

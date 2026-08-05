@@ -6,7 +6,7 @@ pub(super) async fn run_connection(
     direction: Direction,
     connect_target: Option<String>,
     correlation_id: String,
-) {
+) -> ConnectionDisposition {
     runtime.logger.emit(
         LogLevel::Info,
         "oll::sync",
@@ -18,7 +18,7 @@ pub(super) async fn run_connection(
         }),
     );
     let Some(psk) = runtime.psk.as_ref() else {
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     };
     let _ = stream.set_nodelay(true);
     let deadline = Instant::now() + HANDSHAKE_DEADLINE;
@@ -36,7 +36,7 @@ pub(super) async fn run_connection(
                 connect_target.as_deref(),
                 &SessionError::Transport(error),
             );
-            return;
+            return ConnectionDisposition::RetryWithBackoff;
         }
     };
     let bound_epoch = runtime.identities.epoch();
@@ -59,7 +59,7 @@ pub(super) async fn run_connection(
                 connect_target.as_deref(),
                 &error,
             );
-            return;
+            return ConnectionDisposition::RetryWithBackoff;
         }
     };
     if runtime.identities.epoch() != bound_epoch {
@@ -72,7 +72,7 @@ pub(super) async fn run_connection(
                 Some(deadline),
             )
             .await;
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     }
     let operation_correlation_id = pending
         .bootstrap_correlation_id
@@ -97,7 +97,7 @@ pub(super) async fn run_connection(
                 Some(deadline),
             )
             .await;
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     }
     let mut bootstrap_claim = None;
     let mut bootstrap_guard = None;
@@ -128,7 +128,7 @@ pub(super) async fn run_connection(
                     ),
                     ReplicaStatus::InitializedEmpty { replica_id }
                     | ReplicaStatus::InitializedPopulated { replica_id }
-                        if replica_id == pending.replica_id =>
+                        if Some(replica_id) == pending.replica_id =>
                     {
                         (
                             SyncCloseCode::Normal,
@@ -144,7 +144,7 @@ pub(super) async fn run_connection(
                     .channel
                     .close(code, message, &operation_correlation_id, Some(deadline))
                     .await;
-                return;
+                return ConnectionDisposition::RetryWithBackoff;
             }
             Err(_) => {
                 pending
@@ -156,7 +156,7 @@ pub(super) async fn run_connection(
                         Some(deadline),
                     )
                     .await;
-                return;
+                return ConnectionDisposition::RetryWithBackoff;
             }
         }
         let guard = match timeout_at(deadline, runtime.identities.commit_guard_owned()).await {
@@ -175,7 +175,7 @@ pub(super) async fn run_connection(
                         Some(deadline),
                     )
                     .await;
-                return;
+                return ConnectionDisposition::RetryWithBackoff;
             }
         };
         if !matches!(runtime.replica.status().await, ReplicaStatus::Uninitialized) {
@@ -192,7 +192,7 @@ pub(super) async fn run_connection(
                     Some(deadline),
                 )
                 .await;
-            return;
+            return ConnectionDisposition::RetryWithBackoff;
         }
         bootstrap_claim = Some(claim);
         bootstrap_guard = Some(guard);
@@ -213,7 +213,7 @@ pub(super) async fn run_connection(
                 Some(deadline),
             )
             .await;
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     }
     if let Err(error) = pending.exchange_ready(&correlation_id, deadline).await {
         if let Some(claim) = bootstrap_claim.as_ref() {
@@ -229,13 +229,16 @@ pub(super) async fn run_connection(
             connect_target.as_deref(),
             &error,
         );
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     }
     let remote = pending.remote.clone();
     let mode = pending.mode;
     let max_chunk_bytes = pending.max_chunk_bytes;
     let handshake_hash = *pending.channel.handshake_hash();
-    if mode != SessionReplicaMode::Normal {
+    if matches!(
+        mode,
+        SessionReplicaMode::BootstrapSource | SessionReplicaMode::BootstrapReceiver
+    ) {
         run_bootstrap_session(
             &runtime,
             pending,
@@ -245,8 +248,15 @@ pub(super) async fn run_connection(
             &operation_correlation_id,
         )
         .await;
-        return;
+        return ConnectionDisposition::RetryWithBackoff;
     }
+    let connection_state = match mode {
+        SessionReplicaMode::Waiting => PeerConnectionState::WaitingForReplica,
+        SessionReplicaMode::Normal => PeerConnectionState::Ready,
+        SessionReplicaMode::BootstrapSource | SessionReplicaMode::BootstrapReceiver => {
+            unreachable!("bootstrap sessions return before registration")
+        }
+    };
     let (commands_tx, commands_rx) = mpsc::channel(8);
     let (cancel_tx, cancel_rx) = watch::channel(None);
     let session_id = match runtime
@@ -255,6 +265,7 @@ pub(super) async fn run_connection(
             direction,
             connect_target.clone(),
             handshake_hash,
+            connection_state,
             commands_tx,
             cancel_tx,
         )
@@ -271,7 +282,7 @@ pub(super) async fn run_connection(
                     None,
                 )
                 .await;
-            return;
+            return ConnectionDisposition::RetryWithBackoff;
         }
     };
     if let Some(target) = connect_target.as_ref() {
@@ -279,24 +290,29 @@ pub(super) async fn run_connection(
             .target_states
             .write()
             .await
-            .insert(target.clone(), PeerConnectionState::Ready);
+            .insert(target.clone(), connection_state);
     }
+    let event = if mode == SessionReplicaMode::Waiting {
+        "sync_session_waiting_for_replica"
+    } else {
+        "sync_session_ready"
+    };
     runtime.logger.emit(
         LogLevel::Info,
         "oll::sync",
-        "sync_session_ready",
+        event,
         &correlation_id,
         json!({
             "connection_id": session_id.to_string(),
             "remote_node_id": remote.node_id().to_string(),
             "remote_node_name": remote.node_name().as_str(),
-            "replica_id": pending.replica_id.to_string(),
+            "replica_id": pending.replica_id.map(|replica_id| replica_id.to_string()),
             "connect_target": connect_target.as_deref(),
             "max_chunk_bytes": max_chunk_bytes,
             "direction": match direction { Direction::Inbound => "inbound", Direction::Outbound => "outbound" },
         }),
     );
-    run_ready_session(
+    let disposition = run_ready_session(
         &runtime,
         pending.channel,
         bound_epoch,
@@ -320,4 +336,5 @@ pub(super) async fn run_connection(
             "direction": match direction { Direction::Inbound => "inbound", Direction::Outbound => "outbound" },
         }),
     );
+    disposition
 }

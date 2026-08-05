@@ -102,7 +102,7 @@ impl SyncRuntime {
                             .copied()
                             .unwrap_or(PeerConnectionState::Pending) as i32
                     },
-                    |_| PeerConnectionState::Ready as i32,
+                    |session| session.connection_state as i32,
                 ),
                 direction: active.map_or(PeerConnectionDirection::Outbound as i32, |session| {
                     session.direction.to_proto() as i32
@@ -117,8 +117,8 @@ impl SyncRuntime {
             statuses.push(PeerStatus {
                 connect_target: active.and_then(|session| session.connect_target.clone()),
                 node: Some(binding.identity.to_proto()),
-                connection_state: active.map_or(PeerConnectionState::Pending as i32, |_| {
-                    PeerConnectionState::Ready as i32
+                connection_state: active.map_or(PeerConnectionState::Pending as i32, |session| {
+                    session.connection_state as i32
                 }),
                 direction: active.map_or(PeerConnectionDirection::Inbound as i32, |session| {
                     session.direction.to_proto() as i32

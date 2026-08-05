@@ -22,6 +22,7 @@ use super::transport::{MAX_CHUNK_BYTES, NoiseTransport, TransportError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum SessionReplicaMode {
+    Waiting,
     Normal,
     BootstrapSource,
     BootstrapReceiver,

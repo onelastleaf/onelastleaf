@@ -219,6 +219,7 @@ fn visible_info_event(event: &str) -> bool {
             | "snapshot_import_started"
             | "snapshot_import_completed"
             | "sync_session_ready"
+            | "sync_session_waiting_for_replica"
             | "sync_session_closed"
             | "sync_bootstrap_started"
             | "sync_bootstrap_completed"
@@ -253,6 +254,7 @@ fn clears_failures(record: &Value) -> bool {
                 "node_ready"
                     | "node_shutdown_completed"
                     | "sync_session_ready"
+                    | "sync_session_waiting_for_replica"
                     | "sync_bootstrap_completed"
                     | "sync_round_completed"
                     | "snapshot_export_completed"
@@ -284,6 +286,10 @@ fn headline(record: &Value, event: &str) -> String {
         "sync_session_ready" => match field(record, "remote_node_name") {
             Some(peer) => format!("connected to {peer}"),
             None => "sync session ready".to_owned(),
+        },
+        "sync_session_waiting_for_replica" => match field(record, "remote_node_name") {
+            Some(peer) => format!("connected to {peer}; waiting for a replica"),
+            None => "connected to sync peer; waiting for a replica".to_owned(),
         },
         "sync_session_closed" => match field(record, "remote_node_name") {
             Some(peer) => format!("connection to {peer} closed"),

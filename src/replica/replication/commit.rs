@@ -106,7 +106,7 @@ impl ReplicaRuntime {
                 .await;
             return Err(error);
         }
-        *self.state.write().await = Some(candidate.clone());
+        self.replace_state(candidate.clone()).await;
 
         match self.project_complete(&candidate).await {
             Ok(()) => {

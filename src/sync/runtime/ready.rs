@@ -10,38 +10,53 @@ pub(super) async fn run_ready_session(
     max_chunk_bytes: u32,
     mut commands: mpsc::Receiver<SessionCommand>,
     mut cancel: watch::Receiver<Option<SyncCloseCode>>,
-) {
-    if mode != SessionReplicaMode::Normal {
-        let correlation_id = new_correlation_id();
-        channel
-            .close(
-                SyncCloseCode::InternalError,
-                "bootstrap session is not ready for transfer",
-                &correlation_id,
-                None,
-            )
-            .await;
-        return;
-    }
+) -> ConnectionDisposition {
+    debug_assert!(matches!(
+        mode,
+        SessionReplicaMode::Waiting | SessionReplicaMode::Normal
+    ));
     let mut shutdown = runtime.shutdown.subscribe();
     let mut epoch = runtime.identities.subscribe_epoch();
+    let mut replica_status = runtime.replica.subscribe_status();
     let mut pings = HashMap::<u64, PendingPing>::new();
+    let mut disposition = ConnectionDisposition::RetryWithBackoff;
     loop {
         let immediate_close = if *shutdown.borrow() {
-            Some((SyncCloseCode::ShuttingDown, "local daemon is shutting down"))
+            Some((
+                SyncCloseCode::ShuttingDown,
+                "local daemon is shutting down",
+                ConnectionDisposition::RetryWithBackoff,
+            ))
         } else if let Some(code) = *cancel.borrow() {
-            Some((code, "sync session was superseded"))
+            Some((
+                code,
+                "sync session was superseded",
+                ConnectionDisposition::RetryWithBackoff,
+            ))
+        } else if mode == SessionReplicaMode::Waiting
+            && !matches!(*replica_status.borrow(), ReplicaStatus::Uninitialized)
+        {
+            Some((
+                SyncCloseCode::ReplicaAvailable,
+                "local replica became available; reconnect required",
+                ConnectionDisposition::ReconnectImmediately,
+            ))
         } else if *epoch.borrow() != bound_epoch {
             Some((
                 SyncCloseCode::Normal,
                 "local identity changed; reconnect required",
+                ConnectionDisposition::RetryWithBackoff,
             ))
         } else {
             None
         };
-        if let Some((code, message)) = immediate_close {
+        if let Some((code, message, next)) = immediate_close {
             let correlation_id = new_correlation_id();
+            if code == SyncCloseCode::ReplicaAvailable {
+                log_replica_available(runtime, &correlation_id, &replica_status);
+            }
             channel.close(code, message, &correlation_id, None).await;
+            disposition = next;
             break;
         }
         let next_ping_deadline = pings.values().map(|ping| ping.deadline).min();
@@ -69,6 +84,27 @@ pub(super) async fn run_ready_session(
                 if let Some(code) = code {
                     let correlation_id = new_correlation_id();
                     channel.close(code, "sync session was superseded", &correlation_id, None).await;
+                    break;
+                }
+            }
+            changed = async {
+                if mode == SessionReplicaMode::Waiting {
+                    replica_status.changed().await
+                } else {
+                    std::future::pending().await
+                }
+            } => {
+                if changed.is_err() {
+                    let correlation_id = new_correlation_id();
+                    channel.close(SyncCloseCode::InternalError, "local replica status notification closed", &correlation_id, None).await;
+                    break;
+                }
+                let status = *replica_status.borrow_and_update();
+                if !matches!(status, ReplicaStatus::Uninitialized) {
+                    let correlation_id = new_correlation_id();
+                    log_replica_available(runtime, &correlation_id, &replica_status);
+                    channel.close(SyncCloseCode::ReplicaAvailable, "local replica became available; reconnect required", &correlation_id, None).await;
+                    disposition = ConnectionDisposition::ReconnectImmediately;
                     break;
                 }
             }
@@ -117,6 +153,12 @@ pub(super) async fn run_ready_session(
                         }
                     }
                     SessionCommand::Synchronize { correlation_id, response } => {
+                        if mode == SessionReplicaMode::Waiting {
+                            let _ = response.send(Err(SyncError::FailedPrecondition(
+                                "both peers are waiting for a local replica".to_owned(),
+                            )));
+                            continue;
+                        }
                         if !pings.is_empty() {
                             let _ = response.send(Err(SyncError::Unavailable(
                                 "another sync request is in flight on this session".to_owned(),
@@ -187,6 +229,13 @@ pub(super) async fn run_ready_session(
             received = channel.receive(None) => {
                 let envelope = match received {
                     Ok(envelope) => envelope,
+                    Err(SessionError::RemoteClosed {
+                        code: SyncCloseCode::ReplicaAvailable,
+                        ..
+                    }) if mode == SessionReplicaMode::Waiting => {
+                        disposition = ConnectionDisposition::ReconnectImmediately;
+                        break;
+                    }
                     Err(SessionError::RemoteClosed { .. }) => break,
                     Err(_) => {
                         let correlation_id = new_correlation_id();
@@ -218,7 +267,10 @@ pub(super) async fn run_ready_session(
                         let _ = pending.response.send(Ok(pending.started.elapsed()));
                     }
                     Some(sync_envelope::Payload::RoundRequest(_)) => {
-                        if !pings.is_empty() || envelope.reply_to.is_some() {
+                        if mode == SessionReplicaMode::Waiting
+                            || !pings.is_empty()
+                            || envelope.reply_to.is_some()
+                        {
                             channel.close(SyncCloseCode::ProtocolViolation, "unexpected sync round request", &envelope.correlation_id, None).await;
                             break;
                         }
@@ -274,4 +326,24 @@ pub(super) async fn run_ready_session(
             "sync session closed during ping".to_owned(),
         )));
     }
+    disposition
+}
+
+fn log_replica_available(
+    runtime: &SyncRuntime,
+    correlation_id: &str,
+    replica_status: &watch::Receiver<ReplicaStatus>,
+) {
+    let replica_id = match *replica_status.borrow() {
+        ReplicaStatus::Uninitialized => None,
+        ReplicaStatus::InitializedEmpty { replica_id }
+        | ReplicaStatus::InitializedPopulated { replica_id } => Some(replica_id.to_string()),
+    };
+    runtime.logger.emit(
+        LogLevel::Info,
+        "oll::sync",
+        "sync_replica_available",
+        correlation_id,
+        json!({ "replica_id": replica_id }),
+    );
 }

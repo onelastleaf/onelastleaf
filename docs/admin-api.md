@@ -181,8 +181,11 @@ known, attempts used, success/already-satisfied/failed outcome, transferred
 object and blob counts, transferred bytes, and a typed error code plus redacted
 message for a peer-local failure. Partial failure is therefore representable
 without losing successful peer results. The CLI exits unsuccessfully if any
-requested peer failed. A later edit after a round inventory was captured belongs
-to the background manager's next round and does not keep this RPC open forever.
+requested peer failed. A peer connection waiting because both replicas are
+uninitialized returns one `FAILED_PRECONDITION` result without closing that
+background connection or consuming further retry attempts. A later edit after a
+round inventory was captured belongs to the background manager's next round and
+does not keep this RPC open forever.
 
 `PingPeerRequest` carries `AdminCallContext` and one required `NodeName`. It
 resolves that learned identity, obtains or establishes an authenticated Noise

@@ -8,6 +8,9 @@ pub(super) async fn run_bootstrap_session(
     mut bootstrap_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
     correlation_id: &str,
 ) {
+    let replica_id = pending
+        .replica_id
+        .expect("bootstrap sessions always negotiate a ReplicaId");
     runtime.logger.emit(
         LogLevel::Info,
         "oll::sync",
@@ -17,9 +20,11 @@ pub(super) async fn run_bootstrap_session(
             "source_node_id": match pending.mode {
                 SessionReplicaMode::BootstrapSource => runtime.identities.node_id().await,
                 SessionReplicaMode::BootstrapReceiver => pending.remote.node_id(),
-                SessionReplicaMode::Normal => unreachable!("normal sessions use the ready-session loop"),
+                SessionReplicaMode::Waiting | SessionReplicaMode::Normal => {
+                    unreachable!("ready sessions use the ready-session loop")
+                }
             }.to_string(),
-            "replica_id": pending.replica_id.to_string(),
+            "replica_id": replica_id.to_string(),
         }),
     );
     let mut shutdown = runtime.shutdown.subscribe();
@@ -43,7 +48,7 @@ pub(super) async fn run_bootstrap_session(
         match pending.mode {
             SessionReplicaMode::BootstrapSource => {
                 match runtime.replica.capture_bootstrap_source().await {
-                    Ok(source) if source.inventory.replica_id == pending.replica_id => {
+                    Ok(source) if source.inventory.replica_id == replica_id => {
                         send_bootstrap_round(
                             &mut pending.channel,
                             &runtime.replica,
@@ -84,7 +89,7 @@ pub(super) async fn run_bootstrap_session(
                                     correlation_id,
                                     pending.max_chunk_bytes,
                                     claim.claim_id,
-                                    pending.replica_id,
+                                    replica_id,
                                     guard,
                                     writer_node_id,
                                 )
@@ -103,8 +108,8 @@ pub(super) async fn run_bootstrap_session(
                     Err(error) => Err(SyncError::Unavailable(error.to_string())),
                 }
             }
-            SessionReplicaMode::Normal => {
-                unreachable!("normal sessions use the ready-session loop")
+            SessionReplicaMode::Waiting | SessionReplicaMode::Normal => {
+                unreachable!("ready sessions use the ready-session loop")
             }
         }
     });
@@ -180,7 +185,7 @@ pub(super) async fn run_bootstrap_session(
                 "sync_bootstrap_completed",
                 correlation_id,
                 json!({
-                    "replica_id": pending.replica_id.to_string(),
+                    "replica_id": replica_id.to_string(),
                     "object_count": result.object_count,
                     "blob_count": result.blob_count,
                     "bytes": result.transferred_bytes,

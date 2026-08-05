@@ -164,7 +164,13 @@ impl SyncRuntime {
                         success = Some(result);
                         break;
                     }
-                    Err(error) => last_error = Some(error),
+                    Err(error) => {
+                        let retryable = !matches!(error, SyncError::FailedPrecondition(_));
+                        last_error = Some(error);
+                        if !retryable {
+                            break;
+                        }
+                    }
                 }
             }
             let result = match success {

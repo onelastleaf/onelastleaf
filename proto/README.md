@@ -155,10 +155,14 @@ length-delimited protobuf record.
 
 Both peers send `SyncHello` immediately after Noise. It carries `NodeIdentity`,
 the exact descriptor hash, maximum chunk-data bytes, and either one `ReplicaId`
-or `NoLocalReplica`. `SyncReady` confirms the selected chunk size and one common
-session replica. There is no compression negotiation, session nonce, protocol
-downgrade, or application flow-control message. TCP backpressure plus bounded
-local staging provides flow control.
+or `NoLocalReplica`. `SyncReady` confirms the selected chunk size and the common
+session replica when one exists. Two uninitialized peers omit that ID and keep
+one authenticated waiting connection. After either replica atomically appears,
+`REPLICA_AVAILABLE` closes that waiting connection normally so the next
+`SyncHello` can select bootstrap, normal sync, or a mismatch without changing a
+session's selected ID in place. There is no compression negotiation, session
+nonce, protocol downgrade, or application flow-control message. TCP
+backpressure plus bounded local staging provides flow control.
 
 An authenticated session starts a bidirectional finite operation with
 `SyncRoundRequest`; simultaneous requests are deterministically coalesced by

@@ -1,14 +1,31 @@
 use std::collections::BTreeSet;
 
 use super::{
-    super::{ReplicaError, model::absolute_to_namespace, types::ActiveReplica},
+    super::{
+        ReplicaError,
+        model::absolute_to_namespace,
+        types::{ActiveReplica, ReplicaStatus},
+    },
     filesystem::remove_path,
     types::ReplicaRuntime,
 };
 
 impl ReplicaRuntime {
     pub(crate) async fn replace_state(&self, replica: ActiveReplica) {
+        let status = replica.status();
         *self.state.write().await = Some(replica);
+        self.status_tx.send_if_modified(|current| {
+            if *current == status {
+                false
+            } else {
+                *current = status;
+                true
+            }
+        });
+    }
+
+    pub(crate) fn subscribe_status(&self) -> tokio::sync::watch::Receiver<ReplicaStatus> {
+        self.status_tx.subscribe()
     }
 
     pub(crate) async fn project_complete(

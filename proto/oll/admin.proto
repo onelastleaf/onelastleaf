@@ -54,6 +54,7 @@ enum PeerConnectionState {
   PEER_CONNECTION_STATE_READY = 3;
   PEER_CONNECTION_STATE_BACKOFF = 4;
   PEER_CONNECTION_STATE_CLOSING = 5;
+  PEER_CONNECTION_STATE_WAITING_FOR_REPLICA = 6;
 }
 
 enum PeerConnectionDirection {
@@ -78,6 +79,8 @@ message PeerStatus {
   optional string connect_target = 1;
   // Absent until a successful SyncHello establishes the remote identity.
   NodeIdentity node = 2;
+  // WAITING_FOR_REPLICA means Noise and identity authentication completed but
+  // both endpoints still have uninitialized replica slots.
   PeerConnectionState connection_state = 3;
   PeerConnectionDirection direction = 4;
 }

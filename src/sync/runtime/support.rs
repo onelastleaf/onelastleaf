@@ -82,7 +82,7 @@ pub(super) fn session_failure_fields(
         SyncCloseCode::SelfConnection => "self_connection",
         SyncCloseCode::DuplicateSession => "duplicate_session",
         SyncCloseCode::ReplicaMismatch => "replica_mismatch",
-        SyncCloseCode::NoReplicaAvailable => "no_replica_available",
+        SyncCloseCode::ReplicaAvailable => "replica_available",
         SyncCloseCode::BootstrapInProgress => "bootstrap_in_progress",
         SyncCloseCode::NegotiationFailed => "negotiation_failed",
         SyncCloseCode::ResourceExhausted => "resource_exhausted",

@@ -12,7 +12,10 @@ use uuid::Uuid;
 
 use crate::node::{identity::IdentityCoordinator, logging::NodeLogger};
 
-use super::super::{store::ReplicaStore, types::ActiveReplica};
+use super::super::{
+    store::ReplicaStore,
+    types::{ActiveReplica, ReplicaStatus},
+};
 
 #[derive(Clone, Debug)]
 pub struct DocumentInspection {
@@ -32,6 +35,7 @@ pub struct ReplicaRuntime {
     pub(crate) root: PathBuf,
     pub(crate) store: Arc<ReplicaStore>,
     pub(crate) state: RwLock<Option<ActiveReplica>>,
+    pub(super) status_tx: watch::Sender<ReplicaStatus>,
     pub(crate) identities: Arc<IdentityCoordinator>,
     pub(crate) logger: Arc<NodeLogger>,
     pub(super) watcher: StdMutex<Option<Debouncer<RecommendedWatcher, RecommendedCache>>>,

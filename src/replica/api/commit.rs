@@ -256,7 +256,7 @@ impl ReplicaRuntime {
         self.store
             .save_active_commit(&replica, &[], &operations, &projection_paths, &retained)
             .await?;
-        *self.state.write().await = Some(replica.clone());
+        self.replace_state(replica.clone()).await;
         for (catalog_node_id, document_id) in encoding_promotions {
             self.logger.emit(
                 LogLevel::Info,
