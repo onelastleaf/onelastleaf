@@ -122,7 +122,11 @@ commands. `init` creates the selected directories, writes a complete
 directory, artifact download directory, and topology, and writes
 `<config-root>/node.json`. It establishes
 only an empty replica slot; `ReplicaId` and replica data are created later. A
-PostgreSQL store is selected by replacing the generated `replica_store` table in
+platform Downloads directory supplies the initial artifact directory when
+available; otherwise `init` falls back to `$HOME/Downloads/oll`, matching the
+existing home-based defaults used on headless Unix deployments. It fails only
+when neither platform Downloads metadata nor `HOME` is available. A PostgreSQL
+store is selected by replacing the generated `replica_store` table in
 `config.lua` with the documented tagged configuration. When `config.lua`,
 `node.json`, or `replica.json` already exists, it warns that reinitialization
 replaces node/configuration identity and removes the current replica identity,

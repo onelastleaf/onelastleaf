@@ -258,8 +258,8 @@ fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
 }
 
 #[test]
-fn init_requires_a_platform_download_directory_for_artifacts() {
-    let error = intent(&[
+fn init_falls_back_to_home_when_platform_downloads_are_unavailable() {
+    let prepared = intent(&[
         "oll",
         "init",
         "test-node",
@@ -272,17 +272,19 @@ fn init_requires_a_platform_download_directory_for_artifacts() {
     ])
     .prepare(
         &Environment {
+            home: Some("/root".into()),
             platform_data_dir: Some("/platform/data/oll".into()),
             ..Environment::default()
         },
         Path::new("/startup/cwd"),
     )
-    .unwrap_err();
+    .unwrap();
+    let PreparedCliIntent::Init(prepared) = prepared else {
+        panic!()
+    };
     assert_eq!(
-        error,
-        CliError::MissingPlatformDirectory {
-            name: "artifact download directory",
-        }
+        prepared.artifact_download_dir,
+        Path::new("/root/Downloads/oll")
     );
 }
 

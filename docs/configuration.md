@@ -125,6 +125,14 @@ is admitted, its resolved value is stored in the deployment-local SQL plugin
 state; artifact publication reads that cached authority. Editing `config.lua`
 does not hot-reload the directory and takes effect after the next daemon start.
 
+When `oll init` creates the initial configuration, it uses the platform user
+Downloads directory plus `oll`. If that optional user-directory metadata is
+unavailable but `HOME` is set, initialization falls back to
+`$HOME/Downloads/oll`. It fails only when neither source can provide an
+absolute starting point. This fallback affects initial configuration generation
+only; a later daemon start uses the explicit `node.artifact_download_dir`
+persisted in `config.lua`.
+
 oll converts the validated node table into a Rust-owned `ResolvedNodeConfig`
 before starting the node runtime. Node, replica, sync, and plugin code consume
 this typed value and do not read `mlua::Table` values directly. The Lua state

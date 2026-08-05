@@ -18,6 +18,7 @@ pub(super) const DEFAULT_CONFIG_SUFFIX: &str = ".config/oll";
 pub(super) const DEFAULT_DATA_SUFFIX: &str = ".local/share/oll";
 pub(super) const DEFAULT_REPLICA_SUFFIX: &str = "Documents/oll";
 pub(super) const DEFAULT_LOG_SUFFIX: &str = ".local/state/oll";
+pub(super) const DEFAULT_ARTIFACT_DOWNLOAD_SUFFIX: &str = "Downloads/oll";
 pub(super) const XDG_LOG_SUFFIX: &str = "oll";
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -108,12 +109,14 @@ impl Environment {
     }
 
     pub(super) fn artifact_download_dir(&self) -> Result<PathBuf, CliError> {
-        self.platform_downloads_dir
-            .as_ref()
-            .map(|downloads| downloads.join("oll"))
-            .ok_or(CliError::MissingPlatformDirectory {
-                name: "artifact download directory",
-            })
+        if let Some(downloads) = &self.platform_downloads_dir {
+            return Ok(downloads.join("oll"));
+        }
+        default_from_home(
+            self.home.as_ref(),
+            DEFAULT_ARTIFACT_DOWNLOAD_SUFFIX,
+            "artifact download directory",
+        )
     }
 }
 
@@ -159,16 +162,15 @@ pub(super) fn ensure_persistable_path(path: &Path, name: &'static str) -> Result
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
     MissingHome { name: &'static str },
-    MissingPlatformDirectory { name: &'static str },
     NonUtf8PersistentPath { name: &'static str },
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::MissingHome { .. }
-            | Self::MissingPlatformDirectory { .. }
-            | Self::NonUtf8PersistentPath { .. } => ExitCode::from(EXIT_CONFIG),
+            Self::MissingHome { .. } | Self::NonUtf8PersistentPath { .. } => {
+                ExitCode::from(EXIT_CONFIG)
+            }
         }
     }
 }
@@ -179,10 +181,6 @@ impl fmt::Display for CliError {
             Self::MissingHome { name } => write!(
                 formatter,
                 "cannot determine {name}: pass an explicit path or set HOME"
-            ),
-            Self::MissingPlatformDirectory { name } => write!(
-                formatter,
-                "cannot determine {name} from the platform user directories"
             ),
             Self::NonUtf8PersistentPath { name } => {
                 write!(formatter, "cannot persist {name}: path is not valid UTF-8")
