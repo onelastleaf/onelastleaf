@@ -63,8 +63,9 @@ return {
             "oll://[2001:db8::10]:17384",
         },
 
-        -- Added manually by the user when sync topology is enabled.
-        -- network_key = oll.read_network_key("/etc/oll/network.key"),
+        -- Replace nil with a quoted `oll psk` result or:
+        -- oll.read_network_key("/absolute/path/to/network.key")
+        network_key = nil,
     },
 }
 ```
@@ -114,9 +115,10 @@ does not append defaults to an arbitrary Lua program after its `return`
 statement. `oll init --store sqlite` writes the complete SQLite shape and is the
 default. `oll init --store postgres` writes the complete PostgreSQL shape with
 `url = oll.getenv("OLL_POSTGRES_URL")`; initialization does not read or test the
-database connection. Both forms deliberately omit `network_key`, even when
-`--listen` or `--connect` was supplied. The user must add a key before that
-topology can run.
+database connection. Both forms write an explicit `network_key = nil`
+placeholder with instructions for replacing it, even when neither topology
+option was supplied. `init` never generates or persists actual key bytes. The
+user must replace the placeholder before a configured sync topology can run.
 
 Later stages may extend the versioned schema only after documenting their
 ownership. `NodeIdentity` and `ReplicaId` are also not Lua configuration: they

@@ -207,7 +207,9 @@ fn initial_config(
         }
         source.push_str("        ");
     }
-    source.push_str("},\n    },\n}\n");
+    source.push_str(
+        "},\n        -- Replace nil with a quoted `oll psk` result or:\n        -- oll.read_network_key(\"/absolute/path/to/network.key\")\n        network_key = nil,\n    },\n}\n",
+    );
     Ok(source)
 }
 
@@ -272,6 +274,9 @@ mod tests {
         assert!(config.contains(&identity.node_id().to_string()));
         assert!(config.contains("oll://peer.example:17384"));
         assert!(config.contains("artifact_download_dir"));
+        assert!(config.contains("-- Replace nil with a quoted `oll psk` result or:"));
+        assert!(config.contains("network_key = nil,"));
+        assert_eq!(config.matches("network_key =").count(), 1);
     }
 
     #[test]

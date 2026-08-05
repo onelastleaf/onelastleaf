@@ -150,11 +150,13 @@ defined in `configuration.md`; oll reads the returned table rather than named
 Lua globals. Full layout, recovery, and lock behavior are in `node.md` and
 `replica-store.md`.
 
-`init` never generates or persists `node.network_key`, including when topology
-flags are present. Such a generated configuration is intentionally incomplete
-for sync until its user adds the raw key or an
-`oll.read_network_key("/absolute/os/path")` expression. The daemon does not take
-the key from a CLI option.
+`init` never generates or persists actual `node.network_key` bytes. It writes an
+explicit `network_key = nil` placeholder, including short instructions for
+replacing `nil` with a quoted `oll psk` result or an
+`oll.read_network_key("/absolute/os/path")` expression. This placeholder is
+written whether or not topology flags are present. A generated configuration
+with a nonempty topology remains intentionally incomplete for sync until the
+user replaces it. The daemon does not take the key from a CLI option.
 
 `oll psk` is a pure local generator. It reads 32 random bytes directly from the
 operating-system CSPRNG, encodes them as 43 base64url-without-padding bytes, and
