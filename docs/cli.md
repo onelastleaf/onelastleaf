@@ -159,10 +159,12 @@ with a nonempty topology remains intentionally incomplete for sync until the
 user replaces it. The daemon does not take the key from a CLI option.
 
 `oll psk` is a pure local generator. It reads 32 random bytes directly from the
-operating-system CSPRNG, encodes them as 43 base64url-without-padding bytes, and
-writes exactly those bytes to stdout without a terminating newline. It accepts
-no output-path or network options, does not open configuration or Admin, and
-emits no structured log. Those 43 printable bytes are the intended raw
+operating-system CSPRNG and encodes them as 43
+base64url-without-padding bytes. When stdout is a terminal, it appends one LF so
+the shell can render its next prompt normally. When stdout is redirected to a
+file or pipe, it writes exactly the 43 key bytes without CR or LF. It accepts no
+output-path or network options, does not open configuration or Admin, and emits
+no structured log. Those 43 printable bytes are the intended raw
 `node.network_key`; because their length is not exactly 32 they pass through the
 documented HKDF derivation. Shell redirection therefore creates an exact key
 file. If the user later adds a newline, `oll.read_network_key` deliberately

@@ -1,5 +1,5 @@
 use std::{
-    io::{self, Write},
+    io::{self, IsTerminal, Write},
     path::Path,
 };
 
@@ -53,9 +53,18 @@ fn execute_client(intent: PreparedClientIntent) -> Result<(), NodeError> {
                 NodeError::Internal(format!("cannot generate network key: {error}"))
             })?;
             let encoded = URL_SAFE_NO_PAD.encode(key);
-            let mut stdout = io::stdout().lock();
+            let stdout = io::stdout();
+            let terminal = stdout.is_terminal();
+            let mut stdout = stdout.lock();
             stdout
                 .write_all(encoded.as_bytes())
+                .and_then(|()| {
+                    if terminal {
+                        stdout.write_all(b"\n")
+                    } else {
+                        Ok(())
+                    }
+                })
                 .and_then(|()| stdout.flush())
                 .map_err(|error| NodeError::io("write network key", error))
         }

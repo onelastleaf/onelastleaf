@@ -1,7 +1,10 @@
 use std::{
     fs,
+    io::{self, Read},
+    mem::MaybeUninit,
+    os::fd::{AsRawFd, FromRawFd},
     path::{Path, PathBuf},
-    process::Command,
+    process::{Command, Stdio},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -10,6 +13,55 @@ const EXIT_CONFIG: i32 = 78;
 
 fn oll() -> Command {
     Command::new(env!("CARGO_BIN_EXE_oll"))
+}
+
+fn raw_pty() -> (fs::File, fs::File) {
+    let mut master = -1;
+    let mut slave = -1;
+    // SAFETY: openpty initializes both descriptors on success. Each descriptor
+    // is immediately transferred to exactly one File owner.
+    let result = unsafe {
+        libc::openpty(
+            &mut master,
+            &mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    assert_eq!(
+        result,
+        0,
+        "cannot open test PTY: {}",
+        io::Error::last_os_error()
+    );
+    // SAFETY: openpty returned two live, uniquely owned file descriptors.
+    let master = unsafe { fs::File::from_raw_fd(master) };
+    // SAFETY: openpty returned two live, uniquely owned file descriptors.
+    let slave = unsafe { fs::File::from_raw_fd(slave) };
+
+    let mut attributes = MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: attributes points to writable termios storage and slave is live.
+    let result = unsafe { libc::tcgetattr(slave.as_raw_fd(), attributes.as_mut_ptr()) };
+    assert_eq!(
+        result,
+        0,
+        "cannot inspect test PTY: {}",
+        io::Error::last_os_error()
+    );
+    // SAFETY: tcgetattr initialized attributes after returning success.
+    let mut attributes = unsafe { attributes.assume_init() };
+    // SAFETY: attributes is a valid initialized termios value.
+    unsafe { libc::cfmakeraw(&mut attributes) };
+    // SAFETY: slave is live and attributes remains valid for the call.
+    let result = unsafe { libc::tcsetattr(slave.as_raw_fd(), libc::TCSANOW, &attributes) };
+    assert_eq!(
+        result,
+        0,
+        "cannot configure test PTY: {}",
+        io::Error::last_os_error()
+    );
+    (master, slave)
 }
 
 struct TestDeployment {
@@ -161,7 +213,7 @@ fn sync_retry_help_defines_a_total_attempt_limit() {
 }
 
 #[test]
-fn psk_writes_one_base64url_key_without_a_line_ending_or_local_side_effects() {
+fn psk_pipe_writes_one_base64url_key_without_a_line_ending_or_side_effects() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     let output = oll()
@@ -176,6 +228,40 @@ fn psk_writes_one_base64url_key_without_a_line_ending_or_local_side_effects() {
     assert!(!output.stdout.contains(&b'\r'));
     assert!(!output.stdout.contains(&b'\n'));
     assert_eq!(URL_SAFE_NO_PAD.decode(&output.stdout).unwrap().len(), 32);
+}
+
+#[test]
+fn psk_terminal_output_ends_with_one_line_feed() {
+    use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
+
+    let (mut master, slave) = raw_pty();
+    let output = {
+        let mut command = oll();
+        command
+            .env_remove("HOME")
+            .env_remove("OLL_CONFIG")
+            .arg("psk")
+            .stdout(Stdio::from(slave));
+        command.output().unwrap()
+    };
+    assert!(output.status.success());
+    assert!(output.stdout.is_empty());
+    assert!(output.stderr.is_empty());
+
+    let mut terminal_output = Vec::new();
+    loop {
+        let mut chunk = [0_u8; 64];
+        match master.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(length) => terminal_output.extend_from_slice(&chunk[..length]),
+            Err(error) if error.raw_os_error() == Some(libc::EIO) => break,
+            Err(error) => panic!("cannot read test PTY: {error}"),
+        }
+    }
+    assert_eq!(terminal_output.len(), 44);
+    assert_eq!(terminal_output.pop(), Some(b'\n'));
+    assert!(!terminal_output.contains(&b'\r'));
+    assert_eq!(URL_SAFE_NO_PAD.decode(&terminal_output).unwrap().len(), 32);
 }
 
 #[test]
