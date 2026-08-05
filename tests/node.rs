@@ -327,12 +327,15 @@ fn identity_watch_initial_reload_precedes_sync_listener_startup() {
     let listen = listener.local_addr().unwrap();
     let config_path = config_root.join("config.lua");
     let config = fs::read_to_string(&config_path).unwrap();
-    let configured = config.replace(
-        "        listen = nil,",
-        &format!(
-            "        listen = \"{listen}\",\n        network_key = \"0123456789abcdef0123456789abcdef\","
-        ),
-    );
+    let configured = config
+        .replace(
+            "        listen = nil,",
+            &format!("        listen = \"{listen}\","),
+        )
+        .replace(
+            "        network_key = nil,",
+            "        network_key = \"0123456789abcdef0123456789abcdef\",",
+        );
     assert_ne!(configured, config);
     fs::write(config_path, configured).unwrap();
 
