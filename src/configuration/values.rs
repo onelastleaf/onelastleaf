@@ -114,6 +114,15 @@ pub enum ReplicaStoreConfig {
     Postgres { url: PostgresUrl },
 }
 
+impl ReplicaStoreConfig {
+    pub(crate) fn sqlite_path(&self) -> Option<&std::path::Path> {
+        match self {
+            Self::Sqlite { path } => Some(path),
+            Self::Postgres { .. } => None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ResolvedNodeConfig {
     pub replica_root: PathBuf,

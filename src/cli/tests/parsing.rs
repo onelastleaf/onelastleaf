@@ -208,6 +208,22 @@ fn init_connect_defaults_scheme_and_port_before_persistence() {
 }
 
 #[test]
+fn init_selects_one_typed_store_backend() {
+    let Command::Init(default) = parse(&["oll", "init", "test-node"]).command else {
+        panic!()
+    };
+    assert_eq!(default.store, InitStore::Sqlite);
+
+    let Command::Init(postgres) =
+        parse(&["oll", "init", "test-node", "--store", "postgres"]).command
+    else {
+        panic!()
+    };
+    assert_eq!(postgres.store, InitStore::Postgres);
+    assert!(parse_from(["oll", "init", "test-node", "--store", "mysql"]).is_err());
+}
+
+#[test]
 fn validates_node_names_as_lowercase_dns_labels() {
     let name: NodeName = "home-server-2".parse().unwrap();
     assert_eq!(name.as_str(), "home-server-2");

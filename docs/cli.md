@@ -89,6 +89,7 @@ oll init <node-name>
 oll init home-laptop --replica /path/to/replica/root
 oll init home-laptop --config /path/to/config/root
 oll init home-laptop --log-dir /path/to/log/dir
+oll init home-laptop --store postgres
 oll init home-laptop --listen 0.0.0.0:17384 \
   --connect peer.example.com
 
@@ -132,9 +133,12 @@ only an empty replica slot; `ReplicaId` and replica data are created later. A
 platform Downloads directory supplies the initial artifact directory when
 available; otherwise `init` falls back to `$HOME/Downloads/oll`, matching the
 existing home-based defaults used on headless Unix deployments. It fails only
-when neither platform Downloads metadata nor `HOME` is available. A PostgreSQL
-store is selected by replacing the generated `replica_store` table in
-`config.lua` with the documented tagged configuration. When `config.lua`,
+when neither platform Downloads metadata nor `HOME` is available.
+`--store sqlite|postgres` selects the generated tagged store configuration and
+defaults to `sqlite`. PostgreSQL initialization writes
+`url = oll.getenv("OLL_POSTGRES_URL")`; it neither places credentials in argv
+nor connects to the database during `init`. The environment variable must be
+available when the daemon later evaluates `config.lua`. When `config.lua`,
 `node.json`, or `replica.json` already exists, it warns that reinitialization
 replaces node/configuration identity and removes the current replica identity,
 then asks for an interactive `y`/`n` replacement confirmation. It leaves the

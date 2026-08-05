@@ -254,6 +254,7 @@ fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
     assert_eq!(prepared.config_root, cwd.join("deployment/config"));
     assert_eq!(prepared.replica_root, cwd.join("deployment/replica"));
     assert_eq!(prepared.replica_store_base, cwd.join("platform/data/oll"));
+    assert_eq!(prepared.store, InitStore::Sqlite);
     assert_eq!(prepared.log_dir, cwd.join("deployment/log"));
     assert_eq!(
         prepared.artifact_download_dir,

@@ -11,9 +11,9 @@ use crate::configuration::ResolvedNodeConfig;
 
 use super::environment::{ensure_persistable_path, resolve_log_dir};
 use super::{
-    Cli, CliError, ColorMode, Command, ConnectUrl, Environment, GitRemote, JobCommand, LogCommand,
-    LogFilterLevel, LogTarget, LoopbackAddr, NodeName, OutputFormat, PluginArgs, PluginCommand,
-    ReplicaCommand, SnapshotCommand, resolve_client_path,
+    Cli, CliError, ColorMode, Command, ConnectUrl, Environment, GitRemote, InitStore, JobCommand,
+    LogCommand, LogFilterLevel, LogTarget, LoopbackAddr, NodeName, OutputFormat, PluginArgs,
+    PluginCommand, ReplicaCommand, SnapshotCommand, resolve_client_path,
 };
 
 impl Cli {
@@ -26,6 +26,7 @@ impl Cli {
                 replica_root: args.replica,
                 config_root: args.config,
                 log_dir: args.log_dir,
+                store: args.store,
             })),
             Command::Run(args) => Ok(CliIntent::Run(RunIntent {
                 color: args.color,
@@ -90,6 +91,7 @@ pub struct InitIntent {
     pub replica_root: Option<PathBuf>,
     pub config_root: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
+    pub store: InitStore,
 }
 
 impl InitIntent {
@@ -140,6 +142,7 @@ pub struct PreparedInitIntent {
     pub config_root: PathBuf,
     pub log_dir: PathBuf,
     pub artifact_download_dir: PathBuf,
+    pub store: InitStore,
 }
 
 #[derive(Debug)]
@@ -498,7 +501,9 @@ impl CliIntent {
                 let artifact_download_dir =
                     resolve_client_path(&environment.artifact_download_dir()?, cwd);
                 ensure_persistable_path(&replica_root, "replica root")?;
-                ensure_persistable_path(&replica_store_base, "replica store")?;
+                if args.store == InitStore::Sqlite {
+                    ensure_persistable_path(&replica_store_base, "replica store")?;
+                }
                 ensure_persistable_path(&log_dir, "log directory")?;
                 ensure_persistable_path(&artifact_download_dir, "artifact download directory")?;
                 Ok(PreparedCliIntent::Init(PreparedInitIntent {
@@ -510,6 +515,7 @@ impl CliIntent {
                     config_root,
                     log_dir,
                     artifact_download_dir,
+                    store: args.store,
                 }))
             }
             Self::Run(args) => {

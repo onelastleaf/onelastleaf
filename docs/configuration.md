@@ -111,9 +111,12 @@ fields in either tagged table, unknown top-level or `node` fields, and every
 missing required field other than optional `network_key` are errors. This means
 a hand-written configuration with a partial `node` table fails validation. oll
 does not append defaults to an arbitrary Lua program after its `return`
-statement. `oll init` instead writes a complete initial table with explicit
-defaults and deliberately omits `network_key`, even when `--listen` or
-`--connect` was supplied. The user must add a key before that topology can run.
+statement. `oll init --store sqlite` writes the complete SQLite shape and is the
+default. `oll init --store postgres` writes the complete PostgreSQL shape with
+`url = oll.getenv("OLL_POSTGRES_URL")`; initialization does not read or test the
+database connection. Both forms deliberately omit `network_key`, even when
+`--listen` or `--connect` was supplied. The user must add a key before that
+topology can run.
 
 Later stages may extend the versioned schema only after documenting their
 ownership. `NodeIdentity` and `ReplicaId` are also not Lua configuration: they
@@ -289,7 +292,8 @@ is instead joined to the config root. A PostgreSQL store URL is not an OS path.
 config root:  --config  > OLL_CONFIG  > platform configuration directory / oll
 replica root: --replica > OLL_REPLICA > platform Documents directory / oll
 log dir:      --log-dir > OLL_LOG_DIR > platform state directory / oll
-replica store: generated explicit SQLite path using the in-memory NodeId
+replica store: --store sqlite (default) generates an explicit SQLite path;
+               --store postgres writes oll.getenv("OLL_POSTGRES_URL")
 artifact download dir: platform Downloads directory / oll
 ```
 
@@ -314,13 +318,15 @@ configuration, data, and state) rather than maintaining a second parser for
 component and applies the fallback/error behavior above; the crate chooses only
 the platform base.
 
-The generated SQLite path is
+For `--store sqlite`, the generated path is
 `<platform-data-dir>/oll/stores/<generated-node-id>/replica.sqlite3`, as
-defined in [replica-store.md](replica-store.md). `init` writes the resolved
-absolute replica root, store path, log directory, and artifact download
-directory into the initial `config.lua`. A relative path returned by a
-hand-written `config.lua` is instead resolved relative to the config root, never
-relative to the daemon's current working directory. Because persisted
+defined in [replica-store.md](replica-store.md). For `--store postgres`, `init`
+writes the environment lookup above and creates no SQLite management directory.
+It does not read the variable or connect to PostgreSQL. `init` writes the
+resolved absolute replica root, log directory, artifact download directory,
+and selected store shape into the initial `config.lua`. A relative path returned
+by a hand-written `config.lua` is instead resolved relative to the config root,
+never relative to the daemon's current working directory. Because persisted
 filesystem paths are Lua strings, an `init` replica root, log directory,
 artifact directory, or SQLite path that cannot be represented as UTF-8 is
 rejected as a configuration error. The config root itself and document/snapshot

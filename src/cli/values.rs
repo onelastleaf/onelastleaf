@@ -272,3 +272,10 @@ pub enum ColorMode {
     Always,
     Never,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum InitStore {
+    #[default]
+    Sqlite,
+    Postgres,
+}

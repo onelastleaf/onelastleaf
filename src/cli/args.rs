@@ -8,7 +8,8 @@ use clap::{Args, Parser, Subcommand};
 use url::Url;
 
 use super::{
-    ColorMode, ConnectUrl, GitRemote, LogFilterDirective, LoopbackAddr, NodeName, OutputFormat,
+    ColorMode, ConnectUrl, GitRemote, InitStore, LogFilterDirective, LoopbackAddr, NodeName,
+    OutputFormat,
 };
 
 const DEFAULT_SYNC_PORT: u16 = 17_384;
@@ -73,6 +74,9 @@ pub struct InitArgs {
     /// Log directory. Overrides OLL_LOG_DIR and the user-state default.
     #[arg(long, value_name = "PATH")]
     pub log_dir: Option<PathBuf>,
+    /// SQL store backend written to config.lua.
+    #[arg(long, value_enum, default_value = "sqlite")]
+    pub store: InitStore,
 }
 
 fn parse_init_connect_url(input: &str) -> Result<ConnectUrl, String> {

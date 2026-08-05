@@ -51,16 +51,19 @@ not a shared multi-daemon replica backend. Pointing two deployments at the same
 store violates the one-daemon/one-replica invariant.
 
 `oll init` generates the new `NodeIdentity` in memory before writing either
-initialization file. When the user does not supply a store location, it writes
-an explicit SQLite path beneath the platform data directory:
+initialization file. `--store sqlite` is the default and writes an explicit
+SQLite path beneath the platform data directory:
 
 ```text
 <platform-data-dir>/oll/stores/<generated-node-id>/replica.sqlite3
 ```
 
 The generated path is persisted in `config.lua`; later edits to `node.json` do
-not move it. `init` may create its parent directories but does not create a
-database, a `ReplicaId`, or a catalog.
+not move it. `--store postgres` instead writes
+`url = oll.getenv("OLL_POSTGRES_URL")` and creates no SQLite directory. `init`
+does not read that variable or test either database backend. It may create the
+SQLite parent directories but does not create a database, a `ReplicaId`, or a
+catalog.
 
 ## Logical store contents
 

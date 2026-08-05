@@ -70,7 +70,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         &config.log_dir,
         &config.artifact_download_dir,
         &plugin_data_root,
-        &config.replica_store,
+        config.replica_store.sqlite_path(),
     )
     .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
 

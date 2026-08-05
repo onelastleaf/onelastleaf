@@ -142,8 +142,10 @@ config root, working-tree root, and log directory and takes the same deployment
 lock. It checks for existing initialization material and obtains any required
 confirmation before creating ordinary prerequisite directories. It then
 generates one UUID-v4 `NodeIdentity` in memory, derives the default SQLite
-store path from that exact `NodeId`, writes a complete initial `config.lua`, and
-only after that succeeds writes `node.json` with the same identity. Each
+store path from that exact `NodeId` when SQLite was selected, or writes the
+PostgreSQL `OLL_POSTGRES_URL` lookup when requested. It writes a complete
+initial `config.lua`, and only after that succeeds writes `node.json` with the
+same identity. Each
 replacement is written to a new sibling temporary file and atomically renamed
 into its final path. oll does not follow a target file when replacing it. The
 minimal lock-directory creation required by the third lock fallback is the one

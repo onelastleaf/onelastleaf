@@ -5,8 +5,6 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use super::ReplicaStoreConfig;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct StorageLayoutError {
     problem: &'static str,
@@ -24,7 +22,7 @@ pub(crate) fn validate_storage_layout(
     log_dir: &Path,
     artifact_download_dir: &Path,
     plugin_data_root: &Path,
-    replica_store: &ReplicaStoreConfig,
+    sqlite_store_path: Option<&Path>,
 ) -> Result<(), StorageLayoutError> {
     validate_working_tree_roots(config_root, replica_root, log_dir, artifact_download_dir)?;
 
@@ -38,7 +36,7 @@ pub(crate) fn validate_storage_layout(
         &plugin_data_root,
         "node.replica_root must not overlap the derived plugin data root",
     )?;
-    if let ReplicaStoreConfig::Sqlite { path } = replica_store {
+    if let Some(path) = sqlite_store_path {
         let parent = path.parent().ok_or(StorageLayoutError {
             problem: "node.replica_store.path must have a management directory",
         })?;

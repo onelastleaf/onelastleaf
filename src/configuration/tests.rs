@@ -326,7 +326,7 @@ fn storage_layout_rejects_every_working_tree_ancestor_relationship() {
             &log_dir,
             &base.join("artifacts"),
             &base.join("plugin-data"),
-            &store,
+            store.sqlite_path(),
         )
         .unwrap_err();
         assert!(
@@ -367,7 +367,7 @@ fn storage_layout_rejects_every_working_tree_ancestor_relationship() {
             &base.join("log"),
             &artifact_download_dir,
             &plugin_data_root,
-            &safe_store,
+            safe_store.sqlite_path(),
         )
         .unwrap_err();
         assert!(
@@ -393,9 +393,10 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("alias/replica/logs"),
         &base.join("artifacts"),
         &base.join("plugin-data"),
-        &ReplicaStoreConfig::Sqlite {
+        ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
-        },
+        }
+        .sqlite_path(),
     )
     .unwrap_err();
     assert!(error.to_string().contains("node.log_dir"));
@@ -406,9 +407,10 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("log"),
         &base.join("artifacts"),
         &base.join("plugin-data"),
-        &ReplicaStoreConfig::Sqlite {
+        ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
-        },
+        }
+        .sqlite_path(),
     )
     .unwrap_err();
     assert!(error.to_string().contains("config_root"));
@@ -419,9 +421,10 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("log"),
         &base.join("artifacts"),
         &base.join("plugin-data"),
-        &ReplicaStoreConfig::Sqlite {
+        ReplicaStoreConfig::Sqlite {
             path: base.join("alias/replica/store/replica.sqlite3"),
-        },
+        }
+        .sqlite_path(),
     )
     .unwrap_err();
     assert!(error.to_string().contains("management directory"));
@@ -432,9 +435,10 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("log"),
         &base.join("alias/replica/artifacts"),
         &base.join("plugin-data"),
-        &ReplicaStoreConfig::Sqlite {
+        ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
-        },
+        }
+        .sqlite_path(),
     )
     .unwrap_err();
     assert!(error.to_string().contains("node.artifact_download_dir"));
@@ -445,9 +449,10 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("log"),
         &base.join("artifacts"),
         &base.join("alias/replica/plugins"),
-        &ReplicaStoreConfig::Sqlite {
+        ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
-        },
+        }
+        .sqlite_path(),
     )
     .unwrap_err();
     assert!(error.to_string().contains("derived plugin data root"));

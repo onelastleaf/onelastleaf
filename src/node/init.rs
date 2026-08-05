@@ -5,10 +5,8 @@ use std::{
     path::Path,
 };
 
-use crate::cli::{ConnectUrl, PreparedInitIntent};
-use crate::configuration::{
-    ReplicaStoreConfig, validate_storage_layout, validate_working_tree_roots,
-};
+use crate::cli::{ConnectUrl, InitStore, PreparedInitIntent};
+use crate::configuration::{validate_storage_layout, validate_working_tree_roots};
 
 use super::{
     identity::{NodeIdentity, atomic_write, identity_path},
@@ -49,9 +47,12 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
         .join("stores")
         .join(identity.node_id().to_string())
         .join("replica.sqlite3");
-    let store_parent = replica_store.parent().ok_or_else(|| {
-        NodeError::Internal("generated replica store path has no parent".to_owned())
-    })?;
+    let store_parent = match intent.store {
+        InitStore::Sqlite => Some(replica_store.parent().ok_or_else(|| {
+            NodeError::Internal("generated replica store path has no parent".to_owned())
+        })?),
+        InitStore::Postgres => None,
+    };
     let canonical_config_root = fs::canonicalize(&intent.config_root).map_err(|error| {
         NodeError::config_io(
             "resolve configuration root",
@@ -70,8 +71,9 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
         &intent.log_dir,
         &intent.artifact_download_dir,
         &plugin_data_root,
-        &ReplicaStoreConfig::Sqlite {
-            path: replica_store.clone(),
+        match intent.store {
+            InitStore::Sqlite => Some(replica_store.as_path()),
+            InitStore::Postgres => None,
         },
     )
     .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
@@ -79,7 +81,9 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     ensure_directory(&intent.config_root, 0o700, "configuration root")?;
     ensure_directory(&intent.replica_root, 0o700, "replica root")?;
     ensure_log_directory(&intent.log_dir)?;
-    ensure_directory(store_parent, 0o700, "replica store directory")?;
+    if let Some(store_parent) = store_parent {
+        ensure_directory(store_parent, 0o700, "replica store directory")?;
+    }
     let source = initial_config(
         &intent.replica_root,
         &replica_store,
@@ -87,6 +91,7 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
         &intent.artifact_download_dir,
         intent.listen,
         &intent.connect,
+        intent.store,
     )?;
     atomic_write(&config_path, source.as_bytes())?;
 
@@ -160,13 +165,24 @@ fn initial_config(
     artifact_download_dir: &Path,
     listen: Option<std::net::SocketAddr>,
     connect: &[ConnectUrl],
+    store: InitStore,
 ) -> Result<String, NodeError> {
     let replica_root = lua_string(replica_root.to_str().ok_or_else(|| {
         NodeError::Config("cannot persist replica root: path is not valid UTF-8".to_owned())
     })?);
-    let replica_store = lua_string(replica_store.to_str().ok_or_else(|| {
-        NodeError::Config("cannot persist replica store: path is not valid UTF-8".to_owned())
-    })?);
+    let replica_store = match store {
+        InitStore::Sqlite => {
+            let path = lua_string(replica_store.to_str().ok_or_else(|| {
+                NodeError::Config(
+                    "cannot persist replica store: path is not valid UTF-8".to_owned(),
+                )
+            })?);
+            format!(
+                "        replica_store = {{\n            driver = \"sqlite\",\n            path = {path},\n        }},"
+            )
+        }
+        InitStore::Postgres => "        replica_store = {\n            driver = \"postgres\",\n            url = oll.getenv(\"OLL_POSTGRES_URL\"),\n        },".to_owned(),
+    };
     let log_dir = lua_string(log_dir.to_str().ok_or_else(|| {
         NodeError::Config("cannot persist log directory: path is not valid UTF-8".to_owned())
     })?);
@@ -180,7 +196,7 @@ fn initial_config(
         |address| lua_string(&address.to_string()),
     );
     let mut source = format!(
-        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n        replica_store = {{\n            driver = \"sqlite\",\n            path = {replica_store},\n        }},\n        log_dir = {log_dir},\n        artifact_download_dir = {artifact_download_dir},\n        listen = {listen},\n        connect = {{"
+        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n{replica_store}\n        log_dir = {log_dir},\n        artifact_download_dir = {artifact_download_dir},\n        listen = {listen},\n        connect = {{"
     );
     if !connect.is_empty() {
         source.push('\n');
@@ -233,6 +249,7 @@ mod tests {
             config_root: directory.path().join("config"),
             log_dir: directory.path().join("log"),
             artifact_download_dir: directory.path().join("downloads/oll"),
+            store: InitStore::Sqlite,
         }
     }
 
@@ -260,6 +277,23 @@ mod tests {
     #[test]
     fn lua_strings_escape_control_bytes_without_json_unicode_escapes() {
         assert_eq!(lua_string("a\n\u{0001}b"), "\"a\\n\\001b\"");
+    }
+
+    #[test]
+    fn postgres_init_writes_the_environment_lookup_without_a_sqlite_directory() {
+        let directory = TempDir::new().unwrap();
+        let mut intent = intent(&directory);
+        intent.store = InitStore::Postgres;
+        let config_root = intent.config_root.clone();
+        let data_root = intent.replica_store_base.clone();
+
+        initialize(intent).unwrap();
+
+        let config = fs::read_to_string(config_root.join(CONFIG_FILENAME)).unwrap();
+        assert!(config.contains("driver = \"postgres\""));
+        assert!(config.contains("url = oll.getenv(\"OLL_POSTGRES_URL\")"));
+        assert!(!config.contains("path ="));
+        assert!(!data_root.join("stores").exists());
     }
 
     #[test]
