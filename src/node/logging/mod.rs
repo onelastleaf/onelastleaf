@@ -16,6 +16,7 @@ use sink::RotationPolicy;
 
 const OLL_LOG_FILENAME: &str = "oll.log";
 const SYNC_LOG_FILENAME: &str = "sync.log";
+const PLUGIN_LOG_FILENAME: &str = "plugin.log";
 const MEBIBYTE: u64 = 1024 * 1024;
 const COMPRESSION_QUEUE_CAPACITY: usize = 4;
 const LOG_QUEUE_CAPACITY: usize = 4096;
@@ -29,5 +30,9 @@ const OLL_ROTATION: RotationPolicy = RotationPolicy {
 };
 const SYNC_ROTATION: RotationPolicy = RotationPolicy {
     maximum_bytes: 100 * MEBIBYTE,
+    retained_rotations: 10,
+};
+const PLUGIN_ROTATION: RotationPolicy = RotationPolicy {
+    maximum_bytes: 25 * MEBIBYTE,
     retained_rotations: 10,
 };

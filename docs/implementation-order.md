@@ -174,8 +174,10 @@ Completion criteria:
   and restart;
 - `plugins.lua` contains no process desired state; SQL start/stop authority and
   package removal survive daemon restart on both supported store backends;
-- stale plugin output is rejected without blocking;
-- nested calls do not stop the stream reader;
+- duplicate, out-of-order, or stale-session plugin output is rejected without
+  blocking current instance work or teardown;
+- plugin-originated host calls are dispatched without stopping the stream
+  reader, and pending host work cannot block session shutdown;
 - desired-stopped state survives daemon restart, stopped plugins are not
   respawned, and
   unexpected exits of desired-running plugins trigger a bounded-backoff restart
@@ -198,5 +200,6 @@ The first implementation does not include:
 - a plugin marketplace, signatures, or permission sandbox;
 - backward-compatible protobuf negotiation;
 - plugin scheduling, fair scheduling, quotas, or a CFS-like scheduler;
+- document/catalog event subscriptions and event-triggered plugin jobs;
 - remote plugin invocation and separate file-upload/download protocols;
 - distributed transactions with external services.

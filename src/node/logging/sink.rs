@@ -81,6 +81,7 @@ impl LogLevel {
 pub(super) struct LogSinks {
     pub(super) oll: RotatingLogSink,
     pub(super) sync: RotatingLogSink,
+    pub(super) plugin: RotatingLogSink,
 }
 
 pub(super) struct RotatingLogSink {

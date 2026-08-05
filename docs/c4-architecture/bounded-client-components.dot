@@ -1,6 +1,4 @@
 // C4 component model of bounded oll client executions derived from src/.
-// Plugin and job intents are parsed but intentionally excluded here because
-// execute_client currently has no production handler for them.
 
 digraph C4_Bounded_Client_Components {
   graph [
@@ -32,7 +30,7 @@ digraph C4_Bounded_Client_Components {
   ];
   deployment_state [
     shape=cylinder,
-    label="Deployment State\n[Container: File Store]\nconfig.lua, node.json, replica.json,\nrun lock/socket and configuration modules",
+    label="Deployment State\n[Container: File Store]\nconfig.lua, plugins.lua, plugin masks/config, identities,\nrun lock/socket and configuration modules",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -46,7 +44,7 @@ digraph C4_Bounded_Client_Components {
   ];
   logs [
     shape=cylinder,
-    label="Structured Log Files\n[Container: File Store]\nsync.log",
+    label="Structured Log Files\n[Container: File Store]\nsync.log and plugin.log",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -85,14 +83,14 @@ digraph C4_Bounded_Client_Components {
     ];
 
     client_app [
-      label="Bounded Command Application Service\n[Component]\nnode::execute / execute_client.\nDispatches implemented init/start/stop/status/log/replica/sync/ping/psk,\nowns confirmations, output rendering, PSK generation, and exit mapping.",
+      label="Bounded Command Application Service\n[Component]\nnode::execute / execute_client.\nDispatches node, replica, sync, plugin, and job intents; owns\ncommon confirmations, local utilities, and exit mapping.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
     ];
 
     admin_adapter [
-      label="Admin Client Adapter\n[Component]\nTyped 9-method Admin client with schema fingerprint,\ntrace context, UDS transport setup, and request deadlines.",
+      label="Admin Client Adapter\n[Component]\nTyped Admin client with schema fingerprint, trace context,\nUDS transport, and method-specific request deadlines.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
@@ -111,6 +109,13 @@ digraph C4_Bounded_Client_Components {
       fontcolor="#111111",
       color="#5B88B2"
     ];
+
+    plugin_cli [
+      label="Plugin and Job CLI Adapter\n[Component]\nBuilds typed package/process/job requests, performs digest-bound\noverwrite confirmation, renders tables/JSON/progress, validates\nplugins.lua/masks locally, and filters plugin.log locally.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
   }
 
   user -> cli_adapter [
@@ -124,8 +129,13 @@ digraph C4_Bounded_Client_Components {
     label="Performs one typed operational request for daemon-backed commands"
   ];
   admin_adapter -> daemon [
-    label="Lifecycle, status, log, replica, sync, and ping calls\n[protobuf/gRPC over UDS]"
+    label="Lifecycle, replica, sync, plugin package/process, and job calls\n[protobuf/gRPC over UDS]"
   ];
+
+  client_app -> plugin_cli [label="Delegates plugin and job intents"];
+  plugin_cli -> admin_adapter [label="Issues typed daemon-backed plugin/job requests"];
+  plugin_cli -> deployment_state [label="Validates plugins.lua and PluginId-keyed masks locally"];
+  plugin_cli -> logs [label="Reads and filters plugin.log locally"];
 
   client_app -> bootstrap [label="Initializes, starts, or stops a deployment"];
   bootstrap -> deployment_state [

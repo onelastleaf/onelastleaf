@@ -19,15 +19,29 @@ use super::{
     sink::{CompressionWorker, LogLevel, LogSinks},
 };
 
+pub(super) struct StructuredLogEvent<'a> {
+    pub(super) level: LogLevel,
+    pub(super) target: &'a str,
+    pub(super) event: &'a str,
+    pub(super) correlation_id: &'a str,
+    pub(super) fields: Value,
+    pub(super) timestamp: OffsetDateTime,
+    pub(super) observed_at: Option<OffsetDateTime>,
+}
+
 pub(super) fn encode_log_event(
     identity: &NodeIdentity,
-    level: LogLevel,
-    target: &str,
-    event: &str,
-    correlation_id: &str,
-    fields: Value,
-    timestamp: OffsetDateTime,
+    event: StructuredLogEvent<'_>,
 ) -> Result<Vec<u8>, NodeError> {
+    let StructuredLogEvent {
+        level,
+        target,
+        event,
+        correlation_id,
+        fields,
+        timestamp,
+        observed_at,
+    } = event;
     let mut record = Map::new();
     record.insert(
         "timestamp".to_owned(),
@@ -40,6 +54,12 @@ pub(super) fn encode_log_event(
         "correlation_id".to_owned(),
         Value::String(correlation_id.to_owned()),
     );
+    if let Some(observed_at) = observed_at {
+        record.insert(
+            "observed_at".to_owned(),
+            Value::String(format_timestamp(observed_at)),
+        );
+    }
     record.insert(
         "node_id".to_owned(),
         Value::String(identity.node_id().to_string()),
@@ -131,12 +151,17 @@ fn write_queued_event(
     event: &QueuedLogEvent,
 ) -> Result<(), NodeError> {
     if matches!(event.route, LogRoute::Sync | LogRoute::SyncAndOll)
-        && let Some(job) = sinks.sync.write(&event.encoded, event.emitted_at)?
+        && let Some(job) = sinks.sync.write(&event.encoded, event.rotation_at)?
     {
         compression.enqueue(job);
     }
     if matches!(event.route, LogRoute::Oll | LogRoute::SyncAndOll)
-        && let Some(job) = sinks.oll.write(&event.encoded, event.emitted_at)?
+        && let Some(job) = sinks.oll.write(&event.encoded, event.rotation_at)?
+    {
+        compression.enqueue(job);
+    }
+    if matches!(event.route, LogRoute::Plugin)
+        && let Some(job) = sinks.plugin.write(&event.encoded, event.rotation_at)?
     {
         compression.enqueue(job);
     }
@@ -158,17 +183,21 @@ fn write_dropped_summary(
         .map_err(|_| NodeError::Internal("logger identity lock is poisoned".to_owned()))?
         .clone();
     let emitted_at = OffsetDateTime::now_utc();
+    let correlation_id = new_correlation_id();
     let encoded = match encode_log_event(
         &identity,
-        LogLevel::Warn,
-        "oll::node",
-        "log_events_dropped",
-        &new_correlation_id(),
-        serde_json::json!({
-            "dropped_event_count": dropped,
-            "queue_capacity": LOG_QUEUE_CAPACITY,
-        }),
-        emitted_at,
+        StructuredLogEvent {
+            level: LogLevel::Warn,
+            target: "oll::node",
+            event: "log_events_dropped",
+            correlation_id: &correlation_id,
+            fields: serde_json::json!({
+                "dropped_event_count": dropped,
+                "queue_capacity": LOG_QUEUE_CAPACITY,
+            }),
+            timestamp: emitted_at,
+            observed_at: None,
+        },
     ) {
         Ok(encoded) => encoded,
         Err(error) => {
@@ -188,6 +217,8 @@ fn write_dropped_summary(
 }
 
 fn flush_log_sinks(sinks: &mut LogSinks, durable: bool) -> Result<(), NodeError> {
-    sinks.oll.flush(durable)?;
-    sinks.sync.flush(durable)
+    let oll = sinks.oll.flush(durable);
+    let sync = sinks.sync.flush(durable);
+    let plugin = sinks.plugin.flush(durable);
+    oll.and(sync).and(plugin)
 }

@@ -8,10 +8,6 @@ use onelastleaf::{
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    if let Err(error) = cli.validate() {
-        error.exit();
-    }
-
     let intent = match cli.into_intent() {
         Ok(intent) => intent,
         Err(error) => error.exit(),

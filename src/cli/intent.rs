@@ -17,20 +17,6 @@ use super::{
 };
 
 impl Cli {
-    pub fn validate(&self) -> Result<(), clap::Error> {
-        if let Command::Plugin(args) = &self.command
-            && args.command.is_none()
-            && args.log.is_none()
-        {
-            return Err(Self::command().error(
-                ErrorKind::MissingSubcommand,
-                "either a plugin subcommand or --log is required",
-            ));
-        }
-
-        Ok(())
-    }
-
     pub fn into_intent(self) -> Result<CliIntent, clap::Error> {
         match self.command {
             Command::Init(args) => Ok(CliIntent::Init(InitIntent {
@@ -70,7 +56,7 @@ impl Cli {
             }),
             Command::Psk => Ok(CliIntent::Psk),
             Command::Plugin(args) => plugin_intent(args).map(CliIntent::Plugin),
-            Command::Job(args) => Ok(CliIntent::Job(args.command.into())),
+            Command::Job(args) => job_intent(args.command).map(CliIntent::Job),
         }
     }
 }
@@ -151,11 +137,13 @@ pub struct PreparedInitIntent {
     pub replica_store_base: PathBuf,
     pub config_root: PathBuf,
     pub log_dir: PathBuf,
+    pub artifact_download_dir: PathBuf,
 }
 
 #[derive(Debug)]
 pub struct PreparedRunIntent {
     pub config_root: PathBuf,
+    pub platform_data_dir: Option<PathBuf>,
     pub overrides: RunOverrides,
     pub pingback: Option<LoopbackAddr>,
 }
@@ -294,121 +282,181 @@ pub enum PluginLogTarget {
 #[derive(Debug, PartialEq)]
 pub enum PluginIntent {
     Install(PluginInstallIntent),
+    Reconcile {
+        json: bool,
+    },
     Validate,
-    List,
+    List {
+        json: bool,
+    },
     Info {
-        plugin_id: String,
+        selector: String,
+        json: bool,
+    },
+    Releases {
+        selector: String,
+        json: bool,
     },
     Start {
-        plugin_id: String,
+        selector: String,
     },
     Stop {
-        plugin_id: String,
+        selector: String,
     },
     Restart {
-        plugin_id: String,
+        selector: String,
     },
     Update {
-        plugin_id: String,
+        selector: String,
+        json: bool,
     },
     Remove {
-        plugin_id: String,
+        selector: String,
+        json: bool,
     },
     ViewLog {
         target: PluginLogTarget,
     },
     Call {
-        plugin_id: String,
+        selector: String,
         action: String,
         arguments: Vec<String>,
+        operation_id: Option<String>,
+        json: bool,
     },
 }
 
 #[derive(Debug, PartialEq)]
 pub enum PluginInstallIntent {
-    Declared,
-    Source {
-        remote: GitRemote,
-        selector: GitSelector,
+    Declared {
+        json: bool,
     },
-    Release {
-        remote: GitRemote,
+    Remote {
+        remote: Box<GitRemote>,
         selector: GitSelector,
+        mode: PluginInstallMode,
+        json: bool,
     },
 }
 
+#[derive(Debug, PartialEq)]
+pub enum PluginInstallMode {
+    Source,
+    Release { release_id: String },
+}
+
 fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
-    match (args.log, args.command) {
-        (Some(None), None) => Ok(PluginIntent::ViewLog {
+    match args.command {
+        PluginCommand::Install {
+            repository,
+            rev,
+            branch,
+            release,
+            source,
+            json,
+        } => {
+            let selector = match (rev, branch) {
+                (None, None) => GitSelector::Default,
+                (Some(revision), None) if !revision.is_empty() => GitSelector::Revision(revision),
+                (None, Some(branch)) if !branch.is_empty() => GitSelector::Branch(branch),
+                (Some(_), None) => {
+                    return Err(intent_error(
+                        ErrorKind::InvalidValue,
+                        "--rev must not be empty",
+                    ));
+                }
+                (None, Some(_)) => {
+                    return Err(intent_error(
+                        ErrorKind::InvalidValue,
+                        "--branch must not be empty",
+                    ));
+                }
+                (Some(_), Some(_)) => {
+                    return Err(intent_error(
+                        ErrorKind::ArgumentConflict,
+                        "--rev cannot be combined with --branch",
+                    ));
+                }
+            };
+            let install = match repository {
+                None if !matches!(&selector, GitSelector::Default)
+                    || release.is_some()
+                    || source =>
+                {
+                    return Err(intent_error(
+                        ErrorKind::MissingRequiredArgument,
+                        "installation options require a Git remote",
+                    ));
+                }
+                None => PluginInstallIntent::Declared { json },
+                Some(_) if release.is_some() && source => {
+                    return Err(intent_error(
+                        ErrorKind::ArgumentConflict,
+                        "--release cannot be combined with --source",
+                    ));
+                }
+                Some(_) if release.as_ref().is_some_and(String::is_empty) => {
+                    return Err(intent_error(
+                        ErrorKind::InvalidValue,
+                        "--release must not be empty",
+                    ));
+                }
+                Some(remote) => PluginInstallIntent::Remote {
+                    remote: Box::new(remote),
+                    selector,
+                    mode: release.map_or(PluginInstallMode::Source, |release_id| {
+                        PluginInstallMode::Release { release_id }
+                    }),
+                    json,
+                },
+            };
+            Ok(PluginIntent::Install(install))
+        }
+        PluginCommand::Reconcile { json } => Ok(PluginIntent::Reconcile { json }),
+        PluginCommand::Validate => Ok(PluginIntent::Validate),
+        PluginCommand::List { json } => Ok(PluginIntent::List { json }),
+        PluginCommand::Info { selector, json } => Ok(PluginIntent::Info { selector, json }),
+        PluginCommand::Releases { selector, json } => Ok(PluginIntent::Releases { selector, json }),
+        PluginCommand::Start { selector } => Ok(PluginIntent::Start { selector }),
+        PluginCommand::Stop { selector } => Ok(PluginIntent::Stop { selector }),
+        PluginCommand::Restart { selector } => Ok(PluginIntent::Restart { selector }),
+        PluginCommand::Update { selector, json } => Ok(PluginIntent::Update { selector, json }),
+        PluginCommand::Remove { selector, json } => Ok(PluginIntent::Remove { selector, json }),
+        PluginCommand::Log { selector: None } => Ok(PluginIntent::ViewLog {
             target: PluginLogTarget::All,
         }),
-        (Some(Some(plugin_id)), None) => Ok(PluginIntent::ViewLog {
-            target: PluginLogTarget::Plugin(plugin_id),
+        PluginCommand::Log {
+            selector: Some(selector),
+        } => Ok(PluginIntent::ViewLog {
+            target: PluginLogTarget::Plugin(selector),
         }),
-        (None, Some(command)) => match command {
-            PluginCommand::Install {
-                repository,
-                rev,
-                branch,
-                release,
-                source,
-            } => {
-                let selector = match (rev, branch) {
-                    (None, None) => GitSelector::Default,
-                    (Some(revision), None) => GitSelector::Revision(revision),
-                    (None, Some(branch)) => GitSelector::Branch(branch),
-                    (Some(_), Some(_)) => {
-                        return Err(intent_error(
-                            ErrorKind::ArgumentConflict,
-                            "--rev cannot be combined with --branch",
-                        ));
-                    }
-                };
-                let install = match repository {
-                    None if !matches!(&selector, GitSelector::Default) || release || source => {
-                        return Err(intent_error(
-                            ErrorKind::MissingRequiredArgument,
-                            "installation options require a Git remote",
-                        ));
-                    }
-                    None => PluginInstallIntent::Declared,
-                    Some(_) if release && source => {
-                        return Err(intent_error(
-                            ErrorKind::ArgumentConflict,
-                            "--release cannot be combined with --source",
-                        ));
-                    }
-                    Some(remote) if release => PluginInstallIntent::Release { remote, selector },
-                    Some(remote) => PluginInstallIntent::Source { remote, selector },
-                };
-                Ok(PluginIntent::Install(install))
+        PluginCommand::Call {
+            selector,
+            action,
+            arguments,
+            operation_id,
+            json,
+        } => {
+            if operation_id.as_ref().is_some_and(String::is_empty) {
+                return Err(intent_error(
+                    ErrorKind::InvalidValue,
+                    "--operation-id must not be empty",
+                ));
             }
-            PluginCommand::Validate => Ok(PluginIntent::Validate),
-            PluginCommand::List => Ok(PluginIntent::List),
-            PluginCommand::Info { plugin_id } => Ok(PluginIntent::Info { plugin_id }),
-            PluginCommand::Start { plugin_id } => Ok(PluginIntent::Start { plugin_id }),
-            PluginCommand::Stop { plugin_id } => Ok(PluginIntent::Stop { plugin_id }),
-            PluginCommand::Restart { plugin_id } => Ok(PluginIntent::Restart { plugin_id }),
-            PluginCommand::Update { plugin_id } => Ok(PluginIntent::Update { plugin_id }),
-            PluginCommand::Remove { plugin_id } => Ok(PluginIntent::Remove { plugin_id }),
-            PluginCommand::Call {
-                plugin_id,
+            if action.is_empty() {
+                return Err(intent_error(
+                    ErrorKind::InvalidValue,
+                    "plugin action must not be empty",
+                ));
+            }
+            Ok(PluginIntent::Call {
+                selector,
                 action,
                 arguments,
-            } => Ok(PluginIntent::Call {
-                plugin_id,
-                action,
-                arguments,
-            }),
-        },
-        (None, None) => Err(intent_error(
-            ErrorKind::MissingSubcommand,
-            "either a plugin subcommand or --log is required",
-        )),
-        (Some(_), Some(_)) => Err(intent_error(
-            ErrorKind::ArgumentConflict,
-            "--log cannot be combined with a plugin subcommand",
-        )),
+                operation_id,
+                json,
+            })
+        }
     }
 }
 
@@ -444,9 +492,12 @@ impl CliIntent {
                     resolve_client_path(&environment.replica_store_base()?, cwd);
                 let config_root = resolve_client_path(&args.config_root(environment)?, cwd);
                 let log_dir = resolve_client_path(&args.log_dir(environment)?, cwd);
+                let artifact_download_dir =
+                    resolve_client_path(&environment.artifact_download_dir()?, cwd);
                 ensure_persistable_path(&replica_root, "replica root")?;
                 ensure_persistable_path(&replica_store_base, "replica store")?;
                 ensure_persistable_path(&log_dir, "log directory")?;
+                ensure_persistable_path(&artifact_download_dir, "artifact download directory")?;
                 Ok(PreparedCliIntent::Init(PreparedInitIntent {
                     node_name: args.node_name,
                     connect: args.connect,
@@ -455,6 +506,7 @@ impl CliIntent {
                     replica_store_base,
                     config_root,
                     log_dir,
+                    artifact_download_dir,
                 }))
             }
             Self::Run(args) => {
@@ -480,6 +532,10 @@ impl CliIntent {
 
                 Ok(PreparedCliIntent::Run(PreparedRunIntent {
                     config_root,
+                    platform_data_dir: environment
+                        .replica_store_base()
+                        .ok()
+                        .map(|path| resolve_client_path(&path, cwd)),
                     overrides,
                     pingback: args.pingback,
                 }))
@@ -540,17 +596,21 @@ impl CliIntent {
 
 #[derive(Debug, PartialEq)]
 pub enum JobIntent {
-    List,
-    Info { job_id: String },
+    List { limit: u16, json: bool },
+    Info { job_id: String, json: bool },
     Stop { job_id: String },
 }
 
-impl From<JobCommand> for JobIntent {
-    fn from(command: JobCommand) -> Self {
-        match command {
-            JobCommand::List => Self::List,
-            JobCommand::Info { job_id } => Self::Info { job_id },
-            JobCommand::Stop { job_id } => Self::Stop { job_id },
+fn job_intent(command: JobCommand) -> Result<JobIntent, clap::Error> {
+    match command {
+        JobCommand::List { limit, json } if (1..=1000).contains(&limit) => {
+            Ok(JobIntent::List { limit, json })
         }
+        JobCommand::List { .. } => Err(intent_error(
+            ErrorKind::InvalidValue,
+            "--limit must be between 1 and 1000",
+        )),
+        JobCommand::Info { job_id, json } => Ok(JobIntent::Info { job_id, json }),
+        JobCommand::Stop { job_id } => Ok(JobIntent::Stop { job_id }),
     }
 }

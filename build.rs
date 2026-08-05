@@ -10,17 +10,12 @@ use sha2::{Digest, Sha256};
 
 const PROTO_FILES: &[&str] = &[
     "proto/oll/admin.proto",
+    "proto/oll/admin_common.proto",
     "proto/oll/common.proto",
     "proto/oll/config.proto",
     "proto/oll/document.proto",
     "proto/oll/plugin.proto",
-    "proto/oll/replication.proto",
-];
-
-const RUNTIME_PROTO_FILES: &[&str] = &[
-    "proto/oll/admin.proto",
-    "proto/oll/common.proto",
-    "proto/oll/document.proto",
+    "proto/oll/plugin_admin.proto",
     "proto/oll/replication.proto",
 ];
 
@@ -40,7 +35,11 @@ fn main() -> Result<(), Box<dyn Error>> {
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
-        .compile_protos(RUNTIME_PROTO_FILES, &["proto"])?;
+        // The PluginRuntime RPC itself is named Connect. Omitting generated
+        // endpoint convenience constructors avoids colliding with that method;
+        // oll constructs both Admin and plugin channels explicitly.
+        .build_transport(false)
+        .compile_protos(PROTO_FILES, &["proto"])?;
 
     let descriptor = out_dir.join("oll-protocol.pb");
     let status = Command::new(protoc)

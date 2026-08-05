@@ -1,5 +1,24 @@
 use super::*;
 
+fn read_snapshot_entries(path: &Path) -> Vec<(String, Vec<u8>)> {
+    use std::io::Read as _;
+
+    let input = fs::File::open(path).unwrap();
+    let decoder = zstd::stream::read::Decoder::new(input).unwrap();
+    let mut archive = tar::Archive::new(decoder);
+    archive
+        .entries()
+        .unwrap()
+        .map(|entry| {
+            let mut entry = entry.unwrap();
+            let path = entry.path().unwrap().to_str().unwrap().to_owned();
+            let mut bytes = Vec::new();
+            entry.read_to_end(&mut bytes).unwrap();
+            (path, bytes)
+        })
+        .collect()
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn snapshot_round_trip_preserves_documents_blobs_and_replaces_one_replica() {
     let source = Deployment::new();
@@ -318,6 +337,70 @@ async fn initialized_empty_snapshot_round_trips_into_an_uninitialized_slot() {
     );
 
     shutdown_runtime(&target_runtime).await;
+    shutdown_runtime(&source_runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn snapshot_replacement_preserves_plugin_state_and_excludes_it_from_the_archive() {
+    let source = Deployment::new();
+    fs::write(source.native("/source.md"), "replica-only snapshot data").unwrap();
+    let source_runtime = source.start().await;
+    let source_plugin =
+        seed_plugin_isolation_state(&source_runtime, source._directory.path(), "snapshot-source")
+            .await;
+    let snapshot = source._directory.path().join("plugin-isolation.ollsnap");
+    source_runtime
+        .export_snapshot(&snapshot, "plugin-isolation-export")
+        .await
+        .unwrap();
+
+    let entries = read_snapshot_entries(&snapshot);
+    assert!(entries.iter().all(|(path, _)| {
+        path == "manifest.json"
+            || path == "catalog.loro"
+            || path.starts_with("documents/")
+            || path.starts_with("blobs/")
+    }));
+    assert!(entries.iter().all(|(_, bytes)| {
+        !bytes
+            .windows(source_plugin.sentinel.len())
+            .any(|window| window == source_plugin.sentinel)
+    }));
+
+    let target = Deployment::new();
+    fs::write(target.native("/old.md"), "old target replica").unwrap();
+    let target_runtime = target.start().await;
+    let target_plugin =
+        seed_plugin_isolation_state(&target_runtime, target._directory.path(), "snapshot-target")
+            .await;
+    let old_generation = target_runtime
+        .state
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .generation_id;
+    target_runtime
+        .import_snapshot(&snapshot, "plugin-isolation-import")
+        .await
+        .unwrap();
+    assert_ne!(
+        target_runtime
+            .state
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .generation_id,
+        old_generation
+    );
+    assert_plugin_isolation_state(&target_runtime, &target_plugin).await;
+
+    shutdown_runtime(&target_runtime).await;
+    drop(target_runtime);
+    let restarted = target.start().await;
+    assert_plugin_isolation_state(&restarted, &target_plugin).await;
+    shutdown_runtime(&restarted).await;
     shutdown_runtime(&source_runtime).await;
 }
 

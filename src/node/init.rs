@@ -25,8 +25,13 @@ pub enum InitResult {
 }
 
 pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
-    validate_working_tree_roots(&intent.config_root, &intent.replica_root, &intent.log_dir)
-        .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
+    validate_working_tree_roots(
+        &intent.config_root,
+        &intent.replica_root,
+        &intent.log_dir,
+        &intent.artifact_download_dir,
+    )
+    .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
     let _lock = DeploymentLock::acquire_for_init(&intent.config_root)?;
     let config_path = intent.config_root.join(CONFIG_FILENAME);
     let node_path = identity_path(&intent.config_root);
@@ -47,10 +52,24 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
     let store_parent = replica_store.parent().ok_or_else(|| {
         NodeError::Internal("generated replica store path has no parent".to_owned())
     })?;
+    let canonical_config_root = fs::canonicalize(&intent.config_root).map_err(|error| {
+        NodeError::config_io(
+            "resolve configuration root",
+            intent.config_root.clone(),
+            error,
+        )
+    })?;
+    let plugin_data_root = intent
+        .replica_store_base
+        .join("deployments")
+        .join(super::lock::deployment_key(&canonical_config_root))
+        .join("plugins");
     validate_storage_layout(
         &intent.config_root,
         &intent.replica_root,
         &intent.log_dir,
+        &intent.artifact_download_dir,
+        &plugin_data_root,
         &ReplicaStoreConfig::Sqlite {
             path: replica_store.clone(),
         },
@@ -65,6 +84,7 @@ pub fn initialize(intent: PreparedInitIntent) -> Result<InitResult, NodeError> {
         &intent.replica_root,
         &replica_store,
         &intent.log_dir,
+        &intent.artifact_download_dir,
         intent.listen,
         &intent.connect,
     )?;
@@ -137,6 +157,7 @@ fn initial_config(
     replica_root: &Path,
     replica_store: &Path,
     log_dir: &Path,
+    artifact_download_dir: &Path,
     listen: Option<std::net::SocketAddr>,
     connect: &[ConnectUrl],
 ) -> Result<String, NodeError> {
@@ -149,12 +170,17 @@ fn initial_config(
     let log_dir = lua_string(log_dir.to_str().ok_or_else(|| {
         NodeError::Config("cannot persist log directory: path is not valid UTF-8".to_owned())
     })?);
+    let artifact_download_dir = lua_string(artifact_download_dir.to_str().ok_or_else(|| {
+        NodeError::Config(
+            "cannot persist artifact download directory: path is not valid UTF-8".to_owned(),
+        )
+    })?);
     let listen = listen.map_or_else(
         || "nil".to_owned(),
         |address| lua_string(&address.to_string()),
     );
     let mut source = format!(
-        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n        replica_store = {{\n            driver = \"sqlite\",\n            path = {replica_store},\n        }},\n        log_dir = {log_dir},\n        listen = {listen},\n        connect = {{"
+        "return {{\n    format_version = 1,\n    node = {{\n        replica_root = {replica_root},\n        replica_store = {{\n            driver = \"sqlite\",\n            path = {replica_store},\n        }},\n        log_dir = {log_dir},\n        artifact_download_dir = {artifact_download_dir},\n        listen = {listen},\n        connect = {{"
     );
     if !connect.is_empty() {
         source.push('\n');
@@ -206,6 +232,7 @@ mod tests {
             replica_store_base: directory.path().join("data"),
             config_root: directory.path().join("config"),
             log_dir: directory.path().join("log"),
+            artifact_download_dir: directory.path().join("downloads/oll"),
         }
     }
 
@@ -227,6 +254,7 @@ mod tests {
         assert!(config.contains("driver = \"sqlite\""));
         assert!(config.contains(&identity.node_id().to_string()));
         assert!(config.contains("oll://peer.example:17384"));
+        assert!(config.contains("artifact_download_dir"));
     }
 
     #[test]

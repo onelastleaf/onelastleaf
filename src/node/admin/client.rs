@@ -242,7 +242,7 @@ fn native_path(path: &Path) -> NativePath {
     }
 }
 
-fn status_error(status: Status) -> NodeError {
+pub(super) fn status_error(status: Status) -> NodeError {
     match status.code() {
         tonic::Code::FailedPrecondition
         | tonic::Code::Unavailable

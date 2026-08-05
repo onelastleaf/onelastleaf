@@ -1,22 +1,41 @@
 use std::{
+    collections::HashMap,
     env,
     ffi::OsString,
     fmt, fs,
     os::unix::ffi::OsStringExt,
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 
 use mlua::{Function, Lua, LuaOptions, MultiValue, StdLib, Value, chunk::ChunkMode};
 
 use super::{
-    CONFIG_FILENAME, ConfigError, ROOT_REGISTRY_KEY, ResolvedNodeConfig, schema::decode_root,
+    CONFIG_FILENAME, ConfigError, ROOT_REGISTRY_KEY, ResolvedNodeConfig,
+    plugin_runtime::{PluginSession, markers},
+    schema::decode_root,
 };
 
 type EnvironmentLookup = Arc<dyn Fn(&str) -> Result<Option<String>, ()> + Send + Sync>;
 
+pub(super) struct RuntimeState {
+    pub(super) lua: Lua,
+    pub(super) canonical_root: PathBuf,
+    pub(super) plugin_sessions: HashMap<String, PluginSession>,
+}
+
+#[cfg(test)]
+impl std::ops::Deref for RuntimeState {
+    type Target = Lua;
+
+    fn deref(&self) -> &Self::Target {
+        &self.lua
+    }
+}
+
+#[derive(Clone)]
 pub struct ConfigRuntime {
-    _lua: Lua,
+    pub(super) inner: Arc<Mutex<RuntimeState>>,
 }
 
 impl fmt::Debug for ConfigRuntime {
@@ -50,8 +69,9 @@ impl ConfigRuntime {
             .map_err(|_| ConfigError::RuntimeInitialization)?;
         install_environment_helper(&lua, environment)
             .map_err(|_| ConfigError::RuntimeInitialization)?;
-        install_module_loader(&lua, canonical_root)
+        install_module_loader(&lua, canonical_root.clone())
             .map_err(|_| ConfigError::RuntimeInitialization)?;
+        markers::initialize(&lua).map_err(|_| ConfigError::RuntimeInitialization)?;
 
         let values: MultiValue = lua
             .load(source)
@@ -81,12 +101,23 @@ impl ConfigRuntime {
         lua.set_named_registry_value(ROOT_REGISTRY_KEY, root)
             .map_err(|_| ConfigError::RuntimeInitialization)?;
 
-        Ok((Self { _lua: lua }, node))
+        Ok((
+            Self {
+                inner: Arc::new(Mutex::new(RuntimeState {
+                    lua,
+                    canonical_root,
+                    plugin_sessions: HashMap::new(),
+                })),
+            },
+            node,
+        ))
     }
 
     #[cfg(test)]
-    pub(super) fn lua(&self) -> &Lua {
-        &self._lua
+    pub(super) fn lua(&self) -> std::sync::MutexGuard<'_, RuntimeState> {
+        self.inner
+            .lock()
+            .expect("configuration runtime lock poisoned")
     }
 }
 

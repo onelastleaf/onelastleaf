@@ -110,11 +110,12 @@ argv may use only `{install}` and `{mask_dir}` because source/staging trees do
 not survive package publication.
 
 Dependencies declare executable capabilities only. A basename is resolved using
-the inherited PATH rules; an absolute path is checked directly; a relative value
-containing a path separator is rejected. oll does not invoke a system package
-manager, execute `--version`, parse version output, or enforce a dependency
-version. A missing executable aborts that plugin and displays its required
-nonempty hint.
+the inherited PATH exactly as the recipe child will resolve it, including
+relative or empty PATH entries relative to the selected source directory. An
+absolute path is checked directly; a relative value containing a path separator
+is rejected. oll does not invoke a system package manager, execute `--version`,
+parse version output, or enforce a dependency version. A missing executable
+aborts that plugin and displays its required nonempty hint.
 
 Each source recipe step:
 
@@ -133,9 +134,11 @@ shutdown deadline, then uses `SIGKILL` and reaps it. A recipe that daemonizes or
 leaves work outside its process group violates the package contract.
 
 After every step, oll validates the candidate without executing its runtime
-command. Runtime `argv[0]` may be an executable found through inherited PATH or
-a path beneath `{install}`/`{mask_dir}`; a relative pathname containing a
-separator is resolved from the install generation and must remain contained.
+command. Runtime `argv[0]` may be an executable found through inherited PATH,
+with relative or empty PATH entries resolved from the published install
+generation just as at process spawn, or a path beneath `{install}`/`{mask_dir}`;
+a relative pathname containing a separator is resolved from the install
+generation and must remain contained.
 Any other runtime argv value produced from a path placeholder is checked for
 the same containment but is not interpreted to guess whether it must already
 exist. This supports both a compiled binary and a
@@ -248,20 +251,25 @@ Windows target strings may be introduced only when the node process platform is
 supported; the first implementation does not pretend that archive support alone
 implements Windows process lifecycle.
 
-Artifact URLs accept `https`, `http`, and `file`. HTTP redirects are followed
-only while every resulting URL retains an allowed scheme. A `file` URL must
-name an absolute local regular file and have no remote authority. Authentication
-and transport confidentiality come from the selected URL and the user's normal
-environment; SHA-256 verifies bytes but is not a publisher signature.
+Artifact URLs accept direct `https`, `http`, and `file` URLs. Redirects from an
+HTTP(S) URL are followed for at most ten hops and only while every resulting URL
+remains HTTP(S); a network response can never redirect the downloader to a
+local file. A direct `file` URL must name an absolute local regular file and
+have no remote authority. Authentication and transport confidentiality come
+from the selected URL and the user's normal environment; SHA-256 verifies bytes
+but is not a publisher signature.
 
 Linux release archives use `tar.gz`; Darwin releases use `zip`. The declared
 kind and URL path suffix must agree. Before extraction oll verifies the exact
 declared byte size and SHA-256 while streaming into private staging rather than
 buffering the archive in memory. Extraction rejects absolute and `..` paths,
-duplicate normalized entries, links escaping staging, and unsupported entry
-types. There is deliberately no compressed or expanded archive-size limit; the
-user initiating installation is responsible for local resources. An exhaustion
-failure cannot publish a partial generation.
+duplicate normalized entries, every symbolic-link or hard-link entry, and other
+unsupported entry types. This includes tar symlink/hardlink entries and zip
+symlink encodings even when their target would remain internal; the first
+version deliberately has no link ordering, chain, or ancestor-ownership
+semantics. There is deliberately no compressed or expanded archive-size limit;
+the user initiating installation is responsible for local resources. An
+exhaustion failure cannot publish a partial generation.
 
 The archive includes the publisher `oll.toml`. After strict parsing, its complete
 canonical publisher-manifest value must equal the repository `oll.toml`, and its
@@ -334,7 +342,11 @@ oll plugin validate
 - `install <remote>` resolves `oll.toml`, adds or replaces that PluginId's
   declaration, then installs only from the newly reread persisted declaration.
   A later package failure does not roll back the successful declaration write;
-  a future install or reconcile retries it.
+  a future install or reconcile retries it. Because `plugins.lua` is optional
+  before the first installation, this form alone treats an absent file as an
+  empty declaration set and atomically creates it after resolving the remote
+  PluginId. Other commands continue to report `plugin_config_missing` rather
+  than silently inventing an installation set.
 - `update` fetches the selected default branch or named branch and publishes a
   candidate only when the selected commit or local declaration/mask input
   changed. An exact `rev` never advances remotely, but a changed local mask can
@@ -377,6 +389,20 @@ names as one set; two requested IDs claiming the same new name both receive
 order. Concurrent independent calls remain serialized by the SQL unique
 binding at publication.
 
+Every admitted package operation emits one correlated start event, zero or more
+per-item result events, and one overall completion event. The completion event
+is therefore present for a successful empty declaration set and reports
+`partial_failure` when only part of a multi-item operation fails.
+
+Exact reconciliation resolves the complete declared set before publication and
+uses the same stable effective-name barrier. When a declared candidate wants a
+name currently owned by an undeclared installation, only that candidate waits
+for the owner's durable removal; unrelated candidates and removals continue
+independently. A failed removal fails its dependent candidate without discarding
+unrelated successes. A name owned by another still-declared ID is a stable
+conflict, including a proposed cross-declared name swap: the first
+implementation does not invent a multi-ID atomic binding exchange.
+
 `ReconcilePluginInstallations`, `RemovePlugin`, and `ListPluginReleases` have no
 fixed client request deadline. Git, a source recipe, download, archive work, or
 process cleanup may legitimately exceed ten seconds. Cancelling reconciliation
@@ -389,21 +415,20 @@ completion even if its waiting client disconnects.
 
 Package operations expose stable diagnostics with a code, phase, PluginId/name
 when known, sanitized remote, branch/revision, release, target, optional hint,
-and retained build-log path. Initial codes include:
+and retained build-log path. The version-1 diagnostic codes are:
 
 | Code | Meaning |
 | --- | --- |
 | `git_missing` | The system `git` executable is unavailable. |
 | `git_remote_invalid` | The remote syntax is not accepted by `GitRemote`. |
 | `git_fetch_failed` | Git could not fetch the selected state. |
-| `git_selection_not_found` | The requested branch or revision does not exist. |
+| `git_selection_not_found` | Git status definitively proves that the requested default or named branch does not exist. Exact-revision fetch failures remain `git_fetch_failed` because exit status alone cannot distinguish absence from transport, authentication, or server-policy failure. |
 | `plugin_config_missing` | `plugins.lua` does not exist where required. |
 | `plugin_config_syntax` | `plugins.lua` is not a literal-only data module. |
 | `plugin_config_schema` | A declaration violates the schema. |
 | `plugin_config_duplicate` | A PluginId appears more than once. |
 | `manifest_missing` | Publisher `oll.toml` is absent. |
 | `manifest_invalid` | Publisher `oll.toml` is malformed or inconsistent. |
-| `manifest_version_unsupported` | A manifest format version is unsupported. |
 | `mask_invalid` | A typed user mask is malformed or contains a forbidden override. |
 | `plugin_name_conflict` | The effective PluginName is already bound to another ID. |
 | `dependency_missing` | A declared executable is not resolvable in PATH. |
@@ -420,8 +445,14 @@ and retained build-log path. Initial codes include:
 | `archive_unsafe` | Archive structure violates extraction constraints. |
 | `entrypoint_invalid` | The effective runtime entrypoint is unusable. |
 | `protocol_incompatible` | The package targets another protocol fingerprint. |
-| `overwrite_confirmation_required` | A declaration changed without matching authorization. |
+| `operation_cancelled` | Admitted package work was cancelled before completion by daemon shutdown. |
 | `install_publish_failed` | Atomic package publication failed. |
+
+Declaration overwrite is represented by the typed
+`confirmation_required` installation outcome and its digest-bound confirmation
+fields, not by a diagnostic code. An unsupported manifest format version is a
+`manifest_invalid` diagnostic because version 1 exposes no version-negotiation
+path.
 
 Human output may use terminal-aware color, tables, and an indeterminate spinner
 on stderr. `anstream` supplies terminal/`NO_COLOR` behavior; progress rendering

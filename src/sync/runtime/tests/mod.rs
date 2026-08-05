@@ -70,6 +70,11 @@ impl SyncDeployment {
             replica_root: self.root.clone(),
             replica_store: self.store.clone(),
             log_dir: self.log_dir.clone(),
+            artifact_download_dir: self
+                .config_root
+                .parent()
+                .expect("test config root has a parent")
+                .join("downloads/oll"),
             listen,
             connect,
             network_key: Some(NetworkKey::new_for_test(vec![7; 32])),

@@ -119,6 +119,7 @@ pub struct ResolvedNodeConfig {
     pub replica_root: PathBuf,
     pub replica_store: ReplicaStoreConfig,
     pub log_dir: PathBuf,
+    pub artifact_download_dir: PathBuf,
     pub listen: Option<SocketAddr>,
     pub connect: Vec<ConnectUrl>,
     pub network_key: Option<NetworkKey>,

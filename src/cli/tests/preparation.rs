@@ -73,6 +73,7 @@ fn run_overrides_apply_after_configuration_load() {
             path: PathBuf::from("/persisted/store.sqlite3"),
         },
         log_dir: PathBuf::from("/persisted/log"),
+        artifact_download_dir: PathBuf::from("/persisted/artifacts"),
         listen: Some("127.0.0.1:7000".parse().unwrap()),
         connect: vec!["oll://persisted.example.com:17384".parse().unwrap()],
         network_key: None,
@@ -112,6 +113,27 @@ fn home_less_run_with_absolute_config_needs_no_other_roots() {
     assert_eq!(prepared.config_root, config_root);
     assert_eq!(prepared.overrides.replica_root, None);
     assert_eq!(prepared.overrides.log_dir, None);
+}
+
+#[test]
+fn run_carries_the_home_data_fallback_for_plugin_storage() {
+    let environment = Environment {
+        home: Some(PathBuf::from("/users/alice")),
+        config: Some(PathBuf::from("/deployment/config")),
+        platform_data_dir: None,
+        ..Environment::default()
+    };
+
+    let prepared = intent(&["oll", "run"])
+        .prepare(&environment, Path::new("/startup/cwd"))
+        .unwrap();
+    let PreparedCliIntent::Run(prepared) = prepared else {
+        panic!()
+    };
+    assert_eq!(
+        prepared.platform_data_dir,
+        Some(PathBuf::from("/users/alice/.local/share/oll"))
+    );
 }
 
 #[test]
@@ -171,6 +193,32 @@ fn preparation_resolves_only_each_intents_required_resources() {
         log_set.intent,
         CliIntent::Log(LogIntent::Set { .. })
     ));
+
+    let plugin_validate = intent(&["oll", "plugin", "validate"])
+        .prepare(&environment, cwd)
+        .unwrap();
+    let PreparedCliIntent::Client(plugin_validate) = plugin_validate else {
+        panic!()
+    };
+    assert_eq!(
+        plugin_validate.dependency,
+        ClientDependency::ConfigRoot(cwd.join("relative/config"))
+    );
+    assert!(matches!(
+        plugin_validate.intent,
+        CliIntent::Plugin(PluginIntent::Validate)
+    ));
+
+    let plugin_log = intent(&["oll", "plugin", "log"])
+        .prepare(&environment, cwd)
+        .unwrap();
+    let PreparedCliIntent::Client(plugin_log) = plugin_log else {
+        panic!()
+    };
+    assert_eq!(
+        plugin_log.dependency,
+        ClientDependency::LogDir(cwd.join("relative/log"))
+    );
 }
 
 #[test]
@@ -190,6 +238,7 @@ fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
     .prepare(
         &Environment {
             platform_data_dir: Some(cwd.join("platform/data/oll")),
+            platform_downloads_dir: Some(cwd.join("platform/downloads")),
             ..Environment::default()
         },
         cwd,
@@ -202,6 +251,39 @@ fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
     assert_eq!(prepared.replica_root, cwd.join("deployment/replica"));
     assert_eq!(prepared.replica_store_base, cwd.join("platform/data/oll"));
     assert_eq!(prepared.log_dir, cwd.join("deployment/log"));
+    assert_eq!(
+        prepared.artifact_download_dir,
+        cwd.join("platform/downloads/oll")
+    );
+}
+
+#[test]
+fn init_requires_a_platform_download_directory_for_artifacts() {
+    let error = intent(&[
+        "oll",
+        "init",
+        "test-node",
+        "--config",
+        "/deployment/config",
+        "--replica",
+        "/deployment/replica",
+        "--log-dir",
+        "/deployment/log",
+    ])
+    .prepare(
+        &Environment {
+            platform_data_dir: Some("/platform/data/oll".into()),
+            ..Environment::default()
+        },
+        Path::new("/startup/cwd"),
+    )
+    .unwrap_err();
+    assert_eq!(
+        error,
+        CliError::MissingPlatformDirectory {
+            name: "artifact download directory",
+        }
+    );
 }
 
 #[test]

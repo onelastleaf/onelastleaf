@@ -246,6 +246,21 @@ both values. Session teardown releases all of that session's handles; a handle
 from an earlier process instance is invalid even though the daemon's Lua state
 still exists. Values and closure internals are never logged.
 
+`ConfigValue` validation is recursive in both directions. The root is depth
+zero and depth 33 is the deepest accepted value; numbers must be finite, and
+timestamps and durations must be inside their protobuf domains. A function
+argument is accepted only when its `session_id` names the current active
+session and its `function_id` still names an entry in that session's Lua
+registry. Durable values and log fields reject function handles. Depth 33 is
+the common list/map limit that remains inside prost's default decode-recursion
+guard; oll does not enable prost's `no-recursion-limit` feature.
+
+Lua's unannotated empty table `{}` deterministically converts to an empty
+`ConfigMap`. A wire `ConfigList`, including an empty one, preserves its list
+type when it passes through Lua and the same table is returned. Nonempty
+contiguous positive-integer literal tables remain the unambiguous Lua list
+form; version 1 exposes no literal syntax for an empty `ConfigList`.
+
 Per-plugin files and invoked closures have the same trusted-code/no-instruction-
 hook policy as `config.lua`. They execute on the serialized Lua owner and may
 hang or exhaust resources if the user writes nonterminating code; oll does not

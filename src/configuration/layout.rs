@@ -22,11 +22,22 @@ pub(crate) fn validate_storage_layout(
     config_root: &Path,
     replica_root: &Path,
     log_dir: &Path,
+    artifact_download_dir: &Path,
+    plugin_data_root: &Path,
     replica_store: &ReplicaStoreConfig,
 ) -> Result<(), StorageLayoutError> {
-    validate_working_tree_roots(config_root, replica_root, log_dir)?;
+    validate_working_tree_roots(config_root, replica_root, log_dir, artifact_download_dir)?;
 
     let replica_root = comparable_location(replica_root, "cannot inspect node.replica_root")?;
+    let plugin_data_root = comparable_location(
+        plugin_data_root,
+        "cannot inspect the derived plugin data root",
+    )?;
+    reject_overlap(
+        &replica_root,
+        &plugin_data_root,
+        "node.replica_root must not overlap the derived plugin data root",
+    )?;
     if let ReplicaStoreConfig::Sqlite { path } = replica_store {
         let parent = path.parent().ok_or(StorageLayoutError {
             problem: "node.replica_store.path must have a management directory",
@@ -49,10 +60,15 @@ pub(crate) fn validate_working_tree_roots(
     config_root: &Path,
     replica_root: &Path,
     log_dir: &Path,
+    artifact_download_dir: &Path,
 ) -> Result<(), StorageLayoutError> {
     let config_root = comparable_location(config_root, "cannot inspect config_root")?;
     let replica_root = comparable_location(replica_root, "cannot inspect node.replica_root")?;
     let log_dir = comparable_location(log_dir, "cannot inspect node.log_dir")?;
+    let artifact_download_dir = comparable_location(
+        artifact_download_dir,
+        "cannot inspect node.artifact_download_dir",
+    )?;
 
     reject_overlap(
         &replica_root,
@@ -63,6 +79,11 @@ pub(crate) fn validate_working_tree_roots(
         &replica_root,
         &log_dir,
         "node.replica_root must not overlap node.log_dir",
+    )?;
+    reject_overlap(
+        &replica_root,
+        &artifact_download_dir,
+        "node.replica_root must not overlap node.artifact_download_dir",
     )?;
     Ok(())
 }

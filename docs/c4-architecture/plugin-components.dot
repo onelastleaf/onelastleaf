@@ -1,0 +1,215 @@
+// Focused C4 component view of deployment-local plugin responsibilities inside
+// the oll daemon. Scheduling, event subscriptions, remote invocation, and input
+// upload are deliberately absent from the version-1 runtime.
+
+digraph C4_Plugin_Components {
+  graph [
+    label="oll Plugin Runtime - C4 Component Diagram - Current Codebase",
+    labelloc=t,
+    labeljust=l,
+    fontsize=20,
+    fontname="Helvetica",
+    bgcolor="white",
+    pad=0.35,
+    nodesep=0.65,
+    ranksep=0.9,
+    compound=true
+  ];
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=9.2, margin="0.16,0.10"];
+  edge [fontname="Helvetica", fontsize=7.8, color="#555555", fontcolor="#333333", arrowsize=0.7];
+
+  admin_api [
+    label="Admin API Adapter\n[Component]\nTyped package, query, lifecycle, release, and job RPCs",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  replica_runtime [
+    label="Replica Runtime\n[Component]\nTree/document reads and revision-guarded host commits",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  config_runtime [
+    label="Shared Configuration Runtime\n[Component]\nOne LuaJIT state/registry; live PluginId Lua and closures",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  node_logger [
+    label="Structured Logging Service\n[Component]\nNonblocking enqueue and routed writer-thread sinks",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  system_git [
+    label="System Git\n[External Program]\nUser environment, SSH agent, and credential helpers",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+  package_sources [
+    label="Plugin Package Sources\n[External Systems / Local Files]\nGit remotes and direct HTTP(S)/file release artifacts",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+  plugin_process [
+    label="Spawned Plugin Process\n[External Container: arbitrary language]\nTrusted foreground process and gRPC client",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+  deployment_config [
+    shape=cylinder,
+    label="Plugin Configuration\n[File Store]\nplugins.lua, PluginId masks, and live per-PluginId Lua",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  sql_store [
+    shape=cylinder,
+    label="Deployment SQL State\n[SQLite or PostgreSQL]\nIdentity binding, package/intents, desired state, jobs, artifacts",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  package_data [
+    shape=cylinder,
+    label="Plugin Package Data\n[File Store]\nPluginId candidates/generations/current and build logs",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  artifact_downloads [
+    shape=cylinder,
+    label="Artifact Download Directory\n[File Store]\nVerified no-replace user-visible outputs",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  logs [
+    shape=cylinder,
+    label="Plugin Observability\n[File Store]\noll.log, plugin.log, and per-install build logs",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+
+  subgraph cluster_plugin_runtime {
+    label="Plugin Runtime [Components inside oll Node Daemon]";
+    labelloc=t;
+    labeljust=l;
+    fontsize=14;
+    fontname="Helvetica";
+    color="#438DD5";
+    penwidth=2;
+    style="rounded,dashed";
+    margin=20;
+
+    application [
+      label="Plugin Application Service\n[Component]\nplugin::system::PluginRuntime. Owns startup recovery, operation\ncontinuations, queries, coordinated admission, and shutdown.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    package_owner [
+      label="Package Reconciliation Owner\n[Component]\nPackageManager + CandidateBuilder. Parses literal declarations and typed\nmasks; fetches/builds/extracts; publishes/removes/recovers generations.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    store_adapter [
+      label="Plugin Store Adapter\n[Component]\nPluginStore backend-neutral SQL transitions for installations, desired\nstate, restart state, jobs, package/removal/artifact intents, and metadata.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    supervisor [
+      label="Process Supervisor\n[Component]\nPluginSupervisor event controller. Reconciles desired/observed state,\nowns one child/process group per PluginId, and applies bounded backoff.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    session_host [
+      label="Instance Session Host\n[Component]\nBinds port 0 and serves PluginRuntime.Connect; validates handshake,\nmessage/session identity and depth, and multiplexes stream traffic.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    host_calls [
+      label="Host Call Adapter\n[Component]\nDispatches plugin-originated document/tree/CRDT and live Lua calls\nwithout blocking the stream reader; maps typed redacted errors.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    jobs [
+      label="Job Coordinator\n[Component]\nNormalizes deployment-global operation IDs, durably admits jobs,\ndispatches StartJob/CancelJob, owns deadlines, and settles terminal state.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    artifacts [
+      label="Artifact Transfer and Publication Owner\n[Component]\nChecks session/job correlation, chunk order/size/hash, persists intents,\npublishes atomically no-replace, and recovers interrupted publication.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
+    output [
+      label="Plugin Output Adapter\n[Component]\nNormalizes PluginEnvelope LogRecord and child stdout/stderr with\nhost receive time, immutable identity, redaction, and correlation.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+  }
+
+  admin_api -> application [label="Invokes typed operations and queries"];
+  application -> package_owner [label="Installs, updates, reconciles, lists releases, or removes"];
+  application -> supervisor [label="Sets desired state, restarts, starts/stops jobs"];
+  application -> jobs [label="Admits, queries, and cancels jobs"];
+  application -> artifacts [label="Initializes recovery and drains publications"];
+  application -> store_adapter [label="Queries durable plugin/job state"];
+
+  package_owner -> deployment_config [dir=both, label="Reads and atomically rewrites declarations; reads typed masks"];
+  package_owner -> system_git [label="Executes argv-only fetch/checkout process groups"];
+  system_git -> package_sources [label="Fetches selected repository state"];
+  package_owner -> package_sources [label="Streams direct release artifact bytes"];
+  package_owner -> package_data [dir=both, label="Builds candidates and atomically switches current"];
+  package_owner -> store_adapter [label="Persists and recovers publish/removal intents"];
+
+  supervisor -> store_adapter [label="Reads desired state; records instances, failures, and restart backoff"];
+  supervisor -> package_data [label="Pins and launches the selected PluginId generation"];
+  supervisor -> plugin_process [label="Spawns foreground process group with endpoint and stdin liveness pipe"];
+  supervisor -> session_host [label="Owns one instance listener/session and shutdown channel"];
+  plugin_process -> session_host [label="Opens PluginRuntime.Connect\n[plaintext HTTP/2 gRPC over private loopback]"];
+  session_host -> plugin_process [label="Sends jobs, cancellation, heartbeat, and ShutdownRequest"];
+  session_host -> host_calls [label="Dispatches validated HostCallRequest asynchronously"];
+  session_host -> jobs [label="Routes acceptance, updates, and cancellation acknowledgements"];
+  session_host -> artifacts [label="Routes bounded artifact transfers"];
+  session_host -> output [label="Routes structured LogRecord"];
+  plugin_process -> output [label="Writes stdout/stderr pipes"];
+
+  host_calls -> replica_runtime [label="Uses abstract document API and host commit boundary"];
+  host_calls -> config_runtime [label="Reads live values and invokes session-owned closures"];
+  config_runtime -> deployment_config [label="Reopens PluginId Lua and controlled required modules"];
+  jobs -> store_adapter [label="Persists idempotent admission, cancellation, and terminal rows"];
+  jobs -> supervisor [label="Dispatches only to the owning ready instance"];
+  artifacts -> store_adapter [label="Persists publication intents and stored metadata"];
+  artifacts -> artifact_downloads [label="Stages, verifies, and publishes without replacement"];
+
+  package_owner -> node_logger [label="Correlated package/recovery lifecycle events"];
+  supervisor -> node_logger [label="Process lifecycle, backoff, and signal events"];
+  jobs -> node_logger [label="Job admission/update/cancellation summaries"];
+  artifacts -> node_logger [label="Artifact transfer/publication/recovery events"];
+  output -> node_logger [label="Normalized plugin-originated records"];
+  node_logger -> logs [label="Routes lifecycle to oll.log and plugin output to plugin.log"];
+  package_owner -> logs [label="Writes unstructured recipe/Git output only to per-install build log"];
+}

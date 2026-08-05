@@ -16,10 +16,11 @@ use time::OffsetDateTime;
 use crate::node::{identity::NodeIdentity, runtime::NodeError};
 
 use super::{
-    LOG_QUEUE_CAPACITY, OLL_LOG_FILENAME, OLL_ROTATION, SYNC_LOG_FILENAME, SYNC_ROTATION,
+    LOG_QUEUE_CAPACITY, OLL_LOG_FILENAME, OLL_ROTATION, PLUGIN_LOG_FILENAME, PLUGIN_ROTATION,
+    SYNC_LOG_FILENAME, SYNC_ROTATION,
     files::{ensure_log_directory, queue_pending_rotations},
     sink::{CompressionWorker, LogLevel, LogSinks, RotatingLogSink},
-    writer::{encode_log_event, run_log_writer},
+    writer::{StructuredLogEvent, encode_log_event, run_log_writer},
 };
 
 #[derive(Clone, Copy)]
@@ -27,11 +28,12 @@ pub(super) enum LogRoute {
     Oll,
     Sync,
     SyncAndOll,
+    Plugin,
 }
 
 pub(super) struct QueuedLogEvent {
     pub(super) encoded: Vec<u8>,
-    pub(super) emitted_at: OffsetDateTime,
+    pub(super) rotation_at: OffsetDateTime,
     pub(super) route: LogRoute,
 }
 
@@ -55,8 +57,10 @@ impl NodeLogger {
         let compression = CompressionWorker::new()?;
         queue_pending_rotations(log_dir, OLL_LOG_FILENAME, OLL_ROTATION, &compression)?;
         queue_pending_rotations(log_dir, SYNC_LOG_FILENAME, SYNC_ROTATION, &compression)?;
+        queue_pending_rotations(log_dir, PLUGIN_LOG_FILENAME, PLUGIN_ROTATION, &compression)?;
         let oll = RotatingLogSink::open(log_dir.join(OLL_LOG_FILENAME), OLL_ROTATION)?;
         let sync = RotatingLogSink::open(log_dir.join(SYNC_LOG_FILENAME), SYNC_ROTATION)?;
+        let plugin = RotatingLogSink::open(log_dir.join(PLUGIN_LOG_FILENAME), PLUGIN_ROTATION)?;
         let (sender, receiver) = mpsc::sync_channel(LOG_QUEUE_CAPACITY);
         let dropped_events = Arc::new(AtomicU64::new(0));
         let writer_dropped_events = Arc::clone(&dropped_events);
@@ -66,7 +70,7 @@ impl NodeLogger {
             .name("oll-log-writer".to_owned())
             .spawn(move || {
                 run_log_writer(
-                    LogSinks { oll, sync },
+                    LogSinks { oll, sync, plugin },
                     compression,
                     receiver,
                     writer_dropped_events,
@@ -108,14 +112,65 @@ impl NodeLogger {
         correlation_id: &str,
         fields: Value,
     ) {
-        if correlation_id.is_empty() {
+        let timestamp = OffsetDateTime::now_utc();
+        let route = if target.starts_with("oll::sync") {
+            if level >= LogLevel::Info {
+                LogRoute::SyncAndOll
+            } else {
+                LogRoute::Sync
+            }
+        } else {
+            LogRoute::Oll
+        };
+        self.emit_routed(
+            route,
+            StructuredLogEvent {
+                level,
+                target,
+                event,
+                correlation_id,
+                fields,
+                timestamp,
+                observed_at: None,
+            },
+        );
+    }
+
+    /// Queues plugin-produced output for `plugin.log` without copying it into
+    /// the host lifecycle log. The supplied timestamp is the plugin's emission
+    /// time; oll records its own receive time as `observed_at`.
+    pub fn emit_plugin(
+        &self,
+        level: LogLevel,
+        target: &str,
+        event: &str,
+        correlation_id: &str,
+        timestamp: OffsetDateTime,
+        fields: Value,
+    ) {
+        self.emit_routed(
+            LogRoute::Plugin,
+            StructuredLogEvent {
+                level,
+                target,
+                event,
+                correlation_id,
+                fields,
+                timestamp,
+                observed_at: Some(OffsetDateTime::now_utc()),
+            },
+        );
+    }
+
+    fn emit_routed(&self, route: LogRoute, event: StructuredLogEvent<'_>) {
+        if event.correlation_id.is_empty() {
             self.dropped_events.fetch_add(1, Ordering::Relaxed);
             self.report_emit_failure(
                 "oll structured logger rejected an event without a correlation ID",
             );
             return;
         }
-        let enabled = match self.enabled(target, level) {
+        let enabled = match self.enabled(event.target, event.level) {
             Ok(enabled) => enabled,
             Err(error) => {
                 self.dropped_events.fetch_add(1, Ordering::Relaxed);
@@ -129,7 +184,6 @@ impl NodeLogger {
             return;
         }
 
-        let emitted_at = OffsetDateTime::now_utc();
         let identity = match self.identity.read() {
             Ok(identity) => identity.clone(),
             Err(_) => {
@@ -138,15 +192,8 @@ impl NodeLogger {
                 return;
             }
         };
-        let encoded = match encode_log_event(
-            &identity,
-            level,
-            target,
-            event,
-            correlation_id,
-            fields,
-            emitted_at,
-        ) {
+        let rotation_at = event.observed_at.unwrap_or(event.timestamp);
+        let encoded = match encode_log_event(&identity, event) {
             Ok(encoded) => encoded,
             Err(error) => {
                 self.dropped_events.fetch_add(1, Ordering::Relaxed);
@@ -156,18 +203,9 @@ impl NodeLogger {
                 return;
             }
         };
-        let route = if target.starts_with("oll::sync") {
-            if level >= LogLevel::Info {
-                LogRoute::SyncAndOll
-            } else {
-                LogRoute::Sync
-            }
-        } else {
-            LogRoute::Oll
-        };
         match self.sender.try_send(LogCommand::Event(QueuedLogEvent {
             encoded,
-            emitted_at,
+            rotation_at,
             route,
         })) {
             Ok(()) => {}

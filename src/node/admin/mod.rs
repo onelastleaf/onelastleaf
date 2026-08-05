@@ -1,4 +1,7 @@
 mod client;
+mod plugin;
+mod plugin_client;
+mod plugin_server;
 mod server;
 
 #[cfg(test)]
@@ -7,6 +10,11 @@ mod tests;
 pub use client::{
     export_replica, get_status, import_replica, inspect_replica_document, list_replica_operations,
     ping_peer, request_shutdown, set_log_filter, synchronize_peers,
+};
+pub use plugin_client::{
+    get_plugin, get_plugin_job, list_plugin_jobs, list_plugin_releases, list_plugins,
+    reconcile_plugin_installations, remove_plugin, restart_plugin, set_plugin_desired_state,
+    start_plugin_job, stop_plugin_job,
 };
 pub use server::serve;
 
@@ -21,8 +29,8 @@ use std::{
 use tokio::{sync::watch, time::Instant};
 
 use crate::{
-    configuration::ResolvedNodeConfig, protocol::oll::NodeLifecycleState, replica::ReplicaRuntime,
-    sync::SyncRuntime,
+    configuration::ResolvedNodeConfig, plugin::PluginRuntime, protocol::oll::NodeLifecycleState,
+    replica::ReplicaRuntime, sync::SyncRuntime,
 };
 
 use super::{identity::IdentityCoordinator, logging::NodeLogger};
@@ -68,6 +76,7 @@ pub struct AdminState {
     logger: Arc<NodeLogger>,
     replica: Arc<ReplicaRuntime>,
     sync: Arc<SyncRuntime>,
+    plugins: Arc<PluginRuntime>,
     shutdown: watch::Sender<ShutdownNotice>,
 }
 
@@ -78,6 +87,7 @@ impl AdminState {
         logger: Arc<NodeLogger>,
         replica: Arc<ReplicaRuntime>,
         sync: Arc<SyncRuntime>,
+        plugins: Arc<PluginRuntime>,
         shutdown: watch::Sender<ShutdownNotice>,
     ) -> Self {
         Self {
@@ -88,6 +98,7 @@ impl AdminState {
             logger,
             replica,
             sync,
+            plugins,
             shutdown,
         }
     }

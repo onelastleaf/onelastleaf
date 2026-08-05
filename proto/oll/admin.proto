@@ -3,8 +3,10 @@ syntax = "proto3";
 package oll.protocol;
 
 import "google/protobuf/timestamp.proto";
+import "oll/admin_common.proto";
 import "oll/common.proto";
 import "oll/document.proto";
+import "oll/plugin_admin.proto";
 
 // Local administration is served only over the daemon's Unix domain socket.
 // This service is extended stage by stage; it must not grow stringly typed
@@ -22,13 +24,20 @@ service Admin {
   rpc SynchronizePeers(SynchronizePeersRequest)
       returns (SynchronizePeersResponse);
   rpc PingPeer(PingPeerRequest) returns (PingPeerResponse);
-}
-
-// Every unary Admin request carries this context. Exact fingerprint equality is
-// required because the local Admin API does not negotiate schema versions.
-message AdminCallContext {
-  bytes protocol_schema_sha256 = 1;
-  TraceContext trace = 2;
+  rpc ReconcilePluginInstallations(ReconcilePluginInstallationsRequest)
+      returns (ReconcilePluginInstallationsResponse);
+  rpc RemovePlugin(RemovePluginRequest) returns (RemovePluginResponse);
+  rpc ListPlugins(ListPluginsRequest) returns (ListPluginsResponse);
+  rpc GetPlugin(GetPluginRequest) returns (GetPluginResponse);
+  rpc ListPluginReleases(ListPluginReleasesRequest)
+      returns (ListPluginReleasesResponse);
+  rpc SetPluginDesiredState(SetPluginDesiredStateRequest)
+      returns (SetPluginDesiredStateResponse);
+  rpc RestartPlugin(RestartPluginRequest) returns (RestartPluginResponse);
+  rpc StartPluginJob(StartPluginJobRequest) returns (StartPluginJobResponse);
+  rpc ListPluginJobs(ListPluginJobsRequest) returns (ListPluginJobsResponse);
+  rpc GetPluginJob(GetPluginJobRequest) returns (GetPluginJobResponse);
+  rpc StopPluginJob(StopPluginJobRequest) returns (StopPluginJobResponse);
 }
 
 enum NodeLifecycleState {

@@ -1,14 +1,18 @@
 mod error;
 mod layout;
+mod plugin_runtime;
 mod runtime;
 mod schema;
 mod values;
 
 #[cfg(test)]
+mod plugin_runtime_tests;
+#[cfg(test)]
 mod tests;
 
 pub use error::ConfigError;
 pub(crate) use layout::{validate_storage_layout, validate_working_tree_roots};
+pub use plugin_runtime::{PluginConfigError, PluginConfigErrorKind};
 pub use runtime::ConfigRuntime;
 pub use values::{ConnectUrl, NetworkKey, PostgresUrl, ReplicaStoreConfig, ResolvedNodeConfig};
 

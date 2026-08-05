@@ -49,6 +49,7 @@ pub(super) fn decode_root(
             "replica_root",
             "replica_store",
             "log_dir",
+            "artifact_download_dir",
             "listen",
             "connect",
             "network_key",
@@ -66,6 +67,13 @@ pub(super) fn decode_root(
     )?;
     let replica_store = replica_store(&node, config_root, config_path)?;
     let log_dir = required_path(&node, "log_dir", "node.log_dir", config_root, config_path)?;
+    let artifact_download_dir = required_path(
+        &node,
+        "artifact_download_dir",
+        "node.artifact_download_dir",
+        config_root,
+        config_path,
+    )?;
     let listen = optional_listen(&node, config_path)?;
     let connect = connect_urls(&node, config_path)?;
     let network_key = optional_network_key(&node, config_path)?;
@@ -74,6 +82,7 @@ pub(super) fn decode_root(
         replica_root,
         replica_store,
         log_dir,
+        artifact_download_dir,
         listen,
         connect,
         network_key,

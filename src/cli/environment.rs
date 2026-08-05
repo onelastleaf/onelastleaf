@@ -27,6 +27,7 @@ pub struct Environment {
     pub platform_config_root: Option<PathBuf>,
     pub platform_data_dir: Option<PathBuf>,
     pub platform_documents_dir: Option<PathBuf>,
+    pub platform_downloads_dir: Option<PathBuf>,
     pub platform_state_dir: Option<PathBuf>,
     pub config: Option<PathBuf>,
     pub replica: Option<PathBuf>,
@@ -53,6 +54,9 @@ impl Environment {
             platform_documents_dir: user
                 .as_ref()
                 .and_then(|directories| directories.document_dir().map(Path::to_owned)),
+            platform_downloads_dir: user
+                .as_ref()
+                .and_then(|directories| directories.download_dir().map(Path::to_owned)),
             platform_state_dir: project
                 .as_ref()
                 .and_then(|directories| directories.state_dir().map(Path::to_owned)),
@@ -102,6 +106,15 @@ impl Environment {
         }
         default_from_home(self.home.as_ref(), DEFAULT_DATA_SUFFIX, "replica store")
     }
+
+    pub(super) fn artifact_download_dir(&self) -> Result<PathBuf, CliError> {
+        self.platform_downloads_dir
+            .as_ref()
+            .map(|downloads| downloads.join("oll"))
+            .ok_or(CliError::MissingPlatformDirectory {
+                name: "artifact download directory",
+            })
+    }
 }
 
 pub(super) fn resolve_log_dir(
@@ -146,15 +159,16 @@ pub(super) fn ensure_persistable_path(path: &Path, name: &'static str) -> Result
 #[derive(Debug, Eq, PartialEq)]
 pub enum CliError {
     MissingHome { name: &'static str },
+    MissingPlatformDirectory { name: &'static str },
     NonUtf8PersistentPath { name: &'static str },
 }
 
 impl CliError {
     pub fn exit_code(&self) -> ExitCode {
         match self {
-            Self::MissingHome { .. } | Self::NonUtf8PersistentPath { .. } => {
-                ExitCode::from(EXIT_CONFIG)
-            }
+            Self::MissingHome { .. }
+            | Self::MissingPlatformDirectory { .. }
+            | Self::NonUtf8PersistentPath { .. } => ExitCode::from(EXIT_CONFIG),
         }
     }
 }
@@ -165,6 +179,10 @@ impl fmt::Display for CliError {
             Self::MissingHome { name } => write!(
                 formatter,
                 "cannot determine {name}: pass an explicit path or set HOME"
+            ),
+            Self::MissingPlatformDirectory { name } => write!(
+                formatter,
+                "cannot determine {name} from the platform user directories"
             ),
             Self::NonUtf8PersistentPath { name } => {
                 write!(formatter, "cannot persist {name}: path is not valid UTF-8")
@@ -188,7 +206,5 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
-    let cli = Cli::try_parse_from(arguments)?;
-    cli.validate()?;
-    Ok(cli)
+    Cli::try_parse_from(arguments)
 }

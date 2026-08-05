@@ -31,28 +31,13 @@ message ActionDescriptor {
   string description = 2;
 }
 
-enum HostEventKind {
-  HOST_EVENT_KIND_UNSPECIFIED = 0;
-  HOST_EVENT_KIND_DOCUMENT_CHANGED = 1;
-  HOST_EVENT_KIND_NODE_MOVED = 2;
-  HOST_EVENT_KIND_NODE_DELETED = 3;
-}
-
-message EventSubscription {
-  HostEventKind kind = 1;
-  // An empty glob matches every path. Glob syntax is defined by oll, not by
-  // the plugin's implementation language.
-  string path_glob = 2;
-}
-
 message PluginHello {
   PluginId plugin_id = 1;
   PluginName plugin_name = 2;
   bytes protocol_schema_sha256 = 3;
   repeated ActionDescriptor actions = 4;
-  repeated EventSubscription subscriptions = 5;
   // Informational build string only; package/release selection never parses it.
-  string plugin_version = 6;
+  string plugin_version = 5;
 }
 
 message SessionReady {}
@@ -64,46 +49,10 @@ message ActionInvocation {
   repeated string arguments = 2;
 }
 
-message DocumentChangedEvent {
-  DocumentPath path = 1;
-  CatalogNodeId catalog_node_id = 2;
-  CatalogRevision catalog_revision = 3;
-  DocumentId document_id = 4;
-  DocumentRevision document_revision = 5;
-  optional string originating_operation_id = 6;
-}
-
-message NodeMovedEvent {
-  DocumentPath source = 1;
-  DocumentPath destination = 2;
-  CatalogNodeId catalog_node_id = 3;
-  CatalogRevision catalog_revision = 4;
-}
-
-message NodeDeletedEvent {
-  DocumentPath path = 1;
-  CatalogNodeId catalog_node_id = 2;
-}
-
-message HostEvent {
-  string event_id = 1;
-  optional string caused_by_event_id = 2;
-  oneof event {
-    DocumentChangedEvent document_changed = 3;
-    NodeMovedEvent node_moved = 4;
-    NodeDeletedEvent node_deleted = 5;
-  }
-}
-
-message EventInvocation { HostEvent event = 1; }
-
 message StartJobRequest {
   PluginJobId job_id = 1;
   optional google.protobuf.Timestamp deadline = 2;
-  oneof invocation {
-    ActionInvocation action = 3;
-    EventInvocation event = 4;
-  }
+  oneof invocation { ActionInvocation action = 3; }
 }
 
 message JobAccepted { PluginJobId job_id = 1; }
@@ -210,9 +159,10 @@ message ShutdownRequest {
 
 message ShutdownAcknowledged {}
 
-// message_id is unique per sender within a session. Direct responses set
-// reply_to. New nested calls set parent_call_id and increment call_depth.
-// Derived events increment causal_depth.
+// Each sender owns an independent sequence. IDs are nonzero and strictly
+// increase relative to that sender's preceding envelope; gaps are valid.
+// Direct responses set reply_to. New nested calls set parent_call_id and
+// increment call_depth.
 message PluginEnvelope {
   uint64 message_id = 1;
   optional uint64 reply_to = 2;

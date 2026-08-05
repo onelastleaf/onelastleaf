@@ -54,9 +54,24 @@ pub struct GitRemote {
 
 impl GitRemote {
     /// Return the original spelling for Git. Diagnostics should use `Display`,
-    /// which redacts URL passwords through `gix-url`.
+    /// which removes HTTP(S) user information and redacts other URL passwords.
     pub fn as_str(&self) -> &str {
         &self.original
+    }
+
+    fn redacted(&self) -> gix_url::Url {
+        let mut parsed = self.parsed.clone();
+        if matches!(
+            parsed.scheme,
+            gix_url::Scheme::Http | gix_url::Scheme::Https
+        ) {
+            // Access tokens are commonly placed in either user-info slot. The
+            // username is useful for SSH diagnostics, but not for HTTP(S), so
+            // omit both slots rather than guessing which one is a credential.
+            parsed.user = None;
+            parsed.password = None;
+        }
+        parsed
     }
 }
 
@@ -64,14 +79,14 @@ impl fmt::Debug for GitRemote {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_tuple("GitRemote")
-            .field(&format_args!("{}", self.parsed))
+            .field(&format_args!("{}", self.redacted()))
             .finish()
     }
 }
 
 impl fmt::Display for GitRemote {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.parsed.fmt(formatter)
+        self.redacted().fmt(formatter)
     }
 }
 
@@ -83,7 +98,11 @@ impl FromStr for GitRemote {
             return Err("Git remote cannot be empty".to_owned());
         }
 
-        let parsed = gix_url::parse(input).map_err(|error| error.to_string())?;
+        // gix-url parse errors may echo the complete input, including user
+        // information. Keep malformed credential-bearing remotes out of CLI
+        // and package diagnostics just as strictly as successfully parsed URLs.
+        let parsed =
+            gix_url::parse(input).map_err(|_| "Git remote syntax is invalid".to_owned())?;
         if !matches!(
             parsed.scheme,
             gix_url::Scheme::Git

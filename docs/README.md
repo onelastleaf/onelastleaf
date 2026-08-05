@@ -8,6 +8,8 @@ documents describe the larger runtime and storage model around those messages.
 
 - [Architecture](architecture.md): system boundaries, terminology, and the
   one-binary/one-node/one-replica invariant.
+- [C4 architecture views](c4-architecture/): current system, container, bounded
+  client, daemon, replica, sync, and plugin ownership diagrams.
 - [Implementation order](implementation-order.md): the required CLI -> node ->
   replica -> sync -> plugin-system sequence.
 - [Command-line interface](cli.md): commands, arguments, defaults, conflicts,

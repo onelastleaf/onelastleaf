@@ -25,6 +25,7 @@ fn resolves_path_precedence() {
         platform_config_root: None,
         platform_data_dir: None,
         platform_documents_dir: None,
+        platform_downloads_dir: None,
         platform_state_dir: None,
         config: Some("/env/config".into()),
         replica: Some("/env/replica".into()),

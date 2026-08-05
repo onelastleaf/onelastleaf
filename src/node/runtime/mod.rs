@@ -5,6 +5,7 @@ mod dispatch;
 mod error;
 mod identity_watch;
 mod launcher;
+mod plugin_cli;
 mod socket;
 
 #[cfg(test)]

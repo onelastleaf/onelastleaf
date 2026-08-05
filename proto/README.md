@@ -26,8 +26,10 @@ binary replacement, as intended.
 
 ## Files
 
-- `oll/admin.proto`: the local typed gRPC administration service, request
-  context, node status, and graceful daemon shutdown.
+- `oll/admin.proto`: the local typed gRPC administration service, node status,
+  and graceful daemon shutdown.
+- `oll/admin_common.proto`: the request context shared by every unary Admin
+  operation.
 - `oll/common.proto`: node, replica, document, binary, and plugin identities;
   opaque catalog/document revisions; shared log severity, tracing/depth
   metadata, and errors.
@@ -39,11 +41,13 @@ binary replacement, as intended.
 - `oll/replication.proto`: symmetric Noise-protected peer replication using
   opaque Loro update batches and hash-addressed blob chunks over TCP.
 - `oll/plugin.proto`: the multiplexed host/plugin runtime stream.
+- `oll/plugin_admin.proto`: typed local plugin package, process, release, and
+  job administration messages.
 
 Package file formats, Git execution, source-recipe mechanics, archive extraction,
 process spawning, and filesystem publication are not wire protocols and remain
-in the design documents. Typed Admin requests orchestrating that work are added
-with the plugin implementation.
+in the design documents. Typed plugin Admin requests orchestrate that work
+without carrying CLI argv or package payload bytes.
 
 ## Local administration
 
@@ -57,17 +61,14 @@ fingerprint and correlation context. The daemon requires an exact fingerprint
 match. This catches a newly installed CLI connecting to an older still-running
 daemon; it does not introduce version negotiation or compatibility promises.
 
-The node stage initially implements `GetStatus`, `Shutdown`, and
-`SetLogFilter`. The replica stage adds its four typed methods. The sync stage
-adds only `SynchronizePeers` and `PingPeer`; `oll psk` and `oll sync --log` are
-local operations. Plugin management methods are added only in their
-implementation stage. Future CLI arguments must not be tunneled as generic
+The node stage initially implemented `GetStatus`, `Shutdown`, and
+`SetLogFilter`. The replica stage added its four typed methods, and the sync
+stage added only `SynchronizePeers` and `PingPeer`; `oll psk` and
+`oll sync --log` remain local operations. The plugin stage adds the typed
+reconciliation, removal, query, release-list, desired-state, restart, and job
+methods defined in `plugin_admin.proto`. `plugin validate` and `plugin log`
+remain local operations. Future CLI arguments must not be tunneled as generic
 strings to avoid extending this schema.
-
-At the present design checkpoint, `admin.proto` is intentionally still the
-implemented pre-plugin service. The approved plugin Admin methods listed in
-`docs/admin-api.md` do not yet exist in the descriptor and must be added with
-their runtime implementation. This README does not claim otherwise.
 
 The replica protocol defines three explicit status states
 (`uninitialized`, `initialized_empty`, and `initialized_populated`) plus
@@ -197,20 +198,29 @@ session starts as follows:
 1. oll sends `HostHello` with the expected PluginId, effective PluginName,
    session and instance identifiers, schema fingerprint, and limits.
 2. The plugin validates those values, then sends `PluginHello` repeating its
-   identity and declaring actions and event subscriptions.
+   identity and declaring actions.
 3. Both endpoints send `SessionReady`. No job or host call is valid before both
    ready messages have been observed.
 
-`message_id` is non-zero and unique per sender for the session. A direct response
-sets `reply_to` to the request's ID. Stream readers must continue dispatching
-messages while calls are pending; waiting for a response in the stream-reader
-task would break nested host/config/plugin calls.
+Each sender owns an independent `message_id` sequence for the session. Its first
+ID and every later ID are non-zero, and every later ID is strictly greater than
+that sender's preceding ID. Gaps are valid and an implementation need not start
+at one. A direct response sets `reply_to` to the request's ID. This contract lets
+the receiver reject duplicates and reordering with one `last_seen` integer
+rather than retaining an unbounded set. Stream readers must continue dispatching
+messages while calls are pending.
 
 After readiness, a `Heartbeat` request is answered by a `Heartbeat` with the
 same nonce and `reply_to` set to the request message ID. oll uses a response
 deadline to detect a process that still exists but no longer services its
 protocol. Normal process exit is observed from the host-owned child-process
 handle, not by heartbeat or process-table polling.
+
+Each encoded `PluginEnvelope` gRPC message is limited to 64 MiB in either
+direction before application dispatch. This finite transport bound also covers
+document-bearing host-call responses. Artifact transfer continues to use the
+smaller chunk limit advertised by `HostHello`; plugin trust does not disable
+protobuf transport bounds.
 
 The child's stdin is the parent-liveness pipe. oll keeps its write end open and
 the plugin contract requires exit after EOF. Runtime stdout/stderr go to plugin
@@ -235,10 +245,11 @@ chunks within the host's advertised limit; and finishes with
 before replying with `ArtifactStored`. A terminal job update may reference only
 stored artifacts. Failed and partial transfers are discarded.
 
-Nested calls increment `call_depth`; derived events increment `causal_depth`.
-The initial protocol uses a maximum of 10 for both. A receiver rejects an
-over-limit message without executing it, and known cycles may be rejected
-earlier. Scheduling is deferred and has no message placeholder in this version.
+Nested calls increment `call_depth`; transitive work carries bounded
+`causal_depth`. The initial protocol uses a maximum of 10 for both. A receiver
+rejects an over-limit message without executing it. Scheduling and
+document/catalog event-driven invocation are deferred and have no message
+placeholder in this version.
 
 Lua configuration executes inside oll's one LuaJIT state. The caller's
 PluginId selects its live per-plugin file on each top-level read.
@@ -246,7 +257,8 @@ PluginId selects its live per-plugin file on each top-level read.
 closure in that shared registry; it does not serialize a closure or carry a Lua
 runtime generation. Session teardown invalidates its handles. Config adapters
 reject cyclic tables, unsupported userdata, threads, and unconverted functions.
-After a reentrant call returns, oll re-reads and validates relevant host state.
+The plugin may ask oll to invoke such a closure and receives the returned
+`ConfigValue`; Lua evaluation does not emit plugin RPCs or envelopes.
 
 Logs are structured `LogRecord` messages. `PluginEnvelope.trace` supplies the
 correlation, parent-call, causal, task, and task-group fields used by log
@@ -268,8 +280,9 @@ signatures, marketplace identity, or document capability tokens. Session and
 instance identifiers prevent accidental cross-wiring; they are not a sandbox or
 authentication mechanism.
 
-Remote plugin invocation, input-file upload, and scheduling are deferred and
-have no version-1 messages.
+Remote plugin invocation, input-file upload, scheduling, document/catalog event
+subscriptions, and event-triggered jobs are deferred and have no version-1
+messages.
 
 ## Validation
 

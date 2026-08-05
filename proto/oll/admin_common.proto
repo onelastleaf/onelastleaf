@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "oll/common.proto";
+
+// Every unary Admin request carries this context. Exact fingerprint equality is
+// required because the local Admin API does not negotiate schema versions.
+message AdminCallContext {
+  bytes protocol_schema_sha256 = 1;
+  TraceContext trace = 2;
+}

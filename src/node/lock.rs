@@ -158,7 +158,7 @@ fn is_usable_lock_directory(path: &Path) -> bool {
     }
 }
 
-fn deployment_key(path: &Path) -> String {
+pub(crate) fn deployment_key(path: &Path) -> String {
     let bytes = path.as_os_str().as_bytes();
     let hash = Sha256::digest(bytes);
     hash.iter().map(|byte| format!("{byte:02x}")).collect()

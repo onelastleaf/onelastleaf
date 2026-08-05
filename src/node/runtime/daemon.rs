@@ -22,16 +22,17 @@ use crate::{
         admin::{self, AdminState, ShutdownNotice},
         identity::{IdentityCoordinator, NodeIdentity},
         liveness::ParentLivenessPipe,
-        lock::DeploymentLock,
+        lock::{DeploymentLock, deployment_key},
         logging::{LogLevel, NodeLogger, new_correlation_id},
     },
+    plugin::PluginRuntime,
     replica::ReplicaRuntime,
     sync::SyncRuntime,
 };
 
 use super::{
     NodeError, SHUTDOWN_DEADLINE, STARTUP_DEADLINE,
-    blocking::{in_runtime, replica_node_error, sync_node_error},
+    blocking::{in_runtime, plugin_node_error, replica_node_error, sync_node_error},
     identity_watch::IdentityWatch,
     socket::bind_admin_socket,
 };
@@ -49,15 +50,29 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     config
         .validate_sync_topology()
         .map_err(|error| NodeError::Config(error.to_owned()))?;
+    let platform_data_dir = intent.platform_data_dir.as_ref().ok_or_else(|| {
+        NodeError::Config("cannot determine the platform data directory for plugins".to_owned())
+    })?;
+    let canonical_config_root = std::fs::canonicalize(&intent.config_root).map_err(|error| {
+        NodeError::config_io(
+            "resolve configuration root",
+            intent.config_root.clone(),
+            error,
+        )
+    })?;
+    let plugin_data_root = platform_data_dir
+        .join("deployments")
+        .join(deployment_key(&canonical_config_root))
+        .join("plugins");
     validate_storage_layout(
         &intent.config_root,
         &config.replica_root,
         &config.log_dir,
+        &config.artifact_download_dir,
+        &plugin_data_root,
         &config.replica_store,
     )
     .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
-    ensure_replica_slot(&config.replica_root)?;
-    let parent_liveness = ParentLivenessPipe::create()?;
 
     let logger = NodeLogger::open(&config.log_dir, identity.clone())?;
     let identities = IdentityCoordinator::new(identity);
@@ -85,6 +100,16 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         &startup_correlation,
         json!({ "config_root": intent.config_root.display().to_string() }),
     );
+    if let Err(error) = ensure_replica_slot(&config.replica_root) {
+        logger.emit(
+            LogLevel::Error,
+            "oll::node",
+            "node_start_failed",
+            &startup_correlation,
+            json!({ "reason": "replica_slot" }),
+        );
+        return Err(error);
+    }
 
     let replica = match ReplicaRuntime::start(
         intent.config_root.clone(),
@@ -108,28 +133,6 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         }
     };
 
-    let sync = match SyncRuntime::start(
-        &config,
-        Arc::clone(&identities),
-        Arc::clone(&replica),
-        Arc::clone(&logger),
-    )
-    .await
-    {
-        Ok(sync) => sync,
-        Err(error) => {
-            logger.emit(
-                LogLevel::Error,
-                "oll::node",
-                "node_start_failed",
-                &startup_correlation,
-                json!({ "reason": "sync_runtime" }),
-            );
-            let _ = replica.shutdown(Instant::now() + SHUTDOWN_DEADLINE).await;
-            return Err(sync_node_error(error));
-        }
-    };
-
     let mut identity_watch = match IdentityWatch::start(
         &intent.config_root,
         Arc::clone(&identities),
@@ -147,10 +150,86 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
                 &startup_correlation,
                 json!({ "reason": "identity_watcher" }),
             );
-            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
-            let _ = sync.shutdown(deadline).await;
-            let _ = replica.shutdown(deadline).await;
+            let _ = replica.shutdown(Instant::now() + SHUTDOWN_DEADLINE).await;
             return Err(error);
+        }
+    };
+
+    let sync = match SyncRuntime::start(
+        &config,
+        Arc::clone(&identities),
+        Arc::clone(&replica),
+        Arc::clone(&logger),
+    )
+    .await
+    {
+        Ok(sync) => sync,
+        Err(error) => {
+            logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "sync_runtime" }),
+            );
+            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
+            let _ = tokio::join!(
+                identity_watch.shutdown(deadline),
+                replica.shutdown(deadline)
+            );
+            return Err(sync_node_error(error));
+        }
+    };
+
+    let parent_liveness = match ParentLivenessPipe::create() {
+        Ok(pipe) => Arc::new(pipe),
+        Err(error) => {
+            logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "plugin_liveness" }),
+            );
+            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
+            let _ = tokio::join!(
+                identity_watch.shutdown(deadline),
+                sync.shutdown(deadline),
+                replica.shutdown(deadline)
+            );
+            return Err(error);
+        }
+    };
+
+    let plugins = match PluginRuntime::start(
+        intent.config_root.clone(),
+        plugin_data_root,
+        config.artifact_download_dir.clone(),
+        config_runtime.clone(),
+        Arc::clone(&replica),
+        Arc::clone(&identities),
+        Arc::clone(&logger),
+        Arc::clone(&parent_liveness),
+        &startup_correlation,
+    )
+    .await
+    {
+        Ok(plugins) => plugins,
+        Err(error) => {
+            logger.emit(
+                LogLevel::Error,
+                "oll::node",
+                "node_start_failed",
+                &startup_correlation,
+                json!({ "reason": "plugin_runtime" }),
+            );
+            let deadline = Instant::now() + SHUTDOWN_DEADLINE;
+            let _ = tokio::join!(
+                identity_watch.shutdown(deadline),
+                sync.shutdown(deadline),
+                replica.shutdown(deadline)
+            );
+            return Err(plugin_node_error(error));
         }
     };
 
@@ -165,9 +244,12 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
                 json!({ "reason": "admin_socket" }),
             );
             let deadline = Instant::now() + SHUTDOWN_DEADLINE;
-            let _ = identity_watch.shutdown(deadline).await;
-            let _ = sync.shutdown(deadline).await;
-            let _ = replica.shutdown(deadline).await;
+            let _ = tokio::join!(
+                plugins.shutdown(deadline, &startup_correlation),
+                identity_watch.shutdown(deadline),
+                sync.shutdown(deadline),
+                replica.shutdown(deadline)
+            );
             return Err(error);
         }
     };
@@ -178,6 +260,7 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         Arc::clone(&logger),
         Arc::clone(&replica),
         Arc::clone(&sync),
+        Arc::clone(&plugins),
         shutdown_tx.clone(),
     ));
     state.mark_running();
@@ -200,7 +283,9 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
             &mut shutdown_rx,
             &replica,
             &sync,
+            &plugins,
             &mut identity_watch,
+            &state,
         )
         .await;
         signal_task.abort();
@@ -217,7 +302,9 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
             &mut shutdown_rx,
             &replica,
             &sync,
+            &plugins,
             &mut identity_watch,
+            &state,
         )
         .await;
         signal_task.abort();
@@ -241,7 +328,9 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         &mut shutdown_rx,
         &replica,
         &sync,
+        &plugins,
         &mut identity_watch,
+        &state,
     )
     .await;
     signal_task.abort();
@@ -274,7 +363,9 @@ async fn wait_for_shutdown(
     shutdown: &mut watch::Receiver<ShutdownNotice>,
     replica: &ReplicaRuntime,
     sync: &SyncRuntime,
+    plugins: &PluginRuntime,
     identity_watch: &mut IdentityWatch,
+    state: &AdminState,
 ) -> (String, Result<(), NodeError>, Instant) {
     let (completed_admin, trigger_error) = tokio::select! {
         result = &mut *admin_task => {
@@ -287,6 +378,7 @@ async fn wait_for_shutdown(
             (None, error)
         }
     };
+    state.begin_shutdown();
     let notice = shutdown.borrow_and_update().clone();
     let correlation_id = notice
         .correlation_id()
@@ -298,27 +390,44 @@ async fn wait_for_shutdown(
         if let Some(result) = completed_admin {
             return join_admin_task(result);
         }
-        match timeout_at(deadline, &mut *admin_task).await {
-            Ok(result) => join_admin_task(result),
-            Err(_) => {
-                admin_task.abort();
-                let _ = admin_task.await;
-                Err(NodeError::Unavailable(
-                    "daemon shutdown exceeded its graceful deadline".to_owned(),
-                ))
-            }
-        }
+        join_admin_task((&mut *admin_task).await)
     };
     let replica_drain = async { replica.shutdown(deadline).await.map_err(replica_node_error) };
     let sync_drain = async { sync.shutdown(deadline).await.map_err(sync_node_error) };
+    let plugin_drain = async {
+        plugins
+            .shutdown(deadline, &correlation_id)
+            .await
+            .map_err(plugin_node_error)
+    };
     let identity_drain = identity_watch.shutdown(deadline);
-    let (admin_result, sync_result, replica_result, identity_result) =
-        tokio::join!(admin_drain, sync_drain, replica_drain, identity_drain);
-    let result = trigger_error
-        .map_or(admin_result, Err)
-        .and(sync_result)
-        .and(replica_result)
-        .and(identity_result);
+    let drains = timeout_at(deadline, async {
+        tokio::join!(
+            admin_drain,
+            plugin_drain,
+            sync_drain,
+            replica_drain,
+            identity_drain
+        )
+    })
+    .await;
+    let result = match drains {
+        Ok((admin_result, plugin_result, sync_result, replica_result, identity_result)) => {
+            trigger_error
+                .map_or(admin_result, Err)
+                .and(plugin_result)
+                .and(sync_result)
+                .and(replica_result)
+                .and(identity_result)
+        }
+        Err(_) => {
+            admin_task.abort();
+            let _ = (&mut *admin_task).await;
+            Err(NodeError::Unavailable(
+                "daemon shutdown exceeded its graceful deadline".to_owned(),
+            ))
+        }
+    };
     (correlation_id, result, deadline)
 }
 

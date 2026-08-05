@@ -16,7 +16,7 @@ use crate::{
     protocol::{
         PROTOCOL_SCHEMA_SHA256,
         oll::{
-            AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, CatalogNodeId,
+            self, AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, CatalogNodeId,
             CatalogRevision, DocumentId, DocumentPath, DocumentRevision, ExportReplicaRequest,
             ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
             ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
@@ -82,6 +82,22 @@ impl AdminService {
                 "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
             }),
         );
+    }
+
+    fn finish_rpc<T>(
+        &self,
+        correlation_id: &str,
+        method: &str,
+        started: Instant,
+        result: Result<T, Status>,
+    ) -> Result<Response<T>, Status> {
+        self.log_rpc(
+            correlation_id,
+            method,
+            if result.is_ok() { "ok" } else { "error" },
+            started,
+        );
+        result.map(Response::new)
     }
 
     #[allow(clippy::result_large_err)]
@@ -387,6 +403,147 @@ impl Admin for AdminService {
             node: Some(identity.to_proto()),
             round_trip_millis: u64::try_from(round_trip.as_millis()).unwrap_or(u64::MAX),
         }))
+    }
+
+    async fn reconcile_plugin_installations(
+        &self,
+        request: Request<oll::ReconcilePluginInstallationsRequest>,
+    ) -> Result<Response<oll::ReconcilePluginInstallationsResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result =
+            super::plugin_server::reconcile_installations(&self.state, request, &correlation_id)
+                .await;
+        self.finish_rpc(
+            &correlation_id,
+            "ReconcilePluginInstallations",
+            started,
+            result,
+        )
+    }
+
+    async fn remove_plugin(
+        &self,
+        request: Request<oll::RemovePluginRequest>,
+    ) -> Result<Response<oll::RemovePluginResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::remove(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "RemovePlugin", started, result)
+    }
+
+    async fn list_plugins(
+        &self,
+        request: Request<oll::ListPluginsRequest>,
+    ) -> Result<Response<oll::ListPluginsResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::list(&self.state).await;
+        self.finish_rpc(&correlation_id, "ListPlugins", started, result)
+    }
+
+    async fn get_plugin(
+        &self,
+        request: Request<oll::GetPluginRequest>,
+    ) -> Result<Response<oll::GetPluginResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::get(&self.state, request).await;
+        self.finish_rpc(&correlation_id, "GetPlugin", started, result)
+    }
+
+    async fn list_plugin_releases(
+        &self,
+        request: Request<oll::ListPluginReleasesRequest>,
+    ) -> Result<Response<oll::ListPluginReleasesResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result =
+            super::plugin_server::list_releases(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "ListPluginReleases", started, result)
+    }
+
+    async fn set_plugin_desired_state(
+        &self,
+        request: Request<oll::SetPluginDesiredStateRequest>,
+    ) -> Result<Response<oll::SetPluginDesiredStateResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result =
+            super::plugin_server::set_desired_state(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "SetPluginDesiredState", started, result)
+    }
+
+    async fn restart_plugin(
+        &self,
+        request: Request<oll::RestartPluginRequest>,
+    ) -> Result<Response<oll::RestartPluginResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::restart(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "RestartPlugin", started, result)
+    }
+
+    async fn start_plugin_job(
+        &self,
+        request: Request<oll::StartPluginJobRequest>,
+    ) -> Result<Response<oll::StartPluginJobResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::start_job(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "StartPluginJob", started, result)
+    }
+
+    async fn list_plugin_jobs(
+        &self,
+        request: Request<oll::ListPluginJobsRequest>,
+    ) -> Result<Response<oll::ListPluginJobsResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::list_jobs(&self.state, request).await;
+        self.finish_rpc(&correlation_id, "ListPluginJobs", started, result)
+    }
+
+    async fn get_plugin_job(
+        &self,
+        request: Request<oll::GetPluginJobRequest>,
+    ) -> Result<Response<oll::GetPluginJobResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::get_job(&self.state, request).await;
+        self.finish_rpc(&correlation_id, "GetPluginJob", started, result)
+    }
+
+    async fn stop_plugin_job(
+        &self,
+        request: Request<oll::StopPluginJobRequest>,
+    ) -> Result<Response<oll::StopPluginJobResponse>, Status> {
+        let started = Instant::now();
+        let mut request = request.into_inner();
+        let correlation_id = self.validate_context(request.context.take())?;
+        self.require_serving()?;
+        let result = super::plugin_server::stop_job(&self.state, request, &correlation_id).await;
+        self.finish_rpc(&correlation_id, "StopPluginJob", started, result)
     }
 }
 

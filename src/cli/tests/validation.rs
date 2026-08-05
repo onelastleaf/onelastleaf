@@ -13,39 +13,67 @@ fn intent_whitelist_rejects_invalid_programmatic_states() {
 
     let install = Cli {
         command: Command::Plugin(PluginArgs {
-            log: None,
-            command: Some(PluginCommand::Install {
+            command: PluginCommand::Install {
                 repository: Some("https://example.com/plugin.git".parse().unwrap()),
                 rev: Some("v1".to_owned()),
                 branch: Some("main".to_owned()),
-                release: true,
+                release: Some("release-1".to_owned()),
                 source: true,
-            }),
+                json: false,
+            },
         }),
     };
     assert!(install.into_intent().is_err());
 
     let missing_remote = Cli {
         command: Command::Plugin(PluginArgs {
-            log: None,
-            command: Some(PluginCommand::Install {
+            command: PluginCommand::Install {
                 repository: None,
                 rev: None,
                 branch: Some("main".to_owned()),
-                release: false,
+                release: None,
                 source: false,
-            }),
+                json: false,
+            },
         }),
     };
     assert!(missing_remote.into_intent().is_err());
 
-    let plugin = Cli {
-        command: Command::Plugin(PluginArgs {
-            log: Some(None),
-            command: Some(PluginCommand::List),
+    let invalid_limit = Cli {
+        command: Command::Job(JobArgs {
+            command: JobCommand::List {
+                limit: 1001,
+                json: false,
+            },
         }),
     };
-    assert!(plugin.into_intent().is_err());
+    assert!(invalid_limit.into_intent().is_err());
+
+    let empty_operation_id = Cli {
+        command: Command::Plugin(PluginArgs {
+            command: PluginCommand::Call {
+                operation_id: Some(String::new()),
+                json: false,
+                selector: "oll.example".to_owned(),
+                action: "run".to_owned(),
+                arguments: Vec::new(),
+            },
+        }),
+    };
+    assert!(empty_operation_id.into_intent().is_err());
+
+    let empty_action = Cli {
+        command: Command::Plugin(PluginArgs {
+            command: PluginCommand::Call {
+                operation_id: None,
+                json: false,
+                selector: "oll.example".to_owned(),
+                action: String::new(),
+                arguments: Vec::new(),
+            },
+        }),
+    };
+    assert!(empty_action.into_intent().is_err());
 }
 
 #[test]
@@ -58,6 +86,7 @@ fn rejects_conflicting_modes() {
             "install",
             "https://example.com/plugin.git",
             "--release",
+            "release-1",
             "--source",
         ])
         .is_err()

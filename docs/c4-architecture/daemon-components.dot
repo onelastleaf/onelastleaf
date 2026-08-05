@@ -1,6 +1,6 @@
 // C4 component model of the oll node daemon derived from production src/.
-// Replica and sync internals are expanded in replica-components.dot and
-// sync-components.dot. No plugin process runtime exists in the current code.
+// Replica, sync, and plugin internals are expanded in their focused component
+// diagrams.
 
 digraph C4_Daemon_Components {
   graph [
@@ -30,9 +30,15 @@ digraph C4_Daemon_Components {
     fontcolor="white",
     color="#666666"
   ];
+  plugin_process [
+    label="Spawned Plugin Process\n[External Container]\nTrusted foreground child using the oll-hosted runtime stream",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
   deployment_state [
     shape=cylinder,
-    label="Deployment State and Key Material\n[Container: File Store]\nconfig.lua/modules, node.json, replica.json,\nrun/node.lock/admin.sock, optional key file",
+    label="Deployment State and Key Material\n[Container: File Store]\nconfig.lua/modules, plugins.lua, per-PluginId Lua/masks, identities,\nrun/node.lock/admin.sock, optional key file",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -46,14 +52,14 @@ digraph C4_Daemon_Components {
   ];
   sql_store [
     shape=cylinder,
-    label="Replica Store\n[Container: SQLite or PostgreSQL]",
+    label="Replica and Deployment Store\n[Container: SQLite or PostgreSQL]\nReplica state plus peer bindings and plugin state/intents/jobs",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
   ];
   logs [
     shape=cylinder,
-    label="Structured Log Files\n[Container: File Store]\noll.log and sync.log",
+    label="Structured Log Files\n[Container: File Store]\noll.log, sync.log, and plugin.log",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -61,6 +67,20 @@ digraph C4_Daemon_Components {
   snapshot [
     shape=cylinder,
     label="Replica Snapshot\n[Container: File]\n.ollsnap",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  plugin_data [
+    shape=cylinder,
+    label="Plugin Package Data\n[Container: File Store]\nPluginId-keyed generations/current/build logs",
+    fillcolor="#438DD5",
+    fontcolor="white",
+    color="#2E6295"
+  ];
+  artifact_downloads [
+    shape=cylinder,
+    label="Plugin Artifact Downloads\n[Container: File Store]\nVerified no-replace outputs",
     fillcolor="#438DD5",
     fontcolor="white",
     color="#2E6295"
@@ -78,7 +98,7 @@ digraph C4_Daemon_Components {
     margin=20;
 
     lifecycle [
-      label="Node Lifecycle Orchestrator\n[Component]\nPreparedRunIntent, DeploymentLock, Unix signals, readiness pingback,\nand ordered construction/shutdown of one replica and sync runtime.",
+      label="Node Lifecycle Orchestrator\n[Component]\nPreparedRunIntent, DeploymentLock, Unix signals, readiness pingback,\nand ordered construction/shutdown of replica, sync, and plugin runtimes.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
@@ -99,7 +119,7 @@ digraph C4_Daemon_Components {
     ];
 
     admin_api [
-      label="Admin API Adapter\n[Component]\noll.protocol.Admin: 9 unary RPCs over UDS.\nValidates schema/trace context and adapts lifecycle, status,\nlogging, replica snapshot/query, synchronize, and ping calls.",
+      label="Admin API Adapter\n[Component]\nTyped oll.protocol.Admin unary RPCs over UDS.\nValidates schema/trace context and adapts lifecycle, replica, sync,\nplugin package/process, release, and job operations.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
@@ -119,8 +139,15 @@ digraph C4_Daemon_Components {
       color="#5B88B2"
     ];
 
+    plugins [
+      label="Plugin Runtime\n[Component]\nPluginRuntime owns package reconciliation/recovery, SQL desired state/jobs,\nprocess supervision, oll-hosted loopback gRPC sessions, live Lua calls,\nartifact publication, and plugin output ingestion.",
+      fillcolor="#85BBF0",
+      fontcolor="#111111",
+      color="#5B88B2"
+    ];
+
     logger [
-      label="Structured Logging Service\n[Component]\nNodeLogger open/emit/set_identity/set_filter/flush.\nBounded queue, dynamic filters, normalized correlation fields,\nrouting, writer thread, and file sinks.",
+      label="Structured Logging Service\n[Component]\nNodeLogger open/emit/set_identity/set_filter/flush_until.\nNonblocking bounded enqueue, dynamic filters, correlation/routing,\ndedicated batching writer thread, and file sinks.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"
@@ -129,7 +156,7 @@ digraph C4_Daemon_Components {
   }
 
   admin_client -> admin_api [
-    label="Calls GetStatus, Shutdown, SetLogFilter, replica query/import/export,\nSynchronizePeers, or PingPeer\n[gRPC over UDS]"
+    label="Calls lifecycle, replica, sync, plugin package/process, and job methods\n[gRPC over UDS]"
   ];
 
   lifecycle -> deployment_state [
@@ -144,15 +171,17 @@ digraph C4_Daemon_Components {
     dir=both,
     label="Loads, watches, and atomically coordinates identity records\n[strict JSON + notify]"
   ];
-  lifecycle -> logger [label="Opens sinks, emits lifecycle events, and flushes"];
+  lifecycle -> logger [label="Opens sinks, emits lifecycle events, and requests deadline-bounded drain"];
   lifecycle -> replica [label="Starts before sync and drains during shutdown"];
   lifecycle -> sync [label="Starts after replica and drains before process exit"];
+  lifecycle -> plugins [label="Starts after sync recovery and drains all plugin work by one deadline"];
   lifecycle -> admin_api [label="Constructs AdminState and serves UDS"];
 
   admin_api -> lifecycle [label="Requests ordered shutdown\n[ShutdownNotice]"];
   admin_api -> identities [label="Reads current hot NodeIdentity for status"];
   admin_api -> replica [label="Status, inspection, history, snapshot import/export"];
   admin_api -> sync [label="Peer status, synchronize, and ping"];
+  admin_api -> plugins [label="Package, query, desired-state, restart, release, and job methods"];
   admin_api -> logger [label="Emits RPC events and changes live filters"];
 
   identities -> replica [
@@ -166,6 +195,15 @@ digraph C4_Daemon_Components {
   sync -> replica [
     label="Binds peers; captures inventories; transfers and activates\nnormal/bootstrap candidates"
   ];
+  plugins -> configuration [label="Evaluates live PluginId-owned Lua values/closures in the shared registry"];
+  plugins -> identities [label="Uses the current NodeIdentity in instance handshakes"];
+  plugins -> replica [label="Serves revision-guarded document/tree/CRDT host calls"];
+  plugins -> sql_store [dir=both, label="Persists package state, desired state, jobs, and recovery intents"];
+  plugins -> plugin_data [dir=both, label="Publishes and recovers PluginId-keyed package generations"];
+  plugins -> artifact_downloads [label="Publishes verified job artifacts with no-replace semantics"];
+  plugins -> plugin_process [label="Spawns/supervises process group; passes endpoint and stdin liveness"];
+  plugin_process -> plugins [label="Opens PluginRuntime.Connect\n[plaintext loopback protobuf/gRPC bidi]"];
+  plugins -> logger [label="Emits lifecycle/package/job events and ingests plugin output"];
 
   replica -> deployment_state [dir=both, label="Recovers and updates replica.json"];
   replica -> working_tree [dir=both, label="Watches, reconciles, and projects"];
@@ -178,5 +216,5 @@ digraph C4_Daemon_Components {
     label="Encrypted SyncEnvelope sessions\n[TCP + Noise NNpsk0]"
   ];
   sync -> logger [label="Emits correlated connection, round, and bootstrap events"];
-  logger -> logs [label="Writes and flushes normalized JSON Lines"];
+  logger -> logs [label="Writer thread batches normalized JSON Lines and bounded flushes"];
 }

@@ -13,11 +13,14 @@ use std::{
 
 use serde_json::{Value, json};
 use tempfile::TempDir;
-use time::OffsetDateTime;
+use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
-use super::{LOG_QUEUE_CAPACITY, LogLevel, NodeLogger, OLL_LOG_FILENAME};
 use super::{
-    files::rotated_log_files,
+    LOG_QUEUE_CAPACITY, LogLevel, MEBIBYTE, NodeLogger, OLL_LOG_FILENAME, PLUGIN_LOG_FILENAME,
+    PLUGIN_ROTATION, SYNC_LOG_FILENAME,
+};
+use super::{
+    files::{format_timestamp, rotated_log_files},
     sink::{CompressionWorker, RotatingLogSink, RotationPolicy},
 };
 use crate::node::{identity::NodeIdentity, runtime::NodeError};
@@ -25,11 +28,8 @@ use crate::node::{identity::NodeIdentity, runtime::NodeError};
 #[test]
 fn creates_valid_jsonl_logs_with_correlation_ids() {
     let directory = TempDir::new().unwrap();
-    let logger = NodeLogger::open(
-        directory.path().join("logs").as_path(),
-        NodeIdentity::generate("home".parse().unwrap()),
-    )
-    .unwrap();
+    let logs = directory.path().join("logs");
+    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
     logger.emit(
         LogLevel::Info,
         "oll::node",
@@ -41,19 +41,129 @@ fn creates_valid_jsonl_logs_with_correlation_ids() {
         .flush_until(Instant::now() + Duration::from_secs(2))
         .unwrap();
 
-    let source = fs::read_to_string(directory.path().join("logs/oll.log")).unwrap();
+    let source = fs::read_to_string(logs.join(OLL_LOG_FILENAME)).unwrap();
     let record: Value = serde_json::from_str(source.trim()).unwrap();
     assert_eq!(record["event"], "node_started");
     assert_eq!(record["correlation_id"], "corr-1");
     assert_eq!(record["process_id"], 42);
     assert_eq!(
-        fs::metadata(directory.path().join("logs"))
-            .unwrap()
-            .permissions()
-            .mode()
-            & 0o777,
+        fs::metadata(&logs).unwrap().permissions().mode() & 0o777,
         0o700
     );
+    for filename in [OLL_LOG_FILENAME, SYNC_LOG_FILENAME, PLUGIN_LOG_FILENAME] {
+        assert_eq!(
+            fs::metadata(logs.join(filename))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600,
+            "unsafe permissions on {filename}"
+        );
+    }
+}
+
+#[test]
+fn plugin_output_has_receive_time_and_stays_out_of_the_lifecycle_log() {
+    let directory = TempDir::new().unwrap();
+    let logs = directory.path().join("logs");
+    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let plugin_timestamp = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
+    let before_receive = OffsetDateTime::now_utc();
+
+    logger.emit_plugin(
+        LogLevel::Info,
+        "plugin::oll_anki",
+        "plugin_log_record",
+        "corr-plugin",
+        plugin_timestamp,
+        json!({
+            "plugin_id": "b4f2b080-6813-4ef0-ab48-e1f5c42e1d67",
+            "plugin_name": "oll.anki",
+            "message": "ready",
+            "timestamp": "forged",
+            "observed_at": "forged",
+        }),
+    );
+    let after_receive = OffsetDateTime::now_utc();
+    logger.emit(
+        LogLevel::Info,
+        "oll::plugin",
+        "plugin_process_ready",
+        "corr-lifecycle",
+        json!({ "plugin_name": "oll.anki" }),
+    );
+    logger
+        .flush_until(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+
+    let plugin_source = fs::read_to_string(logs.join(PLUGIN_LOG_FILENAME)).unwrap();
+    let plugin_record: Value = serde_json::from_str(plugin_source.trim()).unwrap();
+    assert_eq!(
+        plugin_record["timestamp"],
+        format_timestamp(plugin_timestamp)
+    );
+    let observed_at =
+        OffsetDateTime::parse(plugin_record["observed_at"].as_str().unwrap(), &Rfc3339).unwrap();
+    assert!(observed_at >= before_receive);
+    assert!(observed_at <= after_receive);
+    assert_eq!(plugin_record["correlation_id"], "corr-plugin");
+    assert_eq!(plugin_record["plugin_name"], "oll.anki");
+    assert_eq!(plugin_record["message"], "ready");
+
+    let lifecycle_source = fs::read_to_string(logs.join(OLL_LOG_FILENAME)).unwrap();
+    assert!(lifecycle_source.contains("plugin_process_ready"));
+    assert!(lifecycle_source.contains("corr-lifecycle"));
+    assert!(!lifecycle_source.contains("corr-plugin"));
+    assert!(!plugin_source.contains("corr-lifecycle"));
+    assert!(
+        fs::read_to_string(logs.join(SYNC_LOG_FILENAME))
+            .unwrap()
+            .is_empty()
+    );
+    assert!(
+        rotated_log_files(&logs, PLUGIN_LOG_FILENAME)
+            .unwrap()
+            .is_empty(),
+        "a stale plugin timestamp must not rotate the host sink"
+    );
+}
+
+#[test]
+fn plugin_output_uses_the_shared_target_filter_and_documented_rotation_policy() {
+    let directory = TempDir::new().unwrap();
+    let logs = directory.path().join("logs");
+    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let timestamp = OffsetDateTime::now_utc();
+
+    logger.emit_plugin(
+        LogLevel::Trace,
+        "plugin::oll_pdf",
+        "plugin_trace",
+        "corr-filtered",
+        timestamp,
+        json!({}),
+    );
+    logger
+        .set_filter("plugin::oll_pdf".to_owned(), LogLevel::Trace)
+        .unwrap();
+    logger.emit_plugin(
+        LogLevel::Trace,
+        "plugin::oll_pdf",
+        "plugin_trace",
+        "corr-retained",
+        timestamp,
+        json!({}),
+    );
+    logger
+        .flush_until(Instant::now() + Duration::from_secs(2))
+        .unwrap();
+
+    let source = fs::read_to_string(logs.join(PLUGIN_LOG_FILENAME)).unwrap();
+    assert!(!source.contains("corr-filtered"));
+    assert!(source.contains("corr-retained"));
+    assert_eq!(PLUGIN_ROTATION.maximum_bytes, 25 * MEBIBYTE);
+    assert_eq!(PLUGIN_ROTATION.retained_rotations, 10);
 }
 
 #[test]

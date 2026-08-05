@@ -135,6 +135,24 @@ fn replace_file_atomically(path: &Path, contents: impl AsRef<[u8]>) {
     fs::rename(temporary, path).unwrap();
 }
 
+fn wait_for_log_event(path: &Path, event: &str) {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if fs::read_to_string(path).is_ok_and(|records| {
+            records.lines().any(|line| {
+                serde_json::from_str::<Value>(line).is_ok_and(|record| record["event"] == event)
+            })
+        }) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not emit {event} before the deadline"
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
 struct ChildGuard(Child);
 
 impl Drop for ChildGuard {
@@ -295,6 +313,83 @@ fn daemon_hot_loads_valid_node_and_replica_identity_replacements() {
 
     stop(&config_root);
     assert!(daemon.0.wait().unwrap().success());
+}
+
+#[test]
+fn identity_watch_initial_reload_precedes_sync_listener_startup() {
+    let directory = TempDir::new().unwrap();
+    if !unix_sockets_available(&directory) || !loopback_available() {
+        return;
+    }
+    initialize(&directory);
+    let config_root = directory.path().join("config");
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let listen = listener.local_addr().unwrap();
+    let config_path = config_root.join("config.lua");
+    let config = fs::read_to_string(&config_path).unwrap();
+    let configured = config.replace(
+        "        listen = nil,",
+        &format!(
+            "        listen = \"{listen}\",\n        network_key = \"0123456789abcdef0123456789abcdef\","
+        ),
+    );
+    assert_ne!(configured, config);
+    fs::write(config_path, configured).unwrap();
+
+    // Keep replica startup busy until the asynchronous logger has published
+    // node_starting, giving this test a deterministic point after the initial
+    // node.json load but before the identity watcher is registered.
+    fs::write(
+        directory.path().join("replica/slow-start.md"),
+        vec![b'x'; 32 * 1024 * 1024],
+    )
+    .unwrap();
+    let mut daemon = ChildGuard(spawn_run(&config_root));
+    let log_path = directory.path().join("log/oll.log");
+    wait_for_log_event(&log_path, "node_starting");
+
+    let replacement_node_id = Uuid::new_v4().to_string();
+    replace_file_atomically(
+        &config_root.join("node.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "format_version": 1,
+            "node_id": replacement_node_id,
+            "node_name": "identity-before-sync",
+        }))
+        .unwrap(),
+    );
+
+    let deadline = Instant::now() + Duration::from_secs(30);
+    let status = loop {
+        if let Some(status) = daemon.0.try_wait().unwrap() {
+            break status;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "daemon did not report the occupied sync listener"
+        );
+        thread::sleep(Duration::from_millis(10));
+    };
+    assert_eq!(status.code(), Some(EXIT_UNAVAILABLE));
+
+    let records = fs::read_to_string(log_path).unwrap();
+    let events = records
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .collect::<Vec<_>>();
+    let identity_updated = events
+        .iter()
+        .position(|event| {
+            event["event"] == "node_identity_updated" && event["node_id"] == replacement_node_id
+        })
+        .expect("identity watcher did not publish the replacement identity");
+    let sync_failed = events
+        .iter()
+        .position(|event| {
+            event["event"] == "node_start_failed" && event["reason"] == "sync_runtime"
+        })
+        .expect("daemon did not report sync startup failure");
+    assert!(identity_updated < sync_failed);
 }
 
 #[test]

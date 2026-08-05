@@ -8,7 +8,7 @@ use getrandom::fill as fill_random;
 
 use crate::{
     cli::{
-        CliIntent, ClientDependency, LogIntent, PreparedCliIntent, PreparedClientIntent,
+        CliIntent, ClientDependency, JobIntent, LogIntent, PreparedCliIntent, PreparedClientIntent,
         ReplicaIntent, SyncIntent,
     },
     node::init::{self, InitResult},
@@ -24,6 +24,7 @@ use super::{
     },
     daemon::run_daemon,
     launcher::{start, stop},
+    plugin_cli,
 };
 
 pub fn execute(intent: PreparedCliIntent) -> Result<(), NodeError> {
@@ -124,6 +125,18 @@ fn execute_client(intent: PreparedClientIntent) -> Result<(), NodeError> {
         (CliIntent::Sync(SyncIntent::ViewLog), ClientDependency::LogDir(log_dir)) => {
             show_log_file(&log_dir.join("sync.log"))
         }
+        (CliIntent::Plugin(intent), dependency) => plugin_cli::execute_plugin(intent, dependency),
+        (CliIntent::Job(intent), ClientDependency::ConfigRoot(config_root)) => {
+            plugin_cli::execute_job(intent, &config_root)
+        }
+        (
+            CliIntent::Job(
+                JobIntent::List { .. } | JobIntent::Info { .. } | JobIntent::Stop { .. },
+            ),
+            _,
+        ) => Err(NodeError::Internal(
+            "job command was prepared with an invalid dependency".to_owned(),
+        )),
         _ => Err(NodeError::NotImplemented),
     }
 }

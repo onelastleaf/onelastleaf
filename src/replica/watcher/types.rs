@@ -38,3 +38,9 @@ pub struct ReplicaRuntime {
     pub(super) event_shutdown: watch::Sender<bool>,
     pub(super) event_task: Mutex<Option<JoinHandle<()>>>,
 }
+
+impl ReplicaRuntime {
+    pub(crate) fn database_pool(&self) -> sqlx::AnyPool {
+        self.store.pool.clone()
+    }
+}

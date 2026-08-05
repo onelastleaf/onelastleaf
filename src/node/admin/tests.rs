@@ -8,7 +8,8 @@ use uuid::Uuid;
 
 use crate::{
     cli::LogFilterLevel,
-    configuration::{ReplicaStoreConfig, ResolvedNodeConfig},
+    configuration::{ConfigRuntime, ReplicaStoreConfig, ResolvedNodeConfig},
+    plugin::PluginRuntime,
     protocol::oll::{
         AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, ExportReplicaRequest,
         ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
@@ -104,6 +105,166 @@ impl Admin for SlowAdmin {
     ) -> Result<Response<PingPeerResponse>, Status> {
         Err(Status::unimplemented("not used by deadline test"))
     }
+
+    async fn reconcile_plugin_installations(
+        &self,
+        request: Request<crate::protocol::oll::ReconcilePluginInstallationsRequest>,
+    ) -> Result<Response<crate::protocol::oll::ReconcilePluginInstallationsResponse>, Status> {
+        assert_eq!(
+            request
+                .into_inner()
+                .context
+                .unwrap()
+                .trace
+                .unwrap()
+                .correlation_id,
+            "slow-plugin-reconcile-correlation"
+        );
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::ReconcilePluginInstallationsResponse::default(),
+        ))
+    }
+
+    async fn remove_plugin(
+        &self,
+        request: Request<crate::protocol::oll::RemovePluginRequest>,
+    ) -> Result<Response<crate::protocol::oll::RemovePluginResponse>, Status> {
+        assert_eq!(
+            request
+                .into_inner()
+                .context
+                .unwrap()
+                .trace
+                .unwrap()
+                .correlation_id,
+            "slow-plugin-remove-correlation"
+        );
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::RemovePluginResponse::default(),
+        ))
+    }
+
+    async fn list_plugins(
+        &self,
+        request: Request<crate::protocol::oll::ListPluginsRequest>,
+    ) -> Result<Response<crate::protocol::oll::ListPluginsResponse>, Status> {
+        assert_eq!(
+            request
+                .into_inner()
+                .context
+                .unwrap()
+                .trace
+                .unwrap()
+                .correlation_id,
+            "slow-plugin-list-correlation"
+        );
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::ListPluginsResponse::default(),
+        ))
+    }
+
+    async fn get_plugin(
+        &self,
+        _request: Request<crate::protocol::oll::GetPluginRequest>,
+    ) -> Result<Response<crate::protocol::oll::GetPluginResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::GetPluginResponse::default(),
+        ))
+    }
+
+    async fn list_plugin_releases(
+        &self,
+        request: Request<crate::protocol::oll::ListPluginReleasesRequest>,
+    ) -> Result<Response<crate::protocol::oll::ListPluginReleasesResponse>, Status> {
+        assert_eq!(
+            request
+                .into_inner()
+                .context
+                .unwrap()
+                .trace
+                .unwrap()
+                .correlation_id,
+            "slow-plugin-releases-correlation"
+        );
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::ListPluginReleasesResponse::default(),
+        ))
+    }
+
+    async fn set_plugin_desired_state(
+        &self,
+        _request: Request<crate::protocol::oll::SetPluginDesiredStateRequest>,
+    ) -> Result<Response<crate::protocol::oll::SetPluginDesiredStateResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::SetPluginDesiredStateResponse::default(),
+        ))
+    }
+
+    async fn restart_plugin(
+        &self,
+        _request: Request<crate::protocol::oll::RestartPluginRequest>,
+    ) -> Result<Response<crate::protocol::oll::RestartPluginResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::RestartPluginResponse::default(),
+        ))
+    }
+
+    async fn start_plugin_job(
+        &self,
+        request: Request<crate::protocol::oll::StartPluginJobRequest>,
+    ) -> Result<Response<crate::protocol::oll::StartPluginJobResponse>, Status> {
+        assert_eq!(
+            request
+                .into_inner()
+                .context
+                .unwrap()
+                .trace
+                .unwrap()
+                .correlation_id,
+            "slow-plugin-job-start-correlation"
+        );
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::StartPluginJobResponse::default(),
+        ))
+    }
+
+    async fn list_plugin_jobs(
+        &self,
+        _request: Request<crate::protocol::oll::ListPluginJobsRequest>,
+    ) -> Result<Response<crate::protocol::oll::ListPluginJobsResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::ListPluginJobsResponse::default(),
+        ))
+    }
+
+    async fn get_plugin_job(
+        &self,
+        _request: Request<crate::protocol::oll::GetPluginJobRequest>,
+    ) -> Result<Response<crate::protocol::oll::GetPluginJobResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::GetPluginJobResponse::default(),
+        ))
+    }
+
+    async fn stop_plugin_job(
+        &self,
+        _request: Request<crate::protocol::oll::StopPluginJobRequest>,
+    ) -> Result<Response<crate::protocol::oll::StopPluginJobResponse>, Status> {
+        tokio::time::sleep(Duration::from_secs(11)).await;
+        Ok(Response::new(
+            crate::protocol::oll::StopPluginJobResponse::default(),
+        ))
+    }
 }
 
 #[tokio::test(start_paused = true)]
@@ -138,6 +299,86 @@ async fn short_admin_calls_have_deadlines_but_snapshot_calls_do_not() {
         .await
         .unwrap();
 
+    let error = list_plugins(
+        &socket,
+        crate::protocol::oll::ListPluginsRequest::default(),
+        "slow-plugin-list-correlation".to_owned(),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, NodeError::Unavailable(_)), "{error:?}");
+
+    macro_rules! assert_short_plugin_deadline {
+        ($call:expr) => {{
+            let error = $call.await.unwrap_err();
+            assert!(matches!(error, NodeError::Unavailable(_)), "{error:?}");
+        }};
+    }
+    assert_short_plugin_deadline!(get_plugin(
+        &socket,
+        crate::protocol::oll::GetPluginRequest::default(),
+        "slow-plugin-get-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(set_plugin_desired_state(
+        &socket,
+        crate::protocol::oll::SetPluginDesiredStateRequest::default(),
+        "slow-plugin-state-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(restart_plugin(
+        &socket,
+        crate::protocol::oll::RestartPluginRequest::default(),
+        "slow-plugin-restart-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(start_plugin_job(
+        &socket,
+        crate::protocol::oll::StartPluginJobRequest::default(),
+        "slow-plugin-job-start-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(list_plugin_jobs(
+        &socket,
+        crate::protocol::oll::ListPluginJobsRequest::default(),
+        "slow-plugin-job-list-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(get_plugin_job(
+        &socket,
+        crate::protocol::oll::GetPluginJobRequest::default(),
+        "slow-plugin-job-get-correlation".to_owned(),
+    ));
+    assert_short_plugin_deadline!(stop_plugin_job(
+        &socket,
+        crate::protocol::oll::StopPluginJobRequest::default(),
+        "slow-plugin-job-stop-correlation".to_owned(),
+    ));
+
+    reconcile_plugin_installations(
+        &socket,
+        crate::protocol::oll::ReconcilePluginInstallationsRequest {
+            context: None,
+            operation: Some(
+                crate::protocol::oll::reconcile_plugin_installations_request::Operation::InstallDeclared(
+                    crate::protocol::oll::InstallDeclaredPlugins {},
+                ),
+            ),
+        },
+        "slow-plugin-reconcile-correlation".to_owned(),
+    )
+    .await
+    .unwrap();
+    remove_plugin(
+        &socket,
+        crate::protocol::oll::RemovePluginRequest::default(),
+        "slow-plugin-remove-correlation".to_owned(),
+    )
+    .await
+    .unwrap();
+    list_plugin_releases(
+        &socket,
+        crate::protocol::oll::ListPluginReleasesRequest::default(),
+        "slow-plugin-releases-correlation".to_owned(),
+    )
+    .await
+    .unwrap();
+
     task.abort();
     let _ = task.await;
 }
@@ -157,12 +398,26 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
             path: directory.path().join("replica.sqlite3"),
         },
         log_dir: directory.path().join("log"),
+        artifact_download_dir: directory.path().join("downloads/oll"),
         listen: None,
         connect: vec!["oll://127.0.0.1:9".parse().unwrap()],
         network_key: Some(crate::configuration::NetworkKey::new_for_test(
             b"test-network-key-with-thirty-two-bytes".to_vec(),
         )),
     };
+    std::fs::write(
+        directory.path().join("config.lua"),
+        format!(
+            "return {{\n  format_version = 1,\n  node = {{\n    replica_root = {:?},\n    replica_store = {{ driver = \"sqlite\", path = {:?} }},\n    log_dir = {:?},\n    artifact_download_dir = {:?},\n    listen = nil,\n    connect = {{}},\n  }},\n}}\n",
+            config.replica_root.to_str().unwrap(),
+            directory.path().join("replica.sqlite3").to_str().unwrap(),
+            config.log_dir.to_str().unwrap(),
+            config.artifact_download_dir.to_str().unwrap(),
+        ),
+    )
+    .unwrap();
+    std::fs::write(directory.path().join("plugins.lua"), "return {}\n").unwrap();
+    let (config_runtime, _) = ConfigRuntime::load(directory.path()).unwrap();
     std::fs::create_dir(&config.replica_root).unwrap();
     let document_path = config.replica_root.join("admin.md");
     std::fs::write(&document_path, "admin protocol").unwrap();
@@ -183,6 +438,20 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
     )
     .await
     .unwrap();
+    let parent_liveness = Arc::new(crate::node::liveness::ParentLivenessPipe::create().unwrap());
+    let plugins = PluginRuntime::start(
+        directory.path().to_owned(),
+        directory.path().join("plugin-data"),
+        config.artifact_download_dir.clone(),
+        config_runtime,
+        Arc::clone(&replica),
+        Arc::clone(&identities),
+        Arc::clone(&logger),
+        Arc::clone(&parent_liveness),
+        "admin-plugin-test-startup",
+    )
+    .await
+    .unwrap();
     let socket = directory.path().join("admin.sock");
     let listener = match UnixListener::bind(&socket) {
         Ok(listener) => listener,
@@ -196,6 +465,7 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         Arc::clone(&logger),
         Arc::clone(&replica),
         Arc::clone(&sync),
+        Arc::clone(&plugins),
         shutdown,
     ));
     state.mark_running();
@@ -230,6 +500,31 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         ProtoReplicaState::InitializedPopulated as i32
     );
     assert!(status.replica_id.is_some());
+
+    let plugin_list = list_plugins(
+        &socket,
+        crate::protocol::oll::ListPluginsRequest::default(),
+        "plugin-list-correlation".to_owned(),
+    )
+    .await
+    .unwrap();
+    assert!(plugin_list.plugins.is_empty());
+
+    let empty_reconcile = reconcile_plugin_installations(
+        &socket,
+        crate::protocol::oll::ReconcilePluginInstallationsRequest {
+            context: None,
+            operation: Some(
+                crate::protocol::oll::reconcile_plugin_installations_request::Operation::ExactReconciliation(
+                    crate::protocol::oll::ExactPluginReconciliation {},
+                ),
+            ),
+        },
+        "empty-plugin-reconcile-correlation".to_owned(),
+    )
+    .await
+    .unwrap();
+    assert!(empty_reconcile.results.is_empty());
 
     let inspection =
         inspect_replica_document(&socket, &document_path, "inspect-correlation".to_owned())
@@ -285,6 +580,14 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         .lines()
         .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
         .collect::<Vec<_>>();
+    assert!(events.iter().any(|record| {
+        record["event"] == "plugin_package_operation_completed"
+            && record["correlation_id"] == "empty-plugin-reconcile-correlation"
+            && record["operation"] == "reconcile_exact"
+            && record["outcome"] == "succeeded"
+            && record["result_count"] == 0
+            && record["failed_count"] == 0
+    }));
     for (method, event, correlation_id) in [
         (
             "ExportReplica",
@@ -329,6 +632,15 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
 
     let mut client = connect(&socket).await.unwrap();
     let error = client
+        .start_plugin_job(crate::protocol::oll::StartPluginJobRequest {
+            context: Some(call_context("invalid-plugin-job-correlation".to_owned())),
+            ..Default::default()
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.code(), tonic::Code::InvalidArgument);
+
+    let error = client
         .inspect_replica_document(InspectReplicaDocumentRequest {
             context: Some(call_context("invalid-path-correlation".to_owned())),
             document_path: Some(NativePath {
@@ -367,6 +679,10 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         .await
         .unwrap()
         .unwrap()
+        .unwrap();
+    plugins
+        .shutdown(Instant::now() + Duration::from_secs(1), "test-shutdown")
+        .await
         .unwrap();
     sync.shutdown(Instant::now() + Duration::from_secs(1))
         .await

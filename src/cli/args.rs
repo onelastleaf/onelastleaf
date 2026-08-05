@@ -192,13 +192,9 @@ fn parse_listen_address(value: &str) -> Result<SocketAddr, String> {
 }
 
 #[derive(Debug, Args)]
-#[command(args_conflicts_with_subcommands = true)]
 pub struct PluginArgs {
-    /// View all plugin logs, or only one plugin when an ID is supplied.
-    #[arg(long, value_name = "PLUGIN_ID", num_args = 0..=1)]
-    pub log: Option<Option<String>>,
     #[command(subcommand)]
-    pub command: Option<PluginCommand>,
+    pub command: PluginCommand,
 }
 
 #[derive(Debug, Subcommand)]
@@ -214,34 +210,99 @@ pub enum PluginCommand {
         /// Checkout the head of this branch.
         #[arg(long, conflicts_with = "rev", requires = "repository")]
         branch: Option<String>,
-        /// Download the artifact declared by oll.json instead of building.
-        #[arg(long, conflicts_with = "source", requires = "repository")]
-        release: bool,
+        /// Install this exact opaque release ID from oll-release.json.
+        #[arg(
+            long,
+            value_name = "RELEASE_ID",
+            conflicts_with = "source",
+            requires = "repository"
+        )]
+        release: Option<String>,
         /// Build from source. This is the default installation mode.
         #[arg(long, conflicts_with = "release", requires = "repository")]
         source: bool,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Make installed plugins exactly match plugins.lua.
+    Reconcile {
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
     },
     /// Validate the data-only plugins.lua configuration.
     Validate,
     /// List installed plugins.
-    List,
+    List {
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one plugin's metadata and state.
-    Info { plugin_id: String },
+    Info {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+    /// List publisher-defined opaque release IDs.
+    Releases {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Start a plugin process.
-    Start { plugin_id: String },
+    Start {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+    },
     /// Gracefully stop a plugin process.
-    Stop { plugin_id: String },
+    Stop {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+    },
     /// Gracefully stop and start a plugin process.
-    Restart { plugin_id: String },
+    Restart {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+    },
     /// Update an installed plugin.
-    Update { plugin_id: String },
+    Update {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Remove an installed plugin.
-    Remove { plugin_id: String },
+    Remove {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+    /// View all plugin logs, or only one plugin when a selector is supplied.
+    Log {
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: Option<String>,
+    },
     /// Invoke a plugin action and return a job ID.
     #[command(trailing_var_arg = true)]
     Call {
+        /// Idempotency key. Omit it to generate one locally.
+        #[arg(long, value_name = "OPERATION_ID")]
+        operation_id: Option<String>,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
         /// Plugin to invoke.
-        plugin_id: String,
+        #[arg(value_name = "PLUGIN_ID_OR_NAME")]
+        selector: String,
         /// Plugin-defined action name.
         action: String,
         /// Shell-style UTF-8 arguments forwarded in order to the plugin action.
@@ -259,9 +320,25 @@ pub struct JobArgs {
 #[derive(Debug, Subcommand)]
 pub enum JobCommand {
     /// List plugin jobs.
-    List,
+    List {
+        /// Maximum newest-first rows to return.
+        #[arg(
+            long,
+            default_value_t = 100,
+            value_parser = clap::value_parser!(u16).range(1..=1000)
+        )]
+        limit: u16,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
     /// Show one plugin job.
-    Info { job_id: String },
-    /// Gracefully stop the plugin process that owns a job.
+    Info {
+        job_id: String,
+        /// Emit one stable machine-readable JSON document.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Cancel one job without stopping its plugin process.
     Stop { job_id: String },
 }

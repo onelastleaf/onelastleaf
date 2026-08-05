@@ -47,6 +47,7 @@ impl TestDeployment {
                         path = "store/replica.sqlite3",
                     },
                     log_dir = "log",
+                    artifact_download_dir = "artifacts",
                     listen = nil,
                     connect = {},
                 },
@@ -219,7 +220,7 @@ fn clap_errors_use_exit_code_two() {
 }
 
 #[test]
-fn unavailable_commands_fail_without_side_effects() {
+fn local_plugin_validation_fails_without_side_effects() {
     let nonce = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap()
@@ -234,12 +235,12 @@ fn unavailable_commands_fail_without_side_effects() {
         .output()
         .unwrap();
 
-    assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
     assert!(!temporary.exists());
     assert!(
         String::from_utf8(output.stderr)
             .unwrap()
-            .contains("command is not implemented")
+            .contains("plugin package configuration is invalid")
     );
 }
 
@@ -472,18 +473,32 @@ fn log_intents_use_platform_or_explicit_log_directory_without_other_configuratio
     assert!(configured.status.success());
     assert_eq!(configured.stdout, b"explicit sync log\n");
 
-    for arguments in [vec!["plugin", "--log"], vec!["plugin", "--log", "__all__"]] {
-        let output = oll()
-            .env_remove("HOME")
-            .env_remove("XDG_STATE_HOME")
-            .env_remove("OLL_CONFIG")
-            .env_remove("OLL_REPLICA")
-            .env("OLL_LOG_DIR", &explicit_log)
-            .args(&arguments)
-            .output()
-            .unwrap();
-        assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
-    }
+    let missing_plugin_log = oll()
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("OLL_CONFIG")
+        .env_remove("OLL_REPLICA")
+        .env("OLL_LOG_DIR", &explicit_log)
+        .args(["plugin", "log"])
+        .output()
+        .unwrap();
+    assert_eq!(missing_plugin_log.status.code(), Some(1));
+
+    let invalid_plugin_selector = oll()
+        .env_remove("HOME")
+        .env_remove("XDG_STATE_HOME")
+        .env_remove("OLL_CONFIG")
+        .env_remove("OLL_REPLICA")
+        .env("OLL_LOG_DIR", &explicit_log)
+        .args(["plugin", "log", "__all__"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid_plugin_selector.status.code(), Some(1));
+    assert!(
+        String::from_utf8(invalid_plugin_selector.stderr)
+            .unwrap()
+            .contains("invalid plugin selector")
+    );
 }
 
 #[test]
@@ -561,6 +576,7 @@ fn plugin_call_help_and_argv_use_action_language() {
 
 #[test]
 fn plugin_install_help_and_validation_expose_file_driven_workflow() {
+    let deployment = TestDeployment::empty();
     let install_help = oll()
         .args(["plugin", "install", "--help"])
         .output()
@@ -578,22 +594,30 @@ fn plugin_install_help_and_validation_expose_file_driven_workflow() {
 
     for arguments in [
         vec!["plugin", "install"],
-        vec!["plugin", "validate"],
         vec![
             "plugin",
             "install",
             "git@github.com:example/plugin.git",
             "--release",
+            "v0.3.1",
             "--branch",
             "release/v0.3.1",
         ],
     ] {
         let output = oll()
             .env_remove("HOME")
-            .env("OLL_CONFIG", "/tmp/oll-config")
+            .env("OLL_CONFIG", deployment.config())
             .args(&arguments)
             .output()
             .unwrap();
         assert_eq!(output.status.code(), Some(EXIT_UNAVAILABLE));
     }
+
+    let validate = oll()
+        .env_remove("HOME")
+        .env("OLL_CONFIG", deployment.config())
+        .args(["plugin", "validate"])
+        .output()
+        .unwrap();
+    assert_eq!(validate.status.code(), Some(EXIT_CONFIG));
 }

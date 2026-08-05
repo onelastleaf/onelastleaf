@@ -6,8 +6,8 @@ import "google/protobuf/duration.proto";
 import "google/protobuf/struct.proto";
 import "google/protobuf/timestamp.proto";
 
-// A closure is never serialized. This is a session-scoped remote method
-// handle owned by oll's embedded configuration runtime.
+// A closure is never serialized. This is a session-scoped host-owned handle
+// into oll's embedded configuration runtime; Lua does not call the plugin.
 message ConfigFunctionRef {
   string session_id = 1;
   string function_id = 2;
@@ -20,7 +20,11 @@ message ConfigMap { map<string, ConfigValue> entries = 1; }
 // The structured value format crossing the configuration boundary and used by
 // Lua, structured results, and log fields. Generic plugin actions use
 // shell-style string argv instead. Lua adapters must reject cyclic tables and
-// values that cannot be represented here.
+// values that cannot be represented here. A root value has depth zero and the
+// deepest accepted value has depth 33. Numbers must be finite; Timestamp and
+// Duration values must be inside their protobuf domains. Function handles are
+// accepted only by configuration-function calls for the exact active session
+// and an existing registry entry; durable values and log fields reject them.
 message ConfigValue {
   oneof kind {
     google.protobuf.NullValue null_value = 1;

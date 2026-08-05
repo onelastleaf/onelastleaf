@@ -1,5 +1,6 @@
 use std::fs;
 
+use sha2::{Digest, Sha256};
 use tempfile::TempDir;
 use url::Url;
 use uuid::Uuid;
@@ -7,6 +8,10 @@ use uuid::Uuid;
 use super::{IdentityTransitionKind, ReplicaStore, RetainedCommit};
 use crate::{
     configuration::ReplicaStoreConfig,
+    plugin::{
+        DesiredPluginState, InstallMode, PackagePublishIntent, PluginId, PluginSelector,
+        PluginStore,
+    },
     replica::{
         identity,
         model::{initialize_from_disk, scan_working_tree},
@@ -51,6 +56,42 @@ async fn postgres_implements_the_logical_store_contract_when_configured() {
         let store = ReplicaStore::open(&config)
             .await
             .map_err(|error| error.to_string())?;
+        let plugin_store = PluginStore::initialize(store.pool.clone())
+            .await
+            .map_err(|error| error.to_string())?;
+        let plugin_id: PluginId = "oll.postgres-isolation".parse().unwrap();
+        let plugin_generation = Uuid::new_v4();
+        let declaration = b"postgres plugin isolation declaration".to_vec();
+        let package = PackagePublishIntent {
+            plugin_id: plugin_id.clone(),
+            plugin_name: "postgres-isolation".parse().unwrap(),
+            operation_id: "postgres-plugin-isolation-install".to_owned(),
+            expected_current_generation: None,
+            candidate_generation: plugin_generation,
+            normalized_declaration: declaration.clone(),
+            declaration_sha256: Sha256::digest(&declaration).into(),
+            effective_manifest: b"postgres-plugin-state-must-remain-local".to_vec(),
+            selected_commit: Some("0123456789abcdef".to_owned()),
+            install_mode: InstallMode::Source,
+            release_id: None,
+            correlation_id: "postgres-plugin-isolation-correlation".to_owned(),
+        };
+        plugin_store
+            .prepare_package_publish(&package)
+            .await
+            .map_err(|error| error.to_string())?;
+        plugin_store
+            .finalize_package_publish(&plugin_id, plugin_generation)
+            .await
+            .map_err(|error| error.to_string())?;
+        plugin_store
+            .set_desired_state(&plugin_id, DesiredPluginState::Running)
+            .await
+            .map_err(|error| error.to_string())?;
+        let expected_plugin = plugin_store
+            .request_restart(&plugin_id)
+            .await
+            .map_err(|error| error.to_string())?;
         store
             .build_inactive_generation(
                 &change.replica,
@@ -80,6 +121,14 @@ async fn postgres_implements_the_logical_store_contract_when_configured() {
             || loaded.entries.len() != change.replica.entries.len()
         {
             return Err("PostgreSQL logical round trip changed replica state".to_owned());
+        }
+        if plugin_store
+            .get_plugin(&PluginSelector::Id(plugin_id.clone()))
+            .await
+            .map_err(|error| error.to_string())?
+            != expected_plugin
+        {
+            return Err("PostgreSQL initial activation changed plugin state".to_owned());
         }
 
         let document_id = *loaded
@@ -207,6 +256,41 @@ async fn postgres_implements_the_logical_store_contract_when_configured() {
             .is_empty()
         {
             return Err("PostgreSQL projection paths did not clear".to_owned());
+        }
+        if plugin_store
+            .get_plugin(&PluginSelector::Id(plugin_id.clone()))
+            .await
+            .map_err(|error| error.to_string())?
+            != expected_plugin
+        {
+            return Err("PostgreSQL snapshot replacement changed plugin state".to_owned());
+        }
+
+        let expected_state_token = store
+            .active_state_token(candidate.generation_id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut sync_candidate = candidate.clone();
+        sync_candidate.generation_id = Uuid::new_v4();
+        store
+            .build_sync_generation(candidate.generation_id, &sync_candidate, &[], &[])
+            .await
+            .map_err(|error| error.to_string())?;
+        store
+            .activate_sync_generation(
+                candidate.generation_id,
+                expected_state_token,
+                &sync_candidate,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        if plugin_store
+            .get_plugin(&PluginSelector::Id(plugin_id))
+            .await
+            .map_err(|error| error.to_string())?
+            != expected_plugin
+        {
+            return Err("PostgreSQL sync activation changed plugin state".to_owned());
         }
         drop(store);
         Ok::<(), String>(())

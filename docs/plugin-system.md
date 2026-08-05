@@ -78,6 +78,12 @@ job timeout leave it unchanged. A desired-running plugin that exits unexpectedly
 restarts with bounded backoff; a desired-stopped plugin remains exited. Clean
 daemon shutdown stops children without changing desired state.
 
+`last_lifecycle_failure` remains visible while a replacement instance is
+starting; beginning a retry is not evidence that the failure was repaired. It
+is cleared only when that same active replacement instance completes its
+handshake and becomes ready. A stale ready notice from an earlier instance can
+neither clear the failure nor change the observed state.
+
 The controller owns the direct child handle and waits asynchronously for its
 exit. It must not poll the process table. The configured runtime command remains
 the foreground leader of its own Unix process group and must not daemonize,
@@ -126,7 +132,7 @@ The application handshake is:
    PluginName, session/instance IDs, exact schema fingerprint, depth limits, and
    artifact chunk limit;
 2. the plugin validates it and sends `PluginHello` repeating the expected
-   identity and declaring actions and event subscriptions;
+   identity and declaring actions;
 3. both endpoints send `SessionReady`;
 4. jobs and host calls are legal only after both ready messages were observed.
 
@@ -135,10 +141,28 @@ handshake mismatch, startup deadline expiry, unexpected stream closure, or a
 missed heartbeat changes the instance to failed and begins process teardown.
 The supervisor then reconciles against unchanged desired state.
 
+The instance-owned listener accepts exactly the expected process instance. Once
+that instance's session ends, its session ID and instance ID are stale: later
+envelopes, job updates, cancellation acknowledgements, or artifact messages
+from it are rejected and cannot attach to a replacement instance. Rejecting
+stale output closes or fails only the stale session or work item and must not
+wait on, or block admission and shutdown of, the current instance.
+
 All calls share the one bidirectional stream. `PluginEnvelope.message_id` is
-nonzero and unique per sender within the session; a direct response sets
-`reply_to`. The stream reader keeps dispatching while requests are pending so a
-plugin -> host -> Lua -> plugin call cannot deadlock the reader.
+nonzero and strictly increasing per sender within the session. Gaps are allowed
+and the first value need not be `1`; a receiver needs only the last accepted ID
+to reject a duplicate or older envelope in O(1) state. A direct response sets
+`reply_to`. The stream reader keeps dispatching while requests are pending.
+Configuration calls are ordinary plugin-originated host requests: oll resolves
+or executes the requested value in its Lua owner and sends one host response.
+Lua does not originate a `PluginEnvelope` or make an outward RPC to the plugin.
+
+The encoded protobuf message for one `PluginEnvelope` is limited to 64 MiB in
+both directions before application dispatch. This transport bound applies to
+ordinary host-call requests and responses as well as plugin messages; it is not
+waived by the trusted-plugin model. Artifact bytes remain subject to their
+smaller advertised chunk limit and must not be placed in one oversized
+envelope.
 
 After readiness oll may send a `Heartbeat`. The plugin replies with the same
 nonce and sets `reply_to`. Heartbeat detects a live but protocol-unresponsive
@@ -146,8 +170,8 @@ process; normal exit is detected from the owned child handle.
 
 Every envelope carries correlation, parent-call, call-depth, causal-depth, task,
 and task-group context. Initial maximum call and causal depths are 10. Messages
-over a limit are rejected before execution, and known event cycles may be
-rejected earlier. There is no scheduler in the first implementation.
+over a limit are rejected before execution. There is no scheduler in the first
+implementation.
 
 ## Process shutdown
 
@@ -229,10 +253,11 @@ registry entries when it ends. A new evaluation may create new function IDs;
 existing session handles continue to identify their original closures.
 
 Adapters reject cyclic tables, unsupported userdata, threads, and values outside
-`ConfigValue`. Synchronous same-thread Lua reentry requires that no Rust mutable
-borrow, Lua stack reference, or assumed host state survive an outward plugin
-call; after nested execution returns, relevant host state is read and validated
-again.
+`ConfigValue`. For `InvokeConfigFunction`, oll resolves the exact active
+`session_id + function_id`, converts the arguments, executes that host-owned
+closure, converts its return values, and completes the original host response.
+The closure has no implicit client for calling back into the plugin, so this
+path contains no synchronous Lua-to-plugin reentry.
 
 ## Artifacts and logs
 
@@ -260,6 +285,7 @@ operation it cannot understand or reverse.
 ## Deferred work
 
 The first plugin stage does not implement a scheduler, scheduled callbacks,
-fairness, quotas, a remote plugin-call transport, or an independent file-upload
-protocol. These are deferred capabilities, not unsupported variants hidden in
-the initial protobuf contract.
+document/catalog event subscriptions, event-triggered jobs, fairness, quotas, a
+remote plugin-call transport, or an independent file-upload protocol. These are
+deferred capabilities, not unsupported variants or placeholders hidden in the
+initial protobuf contract.

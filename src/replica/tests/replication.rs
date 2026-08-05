@@ -1,6 +1,134 @@
 use super::*;
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sync_and_bootstrap_generation_changes_preserve_deployment_local_plugin_state() {
+    let source = Deployment::new();
+    fs::write(source.native("/source.md"), "replica-only sync data").unwrap();
+    let source_runtime = source.start().await;
+    let source_plugin =
+        seed_plugin_isolation_state(&source_runtime, source._directory.path(), "sync-source").await;
+
+    let inventory = source_runtime.capture_replica_inventory().await.unwrap();
+    let retained_documents = source_runtime
+        .state
+        .read()
+        .await
+        .as_ref()
+        .unwrap()
+        .documents
+        .len();
+    assert_eq!(inventory.objects.len(), retained_documents + 1);
+    assert!(inventory.blobs.is_empty());
+    assert_eq!(
+        inventory
+            .objects
+            .iter()
+            .filter(|summary| summary.object == super::super::ReplicaObject::Catalog)
+            .count(),
+        1
+    );
+
+    let bootstrap = source_runtime.capture_bootstrap_source().await.unwrap();
+    assert_eq!(bootstrap.inventory.objects, inventory.objects);
+    assert_eq!(bootstrap.inventory.blobs, inventory.blobs);
+    assert!(bootstrap.objects.values().all(|object| {
+        !object
+            .payload
+            .windows(source_plugin.sentinel.len())
+            .any(|window| window == source_plugin.sentinel)
+    }));
+
+    let catalog = source_runtime
+        .export_replica_updates(
+            super::super::ReplicaObject::Catalog,
+            &loro::VersionVector::default(),
+        )
+        .await
+        .unwrap();
+    let mut object_updates = std::collections::BTreeMap::new();
+    object_updates.insert(super::super::ReplicaObject::Catalog, catalog.payload);
+    assert!(matches!(
+        source_runtime
+            .commit_replication_candidate(
+                ReplicationCandidate {
+                    base_generation_id: inventory.generation_id,
+                    base_state_token: inventory.state_token,
+                    object_updates,
+                    blobs: Default::default(),
+                },
+                "plugin-isolation-normal-sync",
+            )
+            .await
+            .unwrap(),
+        ReplicationCommit::Committed { .. }
+    ));
+    assert_ne!(
+        source_runtime
+            .state
+            .read()
+            .await
+            .as_ref()
+            .unwrap()
+            .generation_id,
+        inventory.generation_id
+    );
+    assert_plugin_isolation_state(&source_runtime, &source_plugin).await;
+
+    let target = Deployment::new();
+    let target_runtime = target.start().await;
+    assert_eq!(target_runtime.status().await, ReplicaStatus::Uninitialized);
+    let target_plugin =
+        seed_plugin_isolation_state(&target_runtime, target._directory.path(), "sync-target").await;
+    let claim = BootstrapClaim {
+        claim_id: Uuid::new_v4(),
+        source_node_id: source.identity.node_id(),
+        correlation_id: "plugin-isolation-bootstrap".to_owned(),
+    };
+    assert!(
+        target_runtime
+            .acquire_bootstrap_claim(&claim)
+            .await
+            .unwrap()
+    );
+    let guard = target_runtime.identities.commit_guard_owned().await;
+    let commit = target_runtime
+        .commit_bootstrap_candidate(
+            BootstrapCandidate {
+                claim_id: claim.claim_id,
+                replica_id: bootstrap.inventory.replica_id,
+                object_updates: bootstrap
+                    .objects
+                    .into_iter()
+                    .map(|(object, exported)| (object, exported.payload))
+                    .collect(),
+                blobs: Default::default(),
+            },
+            &guard,
+            target.identity.node_id(),
+            &claim.correlation_id,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(commit, ReplicationCommit::Committed { .. }));
+    target_runtime
+        .release_bootstrap_claim(claim.claim_id)
+        .await
+        .unwrap();
+    drop(guard);
+    assert_plugin_isolation_state(&target_runtime, &target_plugin).await;
+    let target_inventory = target_runtime.capture_replica_inventory().await.unwrap();
+    assert_eq!(target_inventory.replica_id, bootstrap.inventory.replica_id);
+    assert_eq!(target_inventory.objects.len(), retained_documents + 1);
+
+    shutdown_runtime(&target_runtime).await;
+    drop(target_runtime);
+    let restarted = target.start().await;
+    assert_plugin_isolation_state(&restarted, &target_plugin).await;
+    shutdown_runtime(&restarted).await;
+    shutdown_runtime(&source_runtime).await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn bootstrap_claim_atomically_imports_remote_state_and_merges_only_local_paths() {
     let source = Deployment::new();
     fs::write(source.native("/remote.md"), "remote only").unwrap();

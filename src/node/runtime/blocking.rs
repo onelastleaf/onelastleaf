@@ -1,6 +1,6 @@
 use std::{future::Future, time::Duration};
 
-use crate::{replica::ReplicaError, sync::SyncError};
+use crate::{plugin::PluginError, replica::ReplicaError, sync::SyncError};
 
 use super::NodeError;
 
@@ -41,5 +41,19 @@ pub(super) fn sync_node_error(error: SyncError) -> NodeError {
         | SyncError::Protocol(message) => NodeError::Operation(message),
         SyncError::Unavailable(message) => NodeError::Unavailable(message),
         SyncError::Store | SyncError::Internal(_) => NodeError::Internal(error.to_string()),
+    }
+}
+
+pub(super) fn plugin_node_error(error: PluginError) -> NodeError {
+    match error {
+        PluginError::InvalidArgument(message)
+        | PluginError::NotFound(message)
+        | PluginError::AlreadyExists(message)
+        | PluginError::Aborted(message)
+        | PluginError::FailedPrecondition(message) => NodeError::Operation(message),
+        PluginError::Io { operation, source } => NodeError::io(operation, source),
+        PluginError::CorruptStore(_) | PluginError::Store(_) => {
+            NodeError::Internal(error.to_string())
+        }
     }
 }

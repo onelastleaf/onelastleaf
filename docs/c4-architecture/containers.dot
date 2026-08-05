@@ -1,6 +1,5 @@
 // C4 container model derived from the production code in src/.
 // One oll executable acts either as a bounded client or as the node daemon.
-// Plugin and job declarations are excluded because no runtime implements them.
 
 digraph C4_Containers {
   graph [
@@ -32,6 +31,13 @@ digraph C4_Containers {
     color="#666666"
   ];
 
+  plugin_process [
+    label="Spawned Plugin Process\n[External Container: arbitrary language]\nTrusted foreground child; connects to oll and observes stdin EOF",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+
   subgraph cluster_oll_system {
     label="Local onelastleaf (oll) Deployment [Software System]";
     labelloc=t;
@@ -51,7 +57,7 @@ digraph C4_Containers {
     ];
 
     node_daemon [
-      label="oll Node Daemon\n[Container: Rust + Tokio Process]\nOwns lifecycle, hot identities, Admin UDS, exactly one\nreplica runtime, and authenticated peer synchronization",
+      label="oll Node Daemon\n[Container: Rust + Tokio Process]\nOwns lifecycle, hot identities, Admin UDS, exactly one replica,\nauthenticated peer sync, and deployment-local plugin runtime",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -59,7 +65,7 @@ digraph C4_Containers {
 
     deployment_state [
       shape=cylinder,
-      label="Deployment State and Key Material\n[Container: File Store]\nconfig.lua/modules, node.json, replica.json,\nrun/node.lock + admin.sock, and an optional referenced key file",
+      label="Deployment Configuration and Identity\n[Container: File Store]\nconfig.lua/modules, plugins.lua, per-PluginId Lua and masks,\nnode.json, replica.json, run/node.lock + admin.sock, optional key file",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -75,7 +81,7 @@ digraph C4_Containers {
 
     replica_store [
       shape=cylinder,
-      label="Replica Store\n[Container: SQL Data Store]\nSQLite or PostgreSQL generations, catalog/document CRDTs,\nblobs, history, identity transitions, and peer bindings",
+      label="Replica and Deployment Store\n[Container: SQLite or PostgreSQL]\nReplica generations/CRDTs/blobs plus deployment-local peer bindings,\nplugin package metadata, desired state, jobs, artifacts, and recovery intents",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -83,7 +89,7 @@ digraph C4_Containers {
 
     log_files [
       shape=cylinder,
-      label="Structured Log Files\n[Container: File Store]\noll.log and sync.log as user-owned JSON Lines",
+      label="Structured Log Files\n[Container: File Store]\noll.log, sync.log, and plugin.log as user-owned JSON Lines",
       fillcolor="#438DD5",
       fontcolor="white",
       color="#2E6295"
@@ -96,15 +102,32 @@ digraph C4_Containers {
       fontcolor="white",
       color="#2E6295"
     ];
+
+    plugin_data [
+      shape=cylinder,
+      label="Plugin Package Data\n[Container: File Store]\nPluginId-keyed candidates, generations, current symlinks,\nand retained per-install build logs",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
+
+    artifact_downloads [
+      shape=cylinder,
+      label="Plugin Artifact Downloads\n[Container: File Store]\nVerified no-replace job outputs published for the user",
+      fillcolor="#438DD5",
+      fontcolor="white",
+      color="#2E6295"
+    ];
   }
 
   user -> bounded_client [label="Invokes bounded commands\n[terminal / stdin / stdout / stderr]"];
   user -> node_daemon [label="May run in foreground\n[oll run]"];
   user -> deployment_state [label="Owns and may edit configuration,\nidentity records, and network-key material"];
   user -> working_tree [dir=both, label="Reads and edits documents\n[filesystem tools]"];
+  user -> artifact_downloads [label="Reads published plugin outputs\n[filesystem tools]"];
 
   bounded_client -> node_daemon [
-    label="Lifecycle, status, logging, replica, sync, and ping calls\n[typed protobuf/gRPC over Unix domain socket]"
+    label="Lifecycle, replica, sync, plugin package/process, and job calls\n[typed protobuf/gRPC over Unix domain socket]"
   ];
   bounded_client -> node_daemon [
     label="Starts the same executable and verifies readiness\n[process spawn + one-use nonce pingback]",
@@ -112,10 +135,10 @@ digraph C4_Containers {
   ];
   bounded_client -> deployment_state [
     dir=both,
-    label="Initializes deployment and locates lock/socket\n[filesystem]"
+    label="Initializes deployment, validates plugin declarations/masks,\nand locates lock/socket\n[filesystem]"
   ];
   bounded_client -> working_tree [label="Creates the configured root during init"];
-  bounded_client -> log_files [label="Streams sync.log directly\n[file I/O]"];
+  bounded_client -> log_files [label="Streams sync.log or plugin.log directly\n[file I/O]"];
   bounded_client -> snapshot_archive [
     label="Inspects or verifies without a daemon\n[streaming tar/zstd file I/O]"
   ];
@@ -132,7 +155,7 @@ digraph C4_Containers {
     dir=both,
     label="Loads, commits, activates, and recovers replica state\n[backend-neutral SQL via sqlx]"
   ];
-  node_daemon -> log_files [label="Appends and flushes normalized events\n[JSON Lines]"];
+  node_daemon -> log_files [label="Enqueues normalized events; one writer thread\nbatches writes and deadline-bounded flushes\n[JSON Lines]"];
   node_daemon -> snapshot_archive [
     dir=both,
     label="Exports and imports complete logical checkpoints\n[tar + zstd]"
@@ -140,5 +163,18 @@ digraph C4_Containers {
   node_daemon -> peer_daemon [
     dir=both,
     label="Maintains equal peer sessions; pings, bootstraps, and syncs\n[oll:// TCP + Noise NNpsk0 + prost frames]"
+  ];
+  node_daemon -> plugin_data [
+    dir=both,
+    label="Builds, validates, atomically publishes, and recovers\nPluginId-keyed package generations"
+  ];
+  node_daemon -> artifact_downloads [
+    label="Verifies chunked artifacts and publishes with no-replace semantics"
+  ];
+  node_daemon -> plugin_process [
+    label="Spawns, supervises, and enforces process-group shutdown;\npasses endpoint and stdin liveness pipe"
+  ];
+  plugin_process -> node_daemon [
+    label="Opens PluginRuntime.Connect and multiplexes jobs,\nhost calls, config, logs, and artifacts\n[plaintext HTTP/2 gRPC on private loopback listener]"
   ];
 }

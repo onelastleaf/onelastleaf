@@ -422,8 +422,9 @@ The stable summary shapes are:
 
 Plugin outcomes are `installed`, `updated`, `removed`, `already_satisfied`,
 `confirmation_required`, or `failed`. A diagnostic has stable `code`, `phase`,
-`message`, and nullable `hint` and `build_log_path` fields. Release JSON is
-`{"plugin_id": ..., "releases": [{"release_id": ..., "targets": [...]}]}`.
+`message`, and nullable `plugin_id`, `plugin_name`, `sanitized_remote`, `branch`,
+`revision`, `release_id`, `target`, `hint`, and `build_log_path` fields. Release
+JSON is `{"plugin_id": ..., "releases": [{"release_id": ..., "targets": [...]}]}`.
 `plugin info --json` uses one `plugin` object containing the same summary fields
 plus `declaration`, `effective_manifest`, `package_state`, `restart_state`,
 `process_instance`, and `job_counts` objects. The declaration's remote is
@@ -450,7 +451,10 @@ up to 1000. `job info` is the detailed lookup for one retained JobId.
 
 `job list --json` returns `{"jobs": [...]}`. Every summary has `job_id`,
 `plugin_id`, `plugin_name`, `operation_id`, `action`, `state`, `created_at`, and
-`updated_at`. `job info --json` returns one `job` object and adds the ordered
-arguments, nullable deadline/error, and an `artifacts` array containing each
-artifact ID, filename, media type, byte size, SHA-256, and published path.
-Timestamps are RFC 3339 UTC strings and all fields are present.
+`updated_at`. `job info --json` returns one `job` object containing every
+summary field plus the ordered `arguments`, nullable `deadline`, nullable
+`accepted_at`, nullable `terminal_at`, nullable structured `result`, nullable
+structured `error`, and an `artifacts` array. Each artifact contains its
+artifact ID, filename, media type, byte size, lower-case hexadecimal SHA-256,
+and published path. Timestamps are RFC 3339 UTC strings and all fields are
+present; an unavailable value is JSON `null`, never an omitted field.

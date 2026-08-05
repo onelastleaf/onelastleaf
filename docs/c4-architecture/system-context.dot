@@ -1,6 +1,4 @@
 // C4 system-context model derived from the production code in src/.
-// Plugin and job CLI/protobuf declarations are omitted because the current
-// executable has no production handler or runtime component for them.
 
 digraph C4_System_Context {
   graph [
@@ -38,12 +36,24 @@ digraph C4_System_Context {
     color="#666666"
   ];
 
+  plugin_process [
+    label="Trusted Plugin Process\n[External Software System]\nA locally installed child implemented in any language;\nconnects back to the instance-owned oll gRPC endpoint",
+    fillcolor="#999999",
+    fontcolor="white",
+    color="#666666"
+  ];
+
   deployment_user -> oll [
-    label="Initializes and operates the node;\nreads and edits documents\n[CLI and local filesystem]"
+    label="Initializes and operates the node; reads and edits documents;\ninstalls, controls, and invokes trusted plugins\n[CLI and local filesystem]"
   ];
 
   oll -> peer_oll [
     dir=both,
     label="Authenticates, pings, bootstraps, and exchanges\nfinite CRDT update/blob rounds\n[TCP + Noise NNpsk0 + prost SyncEnvelope]"
+  ];
+
+  oll -> plugin_process [
+    dir=both,
+    label="Installs, spawns, supervises, dispatches jobs, and serves\ndocument/config/artifact calls\n[child process + loopback protobuf/gRPC bidi stream]"
   ];
 }

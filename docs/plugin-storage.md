@@ -118,6 +118,11 @@ causes SQL to be finalized idempotently. A candidate whose declaration or
 expected current generation no longer matches is discarded. No `.lock` file or
 semantic package-version directory is used.
 
+SQL installed rows and durable package/removal intents are the authority for
+package ownership. After intent recovery, startup removes any path-safe
+`PluginId` package root that no remaining SQL row or intent references; an old
+`current` symlink or generation tree alone must never block a clean reinstall.
+
 A failed install/update of an existing ID leaves `current` and the old SQL
 current generation unchanged. Publishing any replacement generation does not
 recycle a running process. `GetPlugin` therefore reports current and running
@@ -145,6 +150,11 @@ a desired-stopped plugin remains exited. Clean daemon shutdown stops children
 without changing desired state. On the next start, the supervisor reconstructs
 observed state and admits desired-running spawns after package-transition and
 job recovery.
+
+The durable `last_lifecycle_failure` is retained through the `starting` state
+of a retry. Only a ready transition for the currently recorded active instance
+clears it. Starting an instance, or receiving a late ready signal from a prior
+instance, is not a successful recovery boundary.
 
 ## Jobs and idempotent admission
 
@@ -229,6 +239,15 @@ contradictory pair fails the artifact and owning job without overwriting a user
 file. The absolute destination recorded in an older intent remains authoritative
 for its recovery even if `artifact_download_dir` changed at this startup.
 
+After the durable intent is committed, a runtime-owned continuation holds and
+reaps the publication task independently of the plugin stream or Admin caller.
+Plugin removal waits for that PluginId's continuations and settles every
+remaining intent before package or job deletion. This wait has no separate
+fixed client deadline; daemon shutdown alone applies the node's absolute
+deadline, aborts and reaps remaining continuation tasks, and leaves their SQL
+intents for startup recovery. Removal finalization rejects any remaining
+artifact intent rather than deleting it with the job.
+
 The first artifact attempts `<artifact_download_dir>/<file_name>`. On collision,
 oll inserts `.artifact-<full-artifact-id>` before the final extension and again
 uses no-replace publication. A collision at that identity-qualified name fails
@@ -260,6 +279,11 @@ cancellation cannot undo a removal whose durable destructive intent has begun.
 If the user deliberately adds a new declaration after the old one was removed,
 the removal does not overwrite that later edit; a future explicit reconcile may
 install it as a new local installation.
+
+During exact reconciliation, successful removal is also the release point for
+the specific declared candidate waiting to inherit that undeclared plugin's
+effective name. This dependency does not serialize unrelated package work, and
+removal failure leaves only the dependent candidate unpublished.
 
 ## Required tests
 

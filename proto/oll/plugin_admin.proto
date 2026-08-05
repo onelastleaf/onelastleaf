@@ -1,0 +1,365 @@
+syntax = "proto3";
+
+package oll.protocol;
+
+import "google/protobuf/timestamp.proto";
+import "oll/admin_common.proto";
+import "oll/common.proto";
+import "oll/config.proto";
+
+// Plugin administration is local to one daemon deployment. Selectors are
+// resolved to an immutable PluginId once at request admission.
+message PluginSelector {
+  oneof selector {
+    PluginId plugin_id = 1;
+    PluginName plugin_name = 2;
+  }
+}
+
+enum PluginPackageMode {
+  PLUGIN_PACKAGE_MODE_UNSPECIFIED = 0;
+  PLUGIN_PACKAGE_MODE_SOURCE = 1;
+  PLUGIN_PACKAGE_MODE_RELEASE = 2;
+}
+
+// An absent selection means the remote's default branch. Branch and revision
+// are mutually exclusive by construction.
+message PluginGitSelection {
+  oneof selection {
+    string branch = 1;
+    string revision = 2;
+  }
+}
+
+message InstallDeclaredPlugins {}
+
+message PluginOverwriteAuthorization {
+  PluginId plugin_id = 1;
+  // Exactly 32 bytes. Presence of this message records affirmative
+  // authorization for the declaration value identified by this digest.
+  bytes expected_declaration_sha256 = 2;
+}
+
+message InstallRemotePlugin {
+  string remote = 1;
+  PluginPackageMode mode = 2;
+  PluginGitSelection selection = 3;
+  // Required only in release mode. Release IDs are opaque and exact.
+  optional string release_id = 4;
+  PluginOverwriteAuthorization overwrite = 5;
+}
+
+message UpdatePluginInstallation { PluginSelector plugin = 1; }
+
+message ExactPluginReconciliation {}
+
+message ReconcilePluginInstallationsRequest {
+  AdminCallContext context = 1;
+
+  oneof operation {
+    InstallDeclaredPlugins install_declared = 2;
+    InstallRemotePlugin install_remote = 3;
+    UpdatePluginInstallation update = 4;
+    ExactPluginReconciliation exact_reconciliation = 5;
+  }
+}
+
+enum PluginInstallationOutcome {
+  PLUGIN_INSTALLATION_OUTCOME_UNSPECIFIED = 0;
+  PLUGIN_INSTALLATION_OUTCOME_INSTALLED = 1;
+  PLUGIN_INSTALLATION_OUTCOME_UPDATED = 2;
+  PLUGIN_INSTALLATION_OUTCOME_REMOVED = 3;
+  PLUGIN_INSTALLATION_OUTCOME_ALREADY_SATISFIED = 4;
+  PLUGIN_INSTALLATION_OUTCOME_CONFIRMATION_REQUIRED = 5;
+  PLUGIN_INSTALLATION_OUTCOME_FAILED = 6;
+}
+
+message PluginDiagnostic {
+  string code = 1;
+  string phase = 2;
+  string message = 3;
+  PluginId plugin_id = 4;
+  PluginName plugin_name = 5;
+  optional string sanitized_remote = 6;
+  optional string branch = 7;
+  optional string revision = 8;
+  optional string release_id = 9;
+  optional string target = 10;
+  optional string hint = 11;
+  // A sanitized UTF-8 display path. It is diagnostic output, not an input path
+  // accepted back by the daemon.
+  optional string build_log_path = 12;
+}
+
+message PluginOverwriteConfirmation {
+  string redacted_change_summary = 1;
+  // Exactly 32 bytes and supplied unchanged in PluginOverwriteAuthorization.
+  bytes current_declaration_sha256 = 2;
+}
+
+message PluginInstallationResult {
+  // Identity can be absent when a remote fails before its manifest is read.
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
+  PluginInstallationOutcome outcome = 3;
+  repeated PluginDiagnostic diagnostics = 4;
+  // Present only for PLUGIN_INSTALLATION_OUTCOME_CONFIRMATION_REQUIRED.
+  PluginOverwriteConfirmation confirmation = 5;
+}
+
+message ReconcilePluginInstallationsResponse {
+  repeated PluginInstallationResult results = 1;
+}
+
+message RemovePluginRequest {
+  AdminCallContext context = 1;
+  PluginSelector plugin = 2;
+}
+
+message RemovePluginResponse {
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
+}
+
+enum PluginDesiredState {
+  PLUGIN_DESIRED_STATE_UNSPECIFIED = 0;
+  PLUGIN_DESIRED_STATE_RUNNING = 1;
+  PLUGIN_DESIRED_STATE_STOPPED = 2;
+}
+
+enum PluginProcessState {
+  PLUGIN_PROCESS_STATE_UNSPECIFIED = 0;
+  PLUGIN_PROCESS_STATE_STARTING = 1;
+  PLUGIN_PROCESS_STATE_READY = 2;
+  PLUGIN_PROCESS_STATE_STOPPING = 3;
+  PLUGIN_PROCESS_STATE_EXITED = 4;
+  PLUGIN_PROCESS_STATE_FAILED = 5;
+}
+
+message PluginSummary {
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
+  PluginDesiredState desired_state = 3;
+  PluginProcessState process_state = 4;
+  optional string current_generation = 5;
+  optional string running_generation = 6;
+  PluginDiagnostic last_error = 7;
+}
+
+message ListPluginsRequest { AdminCallContext context = 1; }
+
+message ListPluginsResponse { repeated PluginSummary plugins = 1; }
+
+message PluginDeclaration {
+  string sanitized_remote = 1;
+  PluginPackageMode mode = 2;
+  PluginGitSelection selection = 3;
+  optional string release_id = 4;
+  // SHA-256 of the normalized declaration used for change detection and CAS.
+  bytes normalized_sha256 = 5;
+}
+
+message PluginDependency {
+  string executable = 1;
+  string hint = 2;
+}
+
+message PluginRecipeStep { repeated string argv = 1; }
+
+message PluginEffectiveManifest {
+  uint32 format_version = 1;
+  PluginId plugin_id = 2;
+  PluginName plugin_name = 3;
+  // Exactly the canonical protocol descriptor SHA-256.
+  bytes protocol_schema_sha256 = 4;
+  repeated PluginDependency source_dependencies = 5;
+  repeated PluginRecipeStep source_steps = 6;
+  repeated string runtime_argv = 7;
+}
+
+enum PluginPackageTransitionState {
+  PLUGIN_PACKAGE_TRANSITION_STATE_UNSPECIFIED = 0;
+  PLUGIN_PACKAGE_TRANSITION_STATE_STABLE = 1;
+  PLUGIN_PACKAGE_TRANSITION_STATE_PUBLISHING = 2;
+  PLUGIN_PACKAGE_TRANSITION_STATE_REMOVING = 3;
+  PLUGIN_PACKAGE_TRANSITION_STATE_RECOVERING = 4;
+  PLUGIN_PACKAGE_TRANSITION_STATE_FAILED = 5;
+}
+
+message PluginPackageState {
+  PluginPackageTransitionState transition_state = 1;
+  optional string selected_git_commit = 2;
+  optional string current_generation = 3;
+  optional string candidate_generation = 4;
+  bool spawn_blocked = 5;
+}
+
+message PluginRestartState {
+  uint64 requested_sequence = 1;
+  uint64 applied_sequence = 2;
+  uint32 consecutive_failures = 3;
+  optional google.protobuf.Timestamp next_attempt_at = 4;
+  PluginDiagnostic last_failure = 5;
+}
+
+message PluginProcessInstance {
+  string plugin_instance_id = 1;
+  string install_generation = 2;
+  PluginProcessState state = 3;
+  uint32 process_id = 4;
+  google.protobuf.Timestamp started_at = 5;
+  google.protobuf.Timestamp ready_at = 6;
+}
+
+message PluginJobCounts {
+  uint64 dispatching = 1;
+  uint64 running = 2;
+  uint64 cancelling = 3;
+  uint64 succeeded = 4;
+  uint64 failed = 5;
+  uint64 cancelled = 6;
+  uint64 timed_out = 7;
+}
+
+message PluginDetails {
+  PluginSummary summary = 1;
+  PluginDeclaration declaration = 2;
+  PluginEffectiveManifest effective_manifest = 3;
+  PluginPackageState package_state = 4;
+  PluginRestartState restart_state = 5;
+  PluginProcessInstance process_instance = 6;
+  PluginJobCounts job_counts = 7;
+}
+
+message GetPluginRequest {
+  AdminCallContext context = 1;
+  PluginSelector plugin = 2;
+}
+
+message GetPluginResponse { PluginDetails plugin = 1; }
+
+message ListPluginReleasesRequest {
+  AdminCallContext context = 1;
+  PluginSelector plugin = 2;
+}
+
+message PluginRelease {
+  string release_id = 1;
+  repeated string targets = 2;
+}
+
+message ListPluginReleasesResponse {
+  PluginId plugin_id = 1;
+  repeated PluginRelease releases = 2;
+}
+
+message SetPluginDesiredStateRequest {
+  AdminCallContext context = 1;
+  PluginSelector plugin = 2;
+  PluginDesiredState desired_state = 3;
+}
+
+message SetPluginDesiredStateResponse {
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
+  PluginDesiredState desired_state = 3;
+}
+
+message RestartPluginRequest {
+  AdminCallContext context = 1;
+  PluginSelector plugin = 2;
+}
+
+message RestartPluginResponse {
+  PluginId plugin_id = 1;
+  PluginName plugin_name = 2;
+  PluginDesiredState desired_state = 3;
+  uint64 restart_sequence = 4;
+}
+
+// Admin job states include host admission and cancellation states that are not
+// plugin-emitted JobUpdate states.
+enum PluginAdminJobState {
+  PLUGIN_ADMIN_JOB_STATE_UNSPECIFIED = 0;
+  PLUGIN_ADMIN_JOB_STATE_DISPATCHING = 1;
+  PLUGIN_ADMIN_JOB_STATE_RUNNING = 2;
+  PLUGIN_ADMIN_JOB_STATE_CANCELLING = 3;
+  PLUGIN_ADMIN_JOB_STATE_SUCCEEDED = 4;
+  PLUGIN_ADMIN_JOB_STATE_FAILED = 5;
+  PLUGIN_ADMIN_JOB_STATE_CANCELLED = 6;
+  PLUGIN_ADMIN_JOB_STATE_TIMED_OUT = 7;
+}
+
+message PluginJobSummary {
+  PluginJobId job_id = 1;
+  PluginId plugin_id = 2;
+  PluginName plugin_name = 3;
+  string operation_id = 4;
+  string action = 5;
+  PluginAdminJobState state = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+message StartPluginJobRequest {
+  AdminCallContext context = 1;
+  string operation_id = 2;
+  PluginSelector plugin = 3;
+  string action = 4;
+  repeated string arguments = 5;
+  // Absence means the stable default_24_hours admission marker.
+  optional google.protobuf.Timestamp deadline = 6;
+}
+
+message StartPluginJobResponse {
+  PluginJobId job_id = 1;
+  PluginAdminJobState state = 2;
+}
+
+message ListPluginJobsRequest {
+  AdminCallContext context = 1;
+  // Must be in 1..=1000. The CLI supplies 100 when omitted.
+  uint32 limit = 2;
+}
+
+message ListPluginJobsResponse { repeated PluginJobSummary jobs = 1; }
+
+message GetPluginJobRequest {
+  AdminCallContext context = 1;
+  PluginJobId job_id = 2;
+}
+
+message StoredPluginArtifact {
+  PluginArtifactId artifact_id = 1;
+  string file_name = 2;
+  string media_type = 3;
+  uint64 size_bytes = 4;
+  // Exactly 32 bytes.
+  bytes sha256 = 5;
+  // The configured artifact root is UTF-8, so the published path is portable
+  // across the local Admin/JSON presentation boundary.
+  string published_path = 6;
+}
+
+message PluginJobDetails {
+  PluginJobSummary summary = 1;
+  repeated string arguments = 2;
+  optional google.protobuf.Timestamp deadline = 3;
+  google.protobuf.Timestamp accepted_at = 4;
+  google.protobuf.Timestamp terminal_at = 5;
+  ConfigValue result = 6;
+  ProtocolError error = 7;
+  repeated StoredPluginArtifact artifacts = 8;
+}
+
+message GetPluginJobResponse { PluginJobDetails job = 1; }
+
+message StopPluginJobRequest {
+  AdminCallContext context = 1;
+  PluginJobId job_id = 2;
+}
+
+message StopPluginJobResponse {
+  PluginJobId job_id = 1;
+  PluginAdminJobState state = 2;
+}

@@ -62,6 +62,7 @@ fn literal_config(replica: &str, log: &str) -> String {
                         path = "store/replica.sqlite3",
                     }},
                     log_dir = "{log}",
+                    artifact_download_dir = "artifacts",
                     listen = nil,
                     connect = {{}},
                 }},
@@ -79,6 +80,7 @@ fn config_with_store(store: &str) -> String {
                     replica_root = "replica",
                     replica_store = {store},
                     log_dir = "log",
+                    artifact_download_dir = "artifacts",
                     listen = nil,
                     connect = {{}},
                 }},
@@ -123,6 +125,7 @@ fn evaluates_computed_configuration_with_modules_and_getenv() {
                         url = oll.getenv("OLL_TEST_POSTGRES"),
                     },
                     log_dir = oll.getenv("OLL_TEST_LOG"),
+                    artifact_download_dir = "downloads/oll",
                     listen = "127.0.0.1:7443",
                     connect = { paths.endpoint, "oll://node-b.example.com:17384" },
                     network_key = "test-network-key-with-thirty-two-bytes",
@@ -144,6 +147,10 @@ fn evaluates_computed_configuration_with_modules_and_getenv() {
         ReplicaStoreConfig::Postgres { .. }
     ));
     assert_eq!(config.log_dir, directory.path().join("state/log"));
+    assert_eq!(
+        config.artifact_download_dir,
+        directory.path().join("downloads/oll")
+    );
     assert_eq!(config.listen, Some("127.0.0.1:7443".parse().unwrap()));
     assert_eq!(
         config
@@ -199,6 +206,10 @@ fn requires_exactly_one_plain_versioned_table() {
                 "connect = { [1] = \"oll://a.example:17384\", [3] = \"oll://b.example:17384\" },",
             ),
             "contiguous integer indexes",
+        ),
+        (
+            &literal_config("replica", "log").replace("artifact_download_dir = \"artifacts\",", ""),
+            "node.artifact_download_dir",
         ),
     ] {
         let directory = TestDirectory::new();
@@ -309,8 +320,56 @@ fn storage_layout_rejects_every_working_tree_ancestor_relationship() {
             "management directory",
         ),
     ] {
-        let error =
-            validate_storage_layout(&config_root, &replica_root, &log_dir, &store).unwrap_err();
+        let error = validate_storage_layout(
+            &config_root,
+            &replica_root,
+            &log_dir,
+            &base.join("artifacts"),
+            &base.join("plugin-data"),
+            &store,
+        )
+        .unwrap_err();
+        assert!(
+            error.to_string().contains(expected),
+            "unexpected storage-layout error: {error}"
+        );
+    }
+
+    for (replica_root, artifact_download_dir, plugin_data_root, expected) in [
+        (
+            base.join("replica"),
+            base.join("replica/artifacts"),
+            base.join("plugin-data"),
+            "node.artifact_download_dir",
+        ),
+        (
+            base.join("artifacts/replica"),
+            base.join("artifacts"),
+            base.join("plugin-data"),
+            "node.artifact_download_dir",
+        ),
+        (
+            base.join("replica"),
+            base.join("artifacts"),
+            base.join("replica/plugins"),
+            "derived plugin data root",
+        ),
+        (
+            base.join("plugin-data/replica"),
+            base.join("artifacts"),
+            base.join("plugin-data"),
+            "derived plugin data root",
+        ),
+    ] {
+        let error = validate_storage_layout(
+            &base.join("config"),
+            &replica_root,
+            &base.join("log"),
+            &artifact_download_dir,
+            &plugin_data_root,
+            &safe_store,
+        )
+        .unwrap_err();
         assert!(
             error.to_string().contains(expected),
             "unexpected storage-layout error: {error}"
@@ -332,6 +391,8 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("config"),
         &base.join("real/replica"),
         &base.join("alias/replica/logs"),
+        &base.join("artifacts"),
+        &base.join("plugin-data"),
         &ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
         },
@@ -343,6 +404,8 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("alias/replica/config"),
         &base.join("real/replica"),
         &base.join("log"),
+        &base.join("artifacts"),
+        &base.join("plugin-data"),
         &ReplicaStoreConfig::Sqlite {
             path: base.join("store/replica.sqlite3"),
         },
@@ -354,12 +417,40 @@ fn storage_layout_resolves_existing_symlinked_ancestors() {
         &base.join("config"),
         &base.join("real/replica"),
         &base.join("log"),
+        &base.join("artifacts"),
+        &base.join("plugin-data"),
         &ReplicaStoreConfig::Sqlite {
             path: base.join("alias/replica/store/replica.sqlite3"),
         },
     )
     .unwrap_err();
     assert!(error.to_string().contains("management directory"));
+
+    let error = validate_storage_layout(
+        &base.join("config"),
+        &base.join("real/replica"),
+        &base.join("log"),
+        &base.join("alias/replica/artifacts"),
+        &base.join("plugin-data"),
+        &ReplicaStoreConfig::Sqlite {
+            path: base.join("store/replica.sqlite3"),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("node.artifact_download_dir"));
+
+    let error = validate_storage_layout(
+        &base.join("config"),
+        &base.join("real/replica"),
+        &base.join("log"),
+        &base.join("artifacts"),
+        &base.join("alias/replica/plugins"),
+        &ReplicaStoreConfig::Sqlite {
+            path: base.join("store/replica.sqlite3"),
+        },
+    )
+    .unwrap_err();
+    assert!(error.to_string().contains("derived plugin data root"));
 }
 
 #[test]
@@ -426,6 +517,7 @@ fn non_utf8_environment_values_are_configuration_errors() {
                         path = "store/replica.sqlite3",
                     },
                     log_dir = oll.getenv("NON_UTF8"),
+                    artifact_download_dir = "artifacts",
                     listen = nil,
                     connect = {},
                 },

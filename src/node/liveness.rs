@@ -1,4 +1,4 @@
-//! Parent-liveness pipe support for future independently spawned plugins.
+//! Parent-liveness pipe support for independently spawned plugins.
 
 use std::{
     fs::File,
@@ -8,7 +8,7 @@ use std::{
 
 use super::runtime::NodeError;
 
-/// The daemon keeps the write end alive. A future child receives a duplicated
+/// The daemon keeps the write end alive. Each plugin child receives a duplicated
 /// read end and treats EOF as proof that its oll parent has exited.
 pub struct ParentLivenessPipe {
     reader_template: File,
@@ -50,8 +50,9 @@ impl ParentLivenessPipe {
     }
 }
 
-/// Block until the parent closes its writer. Plugin runtimes call this from a
-/// dedicated blocking task after inheriting the reader FD.
+/// Block until the parent closes its writer. Plugin implementations can use
+/// this helper when they are written in Rust; other languages observe EOF on
+/// their inherited stdin directly.
 pub fn wait_for_parent_exit(mut reader: File) -> io::Result<()> {
     let mut buffer = [0_u8; 1];
     loop {
@@ -66,7 +67,12 @@ pub fn wait_for_parent_exit(mut reader: File) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, thread, time::Duration};
+    use std::{
+        process::{Command, Stdio},
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
 
     use super::*;
 
@@ -84,5 +90,38 @@ mod tests {
         drop(pipe);
         receiver.recv_timeout(Duration::from_secs(1)).unwrap();
         task.join().unwrap();
+    }
+
+    #[test]
+    fn spawned_child_observes_parent_liveness_eof_and_is_reaped() {
+        let pipe = ParentLivenessPipe::create().unwrap();
+        let reader = pipe.reader_for_child().unwrap();
+        let mut child = Command::new("cat")
+            .stdin(Stdio::from(reader))
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+
+        thread::sleep(Duration::from_millis(20));
+        assert!(
+            child.try_wait().unwrap().is_none(),
+            "child exited before the parent-liveness writer closed"
+        );
+        drop(pipe);
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let status = loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                break status;
+            }
+            if Instant::now() >= deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("child did not exit after parent-liveness EOF");
+            }
+            thread::sleep(Duration::from_millis(10));
+        };
+        assert!(status.success(), "child failed after observing stdin EOF");
     }
 }

@@ -195,11 +195,11 @@ The foreground `oll run` sequence is:
 7. register final-state identity watches for `node.json` and `replica.json`;
 8. in the sync stage, bind the configured sync listener and start outbound
    connection management;
-9. in the plugin stage, recover package publication/removal, cache the
-   startup-resolved artifact download directory in SQL, recover artifact
-   publication intents, mark jobs left nonterminal by the previous process
-   failed, start the supervisor, and queue reconciliation for desired-running
-   plugins;
+9. in the plugin stage, cache the startup-resolved artifact download directory
+   in SQL, recover artifact publication intents before changing their owning
+   jobs, mark jobs left nonterminal by the previous process failed, recover
+   package publication/removal, start the supervisor, and queue reconciliation
+   for desired-running plugins;
 10. recover or bind the Admin UDS, create the Tokio-owned node runtime, and mark
    the node ready;
 11. when invoked by `oll start`, complete the one-use nonce pingback only after
