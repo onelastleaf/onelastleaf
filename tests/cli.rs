@@ -161,7 +161,7 @@ fn sync_retry_help_defines_a_total_attempt_limit() {
 }
 
 #[test]
-fn psk_writes_one_base64url_key_without_a_newline_or_local_side_effects() {
+fn psk_writes_one_base64url_key_without_a_line_ending_or_local_side_effects() {
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 
     let output = oll()
@@ -173,6 +173,7 @@ fn psk_writes_one_base64url_key_without_a_newline_or_local_side_effects() {
     assert!(output.status.success());
     assert!(output.stderr.is_empty());
     assert_eq!(output.stdout.len(), 43);
+    assert!(!output.stdout.contains(&b'\r'));
     assert!(!output.stdout.contains(&b'\n'));
     assert_eq!(URL_SAFE_NO_PAD.decode(&output.stdout).unwrap().len(), 32);
 }
