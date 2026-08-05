@@ -403,7 +403,18 @@ paths, and overlapping local storage locations are configuration errors and
 exit with `EX_CONFIG` (`78`).
 Diagnostics identify the config file and field path without printing Lua values
 that may contain secrets. In particular they never print a network-key value,
-file content, derived PSK, or HKDF intermediate.
+file content, derived PSK, or HKDF intermediate. Schema diagnostics keep the
+file context and field-specific problem on separate lines:
+
+```text
+oll: invalid configuration in <config-path>/config.lua
+  <field-path>: <problem>
+```
+
+The field path appears exactly once. Evaluation, file-I/O, and other errors
+without a schema field remain concise single-line diagnostics. A constraint
+introduced by a runtime override uses `invalid effective configuration` as the
+first line and retains the same field-path line.
 
 Tests cover successful computed returns, wrong return arity and type, schema
 errors including both store variants and missing fields, controlled module

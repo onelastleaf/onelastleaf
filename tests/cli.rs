@@ -336,6 +336,50 @@ fn run_defers_lua_evaluation_until_the_node_handler() {
 }
 
 #[test]
+fn configuration_schema_errors_put_the_field_problem_on_its_own_line() {
+    let deployment = TestDeployment::new();
+    deployment.write_identity();
+    let config_path = deployment.config().join("config.lua");
+    let config = fs::read_to_string(&config_path)
+        .unwrap()
+        .replace("listen = nil", "listen = \"127.0.0.1:17384\"");
+    fs::write(&config_path, config).unwrap();
+
+    let output = oll()
+        .env("OLL_CONFIG", deployment.config())
+        .arg("run")
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        format!(
+            "oll: invalid configuration in {}\n  node.network_key: is required when listen or connect is configured\n",
+            config_path.display()
+        )
+    );
+}
+
+#[test]
+fn runtime_override_errors_keep_the_same_field_problem_layout() {
+    let deployment = TestDeployment::new();
+    deployment.write_identity();
+
+    let output = oll()
+        .env("OLL_CONFIG", deployment.config())
+        .args(["run", "--listen", "127.0.0.1:17384"])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(EXIT_CONFIG));
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "oll: invalid effective configuration\n  node.network_key: is required when listen or connect is configured\n"
+    );
+}
+
+#[test]
 fn init_creates_and_refuses_to_replace_a_deployment_without_confirmation() {
     let deployment = TestDeployment::empty();
     let replica = deployment.root().join("replica");

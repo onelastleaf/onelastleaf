@@ -47,7 +47,7 @@ impl fmt::Display for ConfigError {
                 problem,
             } => write!(
                 formatter,
-                "invalid configuration in {}: {field} {problem}",
+                "invalid configuration in {}\n  {field}: {problem}",
                 path.display()
             ),
         }

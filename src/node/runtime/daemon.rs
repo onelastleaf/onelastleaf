@@ -47,9 +47,11 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     let (config_runtime, mut config) = ConfigRuntime::load(&intent.config_root)
         .map_err(|error| NodeError::Config(error.to_string()))?;
     intent.overrides.apply_to(&mut config);
-    config
-        .validate_sync_topology()
-        .map_err(|error| NodeError::Config(error.to_owned()))?;
+    config.validate_sync_topology().map_err(|problem| {
+        NodeError::Config(format!(
+            "invalid effective configuration\n  node.network_key: {problem}"
+        ))
+    })?;
     let platform_data_dir = intent.platform_data_dir.as_ref().ok_or_else(|| {
         NodeError::Config("cannot determine the platform data directory for plugins".to_owned())
     })?;

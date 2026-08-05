@@ -137,7 +137,7 @@ pub struct ResolvedNodeConfig {
 impl ResolvedNodeConfig {
     pub fn validate_sync_topology(&self) -> Result<(), &'static str> {
         if (self.listen.is_some() || !self.connect.is_empty()) && self.network_key.is_none() {
-            Err("node.network_key is required when listen or connect is configured")
+            Err("is required when listen or connect is configured")
         } else {
             Ok(())
         }
