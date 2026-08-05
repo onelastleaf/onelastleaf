@@ -33,6 +33,7 @@ pub(super) async fn run_connection(
                 &correlation_id,
                 direction,
                 "transport_handshake",
+                connect_target.as_deref(),
                 &SessionError::Transport(error),
             );
             return;
@@ -51,7 +52,13 @@ pub(super) async fn run_connection(
     {
         Ok(pending) => pending,
         Err(error) => {
-            runtime.log_session_failure(&correlation_id, direction, "sync_hello", &error);
+            runtime.log_session_failure(
+                &correlation_id,
+                direction,
+                "sync_hello",
+                connect_target.as_deref(),
+                &error,
+            );
             return;
         }
     };
@@ -215,7 +222,13 @@ pub(super) async fn run_connection(
                 .release_bootstrap_claim(claim.claim_id)
                 .await;
         }
-        runtime.log_session_failure(&correlation_id, direction, "sync_ready", &error);
+        runtime.log_session_failure(
+            &correlation_id,
+            direction,
+            "sync_ready",
+            connect_target.as_deref(),
+            &error,
+        );
         return;
     }
     let remote = pending.remote.clone();

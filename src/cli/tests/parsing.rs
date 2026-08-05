@@ -58,6 +58,7 @@ fn resolves_path_precedence() {
     let CliIntent::Run(run) = intent(&["oll", "run"]) else {
         panic!()
     };
+    assert_eq!(run.color, ColorMode::Auto);
     assert_eq!(
         run.config_root(&environment).unwrap(),
         Path::new("/env/config")
@@ -72,6 +73,12 @@ fn resolves_path_precedence() {
         run.config_root(&environment).unwrap(),
         Path::new("/home/test/.config/oll")
     );
+
+    let CliIntent::Run(run) = intent(&["oll", "run", "--color", "never"]) else {
+        panic!()
+    };
+    assert_eq!(run.color, ColorMode::Never);
+    assert!(parse_from(["oll", "run", "--color", "sometimes"]).is_err());
 }
 
 #[test]

@@ -67,7 +67,7 @@ impl Deployment {
     }
 
     async fn start(&self) -> Arc<ReplicaRuntime> {
-        let logger = NodeLogger::open(&self.log_dir, self.identity.clone()).unwrap();
+        let logger = NodeLogger::open(&self.log_dir, self.identity.clone(), None).unwrap();
         let runtime = ReplicaRuntime::start(
             self.config_root.clone(),
             self.root.clone(),

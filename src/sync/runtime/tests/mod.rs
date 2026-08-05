@@ -48,7 +48,7 @@ impl SyncDeployment {
     }
 
     async fn start_replica(&self) -> (Arc<ReplicaRuntime>, Arc<NodeLogger>) {
-        let logger = NodeLogger::open(&self.log_dir, self.identity.clone()).unwrap();
+        let logger = NodeLogger::open(&self.log_dir, self.identity.clone(), None).unwrap();
         let replica = ReplicaRuntime::start(
             self.config_root.clone(),
             self.root.clone(),

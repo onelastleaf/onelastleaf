@@ -29,7 +29,8 @@ use crate::node::{identity::NodeIdentity, runtime::NodeError};
 fn creates_valid_jsonl_logs_with_correlation_ids() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     logger.emit(
         LogLevel::Info,
         "oll::node",
@@ -67,7 +68,8 @@ fn creates_valid_jsonl_logs_with_correlation_ids() {
 fn plugin_output_has_receive_time_and_stays_out_of_the_lifecycle_log() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     let plugin_timestamp = OffsetDateTime::from_unix_timestamp(1_700_000_000).unwrap();
     let before_receive = OffsetDateTime::now_utc();
 
@@ -133,7 +135,8 @@ fn plugin_output_has_receive_time_and_stays_out_of_the_lifecycle_log() {
 fn plugin_output_uses_the_shared_target_filter_and_documented_rotation_policy() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     let timestamp = OffsetDateTime::now_utc();
 
     logger.emit_plugin(
@@ -170,7 +173,8 @@ fn plugin_output_uses_the_shared_target_filter_and_documented_rotation_policy() 
 fn target_filter_routes_sync_trace_only_when_enabled() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     logger.emit(
         LogLevel::Trace,
         "oll::sync",
@@ -217,6 +221,7 @@ fn emit_does_not_block_when_the_bounded_queue_is_full() {
         filters: RwLock::new(BTreeMap::new()),
         dropped_events: Arc::new(AtomicU64::new(0)),
         emit_failure_reported: AtomicBool::new(false),
+        foreground: None,
     };
     logger.emit(
         LogLevel::Info,
@@ -269,7 +274,8 @@ fn emit_does_not_block_when_the_bounded_queue_is_full() {
 fn writer_reports_dropped_events_after_it_recovers() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     logger.dropped_events.store(7, Ordering::Relaxed);
     logger.emit(
         LogLevel::Info,
@@ -296,7 +302,8 @@ fn writer_reports_dropped_events_after_it_recovers() {
 fn writer_flushes_a_partial_batch_on_the_periodic_interval() {
     let directory = TempDir::new().unwrap();
     let logs = directory.path().join("logs");
-    let logger = NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap())).unwrap();
+    let logger =
+        NodeLogger::open(&logs, NodeIdentity::generate("home".parse().unwrap()), None).unwrap();
     logger.emit(
         LogLevel::Info,
         "oll::node",

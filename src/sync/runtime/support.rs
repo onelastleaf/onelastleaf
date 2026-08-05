@@ -66,6 +66,7 @@ pub(super) fn session_failure_fields(
     error: &SessionError,
     direction: Direction,
     failure_stage: &'static str,
+    connect_target: Option<&str>,
 ) -> serde_json::Value {
     let direction = match direction {
         Direction::Inbound => "inbound",
@@ -105,6 +106,7 @@ pub(super) fn session_failure_fields(
                 "failure_source": "transport",
                 "error_code": error_code,
                 "message": error.to_string(),
+                "connect_target": connect_target,
             });
             if let Some(kind) = io_error_kind {
                 fields["io_error_kind"] = kind.into();
@@ -122,6 +124,7 @@ pub(super) fn session_failure_fields(
             "error_code": error_code,
             "sync_close_code": close_code_name(*code),
             "message": message,
+            "connect_target": connect_target,
         }),
         SessionError::RemoteClosed { code, .. } => {
             let code = close_code_name(*code);
@@ -131,6 +134,7 @@ pub(super) fn session_failure_fields(
                 "failure_source": "remote_close",
                 "error_code": code,
                 "sync_close_code": code,
+                "connect_target": connect_target,
             })
         }
     }

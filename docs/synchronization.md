@@ -343,6 +343,10 @@ updates, and blobs are never logged.
 - `failure_source`: `transport`, `local_validation`, or `remote_close`;
 - a stable `error_code` naming the specific locally known cause.
 
+Outbound failures also retain their sanitized `connect_target`, allowing the
+foreground view and structured logs to distinguish equivalent failures from
+different configured peers.
+
 Transport error codes are `transport_io`, `handshake_deadline_exceeded`,
 `invalid_preface`, `invalid_frame_length`, `noise_handshake_failed`,
 `noise_transport_authentication_failed`, `envelope_too_large`, and

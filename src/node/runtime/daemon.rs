@@ -16,7 +16,7 @@ use tokio::{
 };
 
 use crate::{
-    cli::PreparedRunIntent,
+    cli::{ColorMode, PreparedRunIntent},
     configuration::{ConfigRuntime, validate_storage_layout},
     node::{
         admin::{self, AdminState, ShutdownNotice},
@@ -74,7 +74,12 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
     )
     .map_err(|error| NodeError::Config(format!("invalid storage layout: {error}")))?;
 
-    let logger = NodeLogger::open(&config.log_dir, identity.clone())?;
+    let foreground_color = intent.pingback.is_none().then_some(match intent.color {
+        ColorMode::Auto => anstream::ColorChoice::Auto,
+        ColorMode::Always => anstream::ColorChoice::Always,
+        ColorMode::Never => anstream::ColorChoice::Never,
+    });
+    let logger = NodeLogger::open(&config.log_dir, identity.clone(), foreground_color)?;
     let identities = IdentityCoordinator::new(identity);
     let startup_correlation = new_correlation_id();
     if config
@@ -82,9 +87,6 @@ async fn run_daemon_async(intent: PreparedRunIntent) -> Result<(), NodeError> {
         .as_ref()
         .is_some_and(|network_key| network_key.expose().len() < 32)
     {
-        println!(
-            "WARNING: node.network_key is shorter than 32 bytes; use `oll psk` to generate a stronger key"
-        );
         logger.emit(
             LogLevel::Warn,
             "oll::sync",

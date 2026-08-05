@@ -29,6 +29,7 @@ pub(super) async fn test_manager(
     let logger = crate::node::logging::NodeLogger::open(
         &root.join("logs"),
         crate::node::identity::NodeIdentity::generate("package-tests".parse().unwrap()),
+        None,
     )
     .unwrap();
     let manager = PackageManager::new(

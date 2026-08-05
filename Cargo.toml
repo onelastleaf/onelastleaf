@@ -16,6 +16,7 @@ name = "oll"
 path = "src/main.rs"
 
 [dependencies]
+anstyle = "1"
 anstream = "1"
 base64 = "0.23"
 chardetng = "1"

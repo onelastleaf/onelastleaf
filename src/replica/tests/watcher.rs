@@ -160,7 +160,7 @@ async fn watcher_registration_closes_the_startup_scan_race() {
         )
         .unwrap();
     }
-    let logger = NodeLogger::open(&deployment.log_dir, deployment.identity.clone()).unwrap();
+    let logger = NodeLogger::open(&deployment.log_dir, deployment.identity.clone(), None).unwrap();
     let root = deployment.root.clone();
     let config_root = deployment.config_root.clone();
     let config = ReplicaStoreConfig::Sqlite {

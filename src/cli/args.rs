@@ -6,7 +6,9 @@ use std::{
 
 use clap::{Args, Parser, Subcommand};
 
-use super::{ConnectUrl, GitRemote, LogFilterDirective, LoopbackAddr, NodeName, OutputFormat};
+use super::{
+    ColorMode, ConnectUrl, GitRemote, LogFilterDirective, LoopbackAddr, NodeName, OutputFormat,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -72,6 +74,9 @@ pub struct InitArgs {
 
 #[derive(Debug, Args)]
 pub struct RunArgs {
+    /// Colorize the foreground operator view when supported.
+    #[arg(long, value_enum, default_value = "auto")]
+    pub color: ColorMode,
     /// Temporary replica root override. Takes precedence over OLL_REPLICA.
     #[arg(long, value_name = "PATH")]
     pub replica: Option<PathBuf>,

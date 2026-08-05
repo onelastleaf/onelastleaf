@@ -18,6 +18,7 @@ use crate::node::{identity::NodeIdentity, runtime::NodeError};
 use super::{
     LOG_QUEUE_CAPACITY, OLL_LOG_FILENAME, OLL_ROTATION, PLUGIN_LOG_FILENAME, PLUGIN_ROTATION,
     SYNC_LOG_FILENAME, SYNC_ROTATION,
+    console::ForegroundConsole,
     files::{ensure_log_directory, queue_pending_rotations},
     sink::{CompressionWorker, LogLevel, LogSinks, RotatingLogSink},
     writer::{StructuredLogEvent, encode_log_event, run_log_writer},
@@ -49,10 +50,15 @@ pub struct NodeLogger {
     pub(super) filters: RwLock<BTreeMap<String, LogLevel>>,
     pub(super) dropped_events: Arc<AtomicU64>,
     pub(super) emit_failure_reported: AtomicBool,
+    pub(super) foreground: Option<ForegroundConsole>,
 }
 
 impl NodeLogger {
-    pub fn open(log_dir: &Path, identity: NodeIdentity) -> Result<Arc<Self>, NodeError> {
+    pub fn open(
+        log_dir: &Path,
+        identity: NodeIdentity,
+        foreground_color: Option<anstream::ColorChoice>,
+    ) -> Result<Arc<Self>, NodeError> {
         ensure_log_directory(log_dir)?;
         let compression = CompressionWorker::new()?;
         queue_pending_rotations(log_dir, OLL_LOG_FILENAME, OLL_ROTATION, &compression)?;
@@ -84,6 +90,7 @@ impl NodeLogger {
             filters: RwLock::new(BTreeMap::new()),
             dropped_events,
             emit_failure_reported: AtomicBool::new(false),
+            foreground: foreground_color.and_then(ForegroundConsole::start),
         }))
     }
 
@@ -193,6 +200,7 @@ impl NodeLogger {
             }
         };
         let rotation_at = event.observed_at.unwrap_or(event.timestamp);
+        let foreground_event = (event.level, event.event);
         let encoded = match encode_log_event(&identity, event) {
             Ok(encoded) => encoded,
             Err(error) => {
@@ -203,6 +211,11 @@ impl NodeLogger {
                 return;
             }
         };
+        if matches!(route, LogRoute::Oll | LogRoute::SyncAndOll)
+            && let Some(foreground) = &self.foreground
+        {
+            foreground.enqueue(foreground_event.0, foreground_event.1, &encoded);
+        }
         match self.sender.try_send(LogCommand::Event(QueuedLogEvent {
             encoded,
             rotation_at,

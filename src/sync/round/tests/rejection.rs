@@ -80,7 +80,7 @@ async fn malformed_and_incomplete_loro_payloads_receive_typed_rejections() {
     fs::create_dir(&config_root).unwrap();
     let identity = NodeIdentity::generate("decode-receiver".parse().unwrap());
     let identities = IdentityCoordinator::new(identity.clone());
-    let logger = NodeLogger::open(&log_dir, identity).unwrap();
+    let logger = NodeLogger::open(&log_dir, identity, None).unwrap();
     let replica = ReplicaRuntime::start(
         config_root,
         root,

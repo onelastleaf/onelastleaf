@@ -434,6 +434,7 @@ mod tests {
         let logger = crate::node::logging::NodeLogger::open(
             &directory.path().join("logs"),
             crate::node::identity::NodeIdentity::generate("process-tests".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = PackageTaskOwner::new(logger);
@@ -494,6 +495,7 @@ mod tests {
         let logger = crate::node::logging::NodeLogger::open(
             &directory.path().join("logs"),
             crate::node::identity::NodeIdentity::generate("deadline-tests".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = PackageTaskOwner::new(logger);

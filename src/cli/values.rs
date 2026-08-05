@@ -264,3 +264,11 @@ pub enum OutputFormat {
     Text,
     Json,
 }
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
+pub enum ColorMode {
+    #[default]
+    Auto,
+    Always,
+    Never,
+}

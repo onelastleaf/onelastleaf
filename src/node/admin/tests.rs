@@ -388,7 +388,7 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
     let directory = TempDir::new().unwrap();
     let identity = NodeIdentity::generate("home-node".parse().unwrap());
     let identities = IdentityCoordinator::new(identity.clone());
-    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone(), None).unwrap();
     logger
         .set_filter("oll::admin".to_owned(), LogLevel::Trace)
         .unwrap();

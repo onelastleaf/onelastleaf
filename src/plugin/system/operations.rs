@@ -242,6 +242,7 @@ mod tests {
         let logger = NodeLogger::open(
             &directory.path().join("logs"),
             NodeIdentity::generate("operation-test".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = OperationTracker::new(logger);
@@ -283,6 +284,7 @@ mod tests {
         let logger = NodeLogger::open(
             &log_dir,
             NodeIdentity::generate("operation-test".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = OperationTracker::new(Arc::clone(&logger));
@@ -342,6 +344,7 @@ mod tests {
         let logger = NodeLogger::open(
             &directory.path().join("logs"),
             NodeIdentity::generate("operation-test".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = OperationTracker::new(logger);
@@ -375,6 +378,7 @@ mod tests {
         let logger = NodeLogger::open(
             &directory.path().join("logs"),
             NodeIdentity::generate("operation-test".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = OperationTracker::new(logger);

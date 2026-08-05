@@ -71,6 +71,7 @@ impl SyncRuntime {
         correlation_id: &str,
         direction: Direction,
         failure_stage: &'static str,
+        connect_target: Option<&str>,
         error: &SessionError,
     ) {
         self.logger.emit(
@@ -78,7 +79,7 @@ impl SyncRuntime {
             "oll::sync",
             "sync_session_failed",
             correlation_id,
-            session_failure_fields(error, direction, failure_stage),
+            session_failure_fields(error, direction, failure_stage, connect_target),
         );
     }
 }

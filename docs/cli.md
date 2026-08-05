@@ -98,6 +98,7 @@ oll run --config /path/to/config/root
 oll run --log-dir /path/to/log/dir
 oll run --listen 0.0.0.0:17384
 oll run --connect oll://peer.example.com:17384
+oll run --color auto|always|never
 oll run --listen 0.0.0.0:17384 \
   --connect oll://203.0.113.10:17384 \
   --connect 'oll://[2001:db8::10]:17384'
@@ -162,13 +163,33 @@ defined in `architecture.md`. `init` writes the initial UUID-v4 pair to
 `node.json`; a deployment user may later edit that strict record, with the
 identity-binding consequences described in `node.md`.
 
-`run` starts the same `oll` binary in the foreground. It also has a hidden
-internal `--pingback <loopback-address>` option used only by
-`start`; this is not a second public daemon mode. `start` launches the daemon in
-the background and verifies readiness with the nonce exchange specified in
+`run` starts the same `oll` binary in the foreground. Its stdout is a compact,
+line-oriented operator view of high-signal daemon events: startup and readiness,
+replica state transitions, connection failures/readiness, bootstrap and finite
+sync outcomes, plugin lifecycle failures, and shutdown. It is neither a JSON
+log stream nor a copy of every record in `oll.log`/`sync.log`; repeated retry
+scaffolding and per-chunk events remain in the files. stdout never uses a
+spinner, cursor movement, or rewritten progress line, so redirection and `tee`
+retain readable records.
+
+`--color` controls only this foreground view. Its default, `auto`, uses
+`anstream` terminal and capability detection: redirected stdout, `NO_COLOR`,
+`TERM=dumb`, and terminals without color support receive plain text with no ANSI
+escape bytes. `always` explicitly forces styled output and `never` explicitly
+forces plain text. This explicit option takes precedence over automatic
+environment detection. Output remains semantically identical in all three
+modes.
+
+The hidden internal `--pingback <loopback-address>` option is used only by
+`start`; a pingback-launched daemon suppresses the foreground stdout view even
+if its inherited descriptor were writable. `start` launches the daemon in the
+background and verifies readiness with the nonce exchange specified in
 `admin-api.md`. `stop` uses the configured Admin API to gracefully stop oll and
 all child processes, then waits for actual daemon termination rather than
-treating the initial `accepted` response as completion.
+treating the initial `accepted` response as completion. Errors before the
+foreground logger is available, console-writer failures, and structured-log
+sink failures use stderr; normal runtime warnings remain part of the stdout
+operator view and the structured files.
 
 `status` reports the local `NodeName` prominently, its `NodeId`, configured
 listen and connection targets, authenticated inbound-only peers, and whether the local

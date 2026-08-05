@@ -73,6 +73,7 @@ impl Fixture {
         let logger = NodeLogger::open(
             &directory.path().join("logs"),
             NodeIdentity::generate("artifact-tests".parse().unwrap()),
+            None,
         )
         .unwrap();
         let download_dir = directory.path().join("downloads");

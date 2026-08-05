@@ -84,7 +84,7 @@ impl RuntimeFixture {
 
         let identity = NodeIdentity::generate("runtime-e2e".parse().unwrap());
         let identities = IdentityCoordinator::new(identity.clone());
-        let logger = NodeLogger::open(&log_dir, identity).unwrap();
+        let logger = NodeLogger::open(&log_dir, identity, None).unwrap();
         let replica = ReplicaRuntime::start(
             config_root.clone(),
             replica_root,

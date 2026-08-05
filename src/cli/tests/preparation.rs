@@ -34,12 +34,15 @@ fn prepares_run_overrides_without_evaluating_config() {
     );
     assert_eq!(prepared.overrides.listen, None);
     assert_eq!(prepared.overrides.connect, None);
+    assert_eq!(prepared.color, ColorMode::Auto);
 
     let prepared = intent(&[
         "oll",
         "run",
         "--log-dir",
         "cli/log",
+        "--color",
+        "always",
         "--listen",
         "127.0.0.1:8000",
         "--connect",
@@ -55,6 +58,7 @@ fn prepares_run_overrides_without_evaluating_config() {
         Some(cwd.join("environment/replica"))
     );
     assert_eq!(prepared.overrides.log_dir, Some(cwd.join("cli/log")));
+    assert_eq!(prepared.color, ColorMode::Always);
     assert_eq!(
         prepared.overrides.listen,
         Some("127.0.0.1:8000".parse().unwrap())

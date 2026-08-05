@@ -99,6 +99,7 @@ async fn output_read_failure_is_logged_with_stable_redacted_context() {
     let logger = NodeLogger::open(
         &logs,
         NodeIdentity::generate("runtime-test".parse().unwrap()),
+        None,
     )
     .unwrap();
     let plugin_id: PluginId = "oll.runtime-test".parse().unwrap();
@@ -136,6 +137,7 @@ async fn stubborn_process_group_is_reaped_within_one_absolute_deadline() {
     let logger = NodeLogger::open(
         &directory.path().join("logs"),
         NodeIdentity::generate("runtime-test".parse().unwrap()),
+        None,
     )
     .unwrap();
     let mut command = Command::new("/bin/sh");
@@ -190,6 +192,7 @@ async fn reaped_leader_does_not_leave_its_descendant_process_group_alive() {
     let logger = NodeLogger::open(
         &directory.path().join("logs"),
         NodeIdentity::generate("runtime-test".parse().unwrap()),
+        None,
     )
     .unwrap();
     let descendant_pid_path = directory.path().join("descendant.pid");

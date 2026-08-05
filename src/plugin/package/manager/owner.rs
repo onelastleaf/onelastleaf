@@ -266,6 +266,7 @@ mod tests {
         let logger = NodeLogger::open(
             &directory.path().join("logs"),
             crate::node::identity::NodeIdentity::generate("owner-tests".parse().unwrap()),
+            None,
         )
         .unwrap();
         let owner = PackageTaskOwner::new(logger);

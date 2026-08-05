@@ -26,7 +26,7 @@ async fn invalid_catalog_payload_metadata_cannot_replace_the_active_replica() {
     fs::write(root.join("original.md"), "authoritative").unwrap();
     let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
     let identities = crate::node::identity::IdentityCoordinator::new(identity.clone());
-    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone(), None).unwrap();
     let runtime = ReplicaRuntime::start(
         directory.path().to_owned(),
         root.clone(),
@@ -65,7 +65,7 @@ async fn cancelling_export_cleans_its_owned_temporary_archive() {
     fs::write(root.join("document.md"), "snapshot content").unwrap();
     let identity = NodeIdentity::generate("snapshot-test".parse().unwrap());
     let identities = crate::node::identity::IdentityCoordinator::new(identity.clone());
-    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone()).unwrap();
+    let logger = NodeLogger::open(&directory.path().join("log"), identity.clone(), None).unwrap();
     let runtime = ReplicaRuntime::start(
         directory.path().to_owned(),
         root,

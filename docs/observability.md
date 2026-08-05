@@ -122,6 +122,43 @@ JSON Lines makes all three files directly ingestible by external tools such as
 Fluent Bit, Vector, or journald forwarding without defining an additional oll
 log database.
 
+## Foreground operator output
+
+An interactive `oll run` also presents a human-readable high-signal view on
+stdout. This view is downstream of the same normalized host events, but it is
+not an authoritative log sink and does not change file routing or retention.
+`oll start` suppresses it. The view includes all host `WARN`/`ERROR` outcomes
+and selected `INFO` lifecycle transitions. Per-attempt
+`sync_session_started`/`sync_reconnect_scheduled`, `DEBUG`/`TRACE`, sync chunks,
+and plugin-produced stdout/stderr remain file-only.
+
+Identical rendered `WARN`/`ERROR` outcomes are rate-limited by level, component,
+event, message, error code, and relevant identity/path/target context. The first
+is printed immediately. Repeats during the next 30 seconds are suppressed; the
+first repeat after that window reports how many equivalent events were
+suppressed. A visible success transition such as `sync_session_ready` clears the
+corresponding failure suppression so a later regression is shown immediately.
+This affects stdout only: every structured event continues through its normal
+file-log path.
+
+Foreground formatting uses semantic styles, never hand-built escape sequences.
+`oll run --color auto` passes them through `anstream`, which enables color only
+when stdout is a color-capable terminal and honors `NO_COLOR`, `TERM=dumb`, and
+redirection. `--color always` and `--color never` are explicit overrides. Plain
+and colored forms have the same words and one-record-per-line shape. The view
+never contains network keys, handshake material, document bodies, plugin
+secrets, or any field forbidden under [Sensitive data](#sensitive-data).
+Dynamic string fields are escaped at the presentation boundary, so embedded
+newlines and terminal control bytes cannot create extra records or inject
+terminal control sequences.
+
+The console has its own bounded nonblocking queue and writer thread. A blocked
+terminal or unread pipe may lose foreground lines, but it cannot block daemon
+tasks, delay authoritative file logs, alter a business result, or extend the
+node shutdown deadline. Console queue overflow and write failure do not feed an
+error back into the structured logger or alter the independent bounded file-log
+delivery path.
+
 ## Delivery and backpressure
 
 Daemon tasks MUST NOT write, flush, rotate, compress, or synchronize log files
@@ -360,6 +397,8 @@ Tests must verify:
 - rotation/reopen behavior;
 - useful structured context on working-tree reconciliation, network, import,
   projection, and recovery failures;
+- readable foreground rendering, duplicate-failure suppression, automatic
+  plain output for nonterminals, and explicit colored/plain overrides;
 - plugin package publication/removal, desired-state persistence, process-state
   transitions, exit detection, restart decisions, job-only cancellation,
   backoff, and graceful-to-signal escalation.

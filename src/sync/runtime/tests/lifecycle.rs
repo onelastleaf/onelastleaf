@@ -23,12 +23,14 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
         &SessionError::Transport(TransportError::NoiseHandshake),
         Direction::Outbound,
         "transport_handshake",
+        Some("oll://peer.example:17384"),
     );
     assert_eq!(transport["direction"], "outbound");
     assert_eq!(transport["failure_stage"], "transport_handshake");
     assert_eq!(transport["failure_source"], "transport");
     assert_eq!(transport["error_code"], "noise_handshake_failed");
     assert_eq!(transport["message"], "Noise handshake failed");
+    assert_eq!(transport["connect_target"], "oll://peer.example:17384");
 
     let local = session_failure_fields(
         &SessionError::LocalProtocol {
@@ -38,6 +40,7 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
         },
         Direction::Inbound,
         "sync_hello",
+        None,
     );
     assert_eq!(local["failure_source"], "local_validation");
     assert_eq!(local["error_code"], "replica_mismatch");
@@ -54,6 +57,7 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
         },
         Direction::Outbound,
         "sync_hello",
+        Some("oll://peer.example:17384"),
     );
     assert_eq!(remote["failure_source"], "remote_close");
     assert_eq!(remote["error_code"], "schema_mismatch");

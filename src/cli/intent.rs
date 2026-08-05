@@ -11,7 +11,7 @@ use crate::configuration::ResolvedNodeConfig;
 
 use super::environment::{ensure_persistable_path, resolve_log_dir};
 use super::{
-    Cli, CliError, Command, ConnectUrl, Environment, GitRemote, JobCommand, LogCommand,
+    Cli, CliError, ColorMode, Command, ConnectUrl, Environment, GitRemote, JobCommand, LogCommand,
     LogFilterLevel, LogTarget, LoopbackAddr, NodeName, OutputFormat, PluginArgs, PluginCommand,
     ReplicaCommand, SnapshotCommand, resolve_client_path,
 };
@@ -28,6 +28,7 @@ impl Cli {
                 log_dir: args.log_dir,
             })),
             Command::Run(args) => Ok(CliIntent::Run(RunIntent {
+                color: args.color,
                 replica_root: args.replica,
                 config_root: args.config,
                 log_dir: args.log_dir,
@@ -107,6 +108,7 @@ impl InitIntent {
 
 #[derive(Debug, PartialEq)]
 pub struct RunIntent {
+    pub color: ColorMode,
     pub replica_root: Option<PathBuf>,
     pub config_root: Option<PathBuf>,
     pub log_dir: Option<PathBuf>,
@@ -145,6 +147,7 @@ pub struct PreparedRunIntent {
     pub config_root: PathBuf,
     pub platform_data_dir: Option<PathBuf>,
     pub overrides: RunOverrides,
+    pub color: ColorMode,
     pub pingback: Option<LoopbackAddr>,
 }
 
@@ -537,6 +540,7 @@ impl CliIntent {
                         .ok()
                         .map(|path| resolve_client_path(&path, cwd)),
                     overrides,
+                    color: args.color,
                     pingback: args.pingback,
                 }))
             }

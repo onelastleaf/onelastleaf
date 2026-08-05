@@ -1,3 +1,4 @@
+mod console;
 mod files;
 mod logger;
 mod sink;
