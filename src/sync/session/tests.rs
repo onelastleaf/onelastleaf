@@ -256,3 +256,41 @@ async fn schema_self_and_replica_mismatches_are_authenticated_close_reasons() {
         ));
     }
 }
+
+#[tokio::test]
+async fn each_received_envelope_refreshes_the_round_progress_deadline() {
+    let key = derive_noise_psk(&NetworkKey::new_for_test(vec![6; 32]));
+    let (sender_stream, receiver_stream) = duplex(16 * 1024);
+    let handshake_deadline = Instant::now() + HANDSHAKE_DEADLINE;
+    let (sender, receiver) = tokio::join!(
+        NoiseTransport::connect(sender_stream, &key, handshake_deadline),
+        NoiseTransport::accept(receiver_stream, &key, handshake_deadline),
+    );
+    let mut sender = SessionChannel::new(sender.unwrap());
+    let mut receiver = SessionChannel::new(receiver.unwrap());
+    let sending = tokio::spawn(async move {
+        for sequence in 0..3 {
+            tokio::time::sleep(Duration::from_millis(450)).await;
+            sender
+                .send_progress(
+                    sync_envelope::Payload::RoundRequest(crate::protocol::oll::SyncRoundRequest {}),
+                    &format!("progress-{sequence}"),
+                    None,
+                    "progress_test_send",
+                )
+                .await
+                .unwrap();
+        }
+    });
+
+    let started = Instant::now();
+    for sequence in 0..3 {
+        let envelope = receiver
+            .receive_progress("progress_test_receive")
+            .await
+            .unwrap();
+        assert_eq!(envelope.correlation_id, format!("progress-{sequence}"));
+    }
+    assert!(started.elapsed() > ROUND_PROGRESS_DEADLINE);
+    sending.await.unwrap();
+}

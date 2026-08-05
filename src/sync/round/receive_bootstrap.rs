@@ -41,7 +41,7 @@ where
     // catalog. Candidate construction must not depend on wire arrival order.
     for (object, advertised) in remote.objects.iter().rev() {
         let request_message_id = channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::RequestUpdates(RequestReplicaUpdates {
                     round_id: start.round_id.clone(),
                     object: Some(replica_object_to_proto(*object)),
@@ -51,7 +51,7 @@ where
                 }),
                 correlation_id,
                 Some(start_envelope_message_id),
-                None,
+                "bootstrap_update_request_send",
             )
             .await?;
         let (payload, transfer_id, staged, start_message_id) = receive_replica_transfer(
@@ -102,7 +102,7 @@ where
         );
         object_updates.insert(*object, payload);
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::ReplicaTransferAck(ReplicaTransferAck {
                     transfer_id,
                     object: Some(replica_object_to_proto(*object)),
@@ -110,7 +110,7 @@ where
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "bootstrap_replica_ack_send",
             )
             .await?;
     }
@@ -118,14 +118,14 @@ where
     let mut blobs = BTreeMap::new();
     for (sha256, size_bytes) in remote.blobs {
         let request_message_id = channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::RequestBlob(RequestBlob {
                     round_id: start.round_id.clone(),
                     sha256: decode_sha256(&sha256)?,
                 }),
                 correlation_id,
                 Some(start_envelope_message_id),
-                None,
+                "bootstrap_blob_request_send",
             )
             .await?;
         let (transfer_id, start_message_id, blob) = receive_blob_transfer(
@@ -152,20 +152,23 @@ where
         );
         blobs.insert(sha256.clone(), blob);
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::BlobTransferAck(BlobTransferAck {
                     transfer_id,
                     sha256: decode_sha256(&sha256)?,
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "bootstrap_blob_ack_send",
             )
             .await?;
     }
 
-    let result = match replica
-        .commit_bootstrap_candidate(
+    let (commit, liveness_error) = await_with_round_keepalive(
+        channel,
+        correlation_id,
+        "bootstrap_candidate_commit_keepalive",
+        replica.commit_bootstrap_candidate(
             BootstrapCandidate {
                 claim_id,
                 replica_id,
@@ -175,9 +178,13 @@ where
             commit_guard,
             writer_node_id,
             correlation_id,
-        )
-        .await
-    {
+        ),
+    )
+    .await;
+    if let Some(error) = liveness_error {
+        return Err(RoundError::Session(error));
+    }
+    let result = match commit {
         Ok(ReplicationCommit::Committed {
             object_count,
             blob_count,
@@ -251,7 +258,7 @@ where
         }),
     );
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::RoundCommitted(SyncRoundCommitted {
                 round_id: start.round_id,
                 object_count: result.object_count,
@@ -260,7 +267,7 @@ where
             }),
             correlation_id,
             Some(start_envelope_message_id),
-            None,
+            "bootstrap_round_commit_send",
         )
         .await?;
     Ok(result)

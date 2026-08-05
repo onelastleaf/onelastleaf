@@ -3,14 +3,50 @@ use super::*;
 pub(crate) async fn send_round<S>(
     channel: &mut SessionChannel<S>,
     replica: &ReplicaRuntime,
-    correlation_id: &str,
+    observation: SyncObservation<'_>,
     reply_to: Option<u64>,
     max_chunk_bytes: u32,
 ) -> Result<(u64, RoundResult), RoundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let inventory = replica.capture_replica_inventory().await?;
+    let correlation_id = observation.correlation_id;
+    let started = Instant::now();
+    replica.logger.emit(
+        LogLevel::Info,
+        "oll::sync",
+        "sync_inventory_capture_started",
+        correlation_id,
+        json!({
+            "mode": "normal",
+            "connection_id": observation.connection_id.to_string(),
+            "peer_node_id": observation.peer_node_id.to_string(),
+            "direction": observation.direction,
+        }),
+    );
+    let inventory =
+        tokio::time::timeout(ROUND_PROGRESS_DEADLINE, replica.capture_replica_inventory())
+            .await
+            .map_err(|_| {
+                RoundError::Session(SessionError::ProgressDeadlineExceeded {
+                    failure_stage: "inventory_capture",
+                })
+            })??;
+    replica.logger.emit(
+        LogLevel::Info,
+        "oll::sync",
+        "sync_inventory_capture_completed",
+        correlation_id,
+        json!({
+            "mode": "normal",
+            "object_count": inventory.objects.len(),
+            "blob_count": inventory.blobs.len(),
+            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "connection_id": observation.connection_id.to_string(),
+            "peer_node_id": observation.peer_node_id.to_string(),
+            "direction": observation.direction,
+        }),
+    );
     send_source_round(
         channel,
         replica,
@@ -64,20 +100,20 @@ where
 {
     let round_id = Uuid::new_v4().to_string();
     let start_message_id = channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::RoundStart(SyncRoundStart {
                 round_id: round_id.clone(),
                 mode: mode as i32,
             }),
             correlation_id,
             reply_to,
-            None,
+            "round_start_send",
         )
         .await?;
     let batches = inventory_batches(inventory, &round_id, correlation_id)?;
     for (batch_index, (objects, blobs)) in batches.iter().enumerate() {
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::RoundInventory(SyncRoundInventory {
                     round_id: round_id.clone(),
                     batch_index: u32::try_from(batch_index)
@@ -87,12 +123,12 @@ where
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "inventory_send",
             )
             .await?;
     }
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::RoundInventoryComplete(SyncRoundInventoryComplete {
                 round_id: round_id.clone(),
                 batch_count: u32::try_from(batches.len())
@@ -104,7 +140,7 @@ where
             }),
             correlation_id,
             Some(start_message_id),
-            None,
+            "inventory_complete_send",
         )
         .await?;
     replica.logger.emit(
@@ -126,7 +162,7 @@ where
     );
 
     loop {
-        let envelope = channel.receive(None).await?;
+        let envelope = channel.receive_progress("source_response").await?;
         if envelope.correlation_id != correlation_id || envelope.reply_to != Some(start_message_id)
         {
             return Err(RoundError::Protocol(

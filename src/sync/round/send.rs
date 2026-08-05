@@ -40,7 +40,7 @@ where
         }),
     );
     let start_message_id = channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::ReplicaTransferStart(ReplicaTransferStart {
                 transfer_id: transfer_id.clone(),
                 round_id: round_id.to_owned(),
@@ -54,7 +54,7 @@ where
             }),
             correlation_id,
             Some(request_message_id),
-            None,
+            "replica_transfer_start_send",
         )
         .await?;
     for (index, chunk) in exported
@@ -63,7 +63,7 @@ where
         .enumerate()
     {
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::ReplicaTransferChunk(ReplicaTransferChunk {
                     transfer_id: transfer_id.clone(),
                     chunk_index: u32::try_from(index)
@@ -72,21 +72,23 @@ where
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "replica_transfer_chunk_send",
             )
             .await?;
     }
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::ReplicaTransferComplete(ReplicaTransferComplete {
                 transfer_id: transfer_id.clone(),
             }),
             correlation_id,
             Some(start_message_id),
-            None,
+            "replica_transfer_complete_send",
         )
         .await?;
-    let response = channel.receive(None).await?;
+    let response = channel
+        .receive_progress("replica_transfer_ack_receive")
+        .await?;
     if response.correlation_id != correlation_id || response.reply_to != Some(start_message_id) {
         return Err(RoundError::Protocol(
             "replica transfer acknowledgement metadata is invalid",
@@ -176,7 +178,7 @@ where
         }),
     );
     let start_message_id = channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::BlobTransferStart(BlobTransferStart {
                 transfer_id: transfer_id.clone(),
                 round_id: round_id.to_owned(),
@@ -186,7 +188,7 @@ where
             }),
             correlation_id,
             Some(request_message_id),
-            None,
+            "blob_transfer_start_send",
         )
         .await?;
     let mut remaining = size_bytes;
@@ -199,7 +201,7 @@ where
             .await
             .map_err(|error| ReplicaError::io("read staged replication blob", error))?;
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::BlobTransferChunk(BlobTransferChunk {
                     transfer_id: transfer_id.clone(),
                     chunk_index: index,
@@ -207,7 +209,7 @@ where
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "blob_transfer_chunk_send",
             )
             .await?;
         remaining -= u64::try_from(count)
@@ -219,16 +221,18 @@ where
         ));
     }
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::BlobTransferComplete(BlobTransferComplete {
                 transfer_id: transfer_id.clone(),
             }),
             correlation_id,
             Some(start_message_id),
-            None,
+            "blob_transfer_complete_send",
         )
         .await?;
-    let response = channel.receive(None).await?;
+    let response = channel
+        .receive_progress("blob_transfer_ack_receive")
+        .await?;
     if response.correlation_id != correlation_id || response.reply_to != Some(start_message_id) {
         return Err(RoundError::Protocol(
             "blob transfer acknowledgement metadata is invalid",

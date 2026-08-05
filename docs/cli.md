@@ -321,8 +321,11 @@ against every configured peer and waits for a result per peer. With a name, it
 targets only the durable identity learned from an earlier authenticated
 handshake. The command has no fixed ten-second request deadline; `oll ping`
 retains a short deadline and measures an authenticated sync-protocol ping, not
-ICMP. Cancelling the waiting CLI does not tear down the daemon's persistent
-background peer connection.
+ICMP. Normal and bootstrap rounds instead enforce the documented 120-second
+no-progress deadline independently for each wire phase, so a continuously
+progressing transfer remains unbounded in total duration while a silent session
+is discarded and reconnected. Cancelling the waiting CLI does not tear down the
+daemon's persistent background peer connection.
 
 ## Plugin commands
 

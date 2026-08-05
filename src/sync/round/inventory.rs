@@ -19,7 +19,7 @@ where
     let mut remote_blobs = BTreeMap::new();
     let mut expected_batch = 0_u32;
     loop {
-        let envelope = channel.receive(None).await?;
+        let envelope = channel.receive_progress("inventory_receive").await?;
         if envelope.correlation_id != correlation_id
             || envelope.reply_to != Some(start_envelope_message_id)
         {

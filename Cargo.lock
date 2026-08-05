@@ -2321,6 +2321,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "snow",
+ "socket2",
  "sqlx",
  "tar",
  "tempfile",

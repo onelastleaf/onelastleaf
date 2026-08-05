@@ -136,6 +136,47 @@ message. Implementations still stream received chunks directly into private
 staging files and use bounded producer queues so they do not defeat TCP
 backpressure by buffering an unbounded amount in userspace.
 
+### Connection liveness
+
+Every established TCP stream enables operating-system keepalive as a secondary
+failure detector. On supported Unix platforms the initial policy is 60 seconds
+idle, 10 seconds between probes, and three unanswered probes. Linux additionally
+uses a 120-second `TCP_USER_TIMEOUT` for data that remains unacknowledged or
+unsent. Failure to apply one of these optional socket tunings records
+`sync_tcp_liveness_configuration_failed` with only the operating-system error
+kind; it does not reject an otherwise usable connection because application
+liveness remains authoritative.
+
+An authenticated `ready` or `waiting_for_replica` session that has carried no
+valid envelope in either direction for 30 seconds sends an encrypted `SyncPing`.
+It must receive the matching `SyncPong` within 10 seconds. A valid envelope in
+either direction resets the idle interval. Either endpoint may initiate this
+probe; simultaneous probes are valid. Heartbeat success is `TRACE` only. A
+missed heartbeat records `sync_session_liveness_failed` at `WARN`, fails pending
+session work as unavailable, removes that connection from the active-session
+registry, and closes the socket so an outbound owner can reconnect. Heartbeats
+reuse the existing ping/pong messages and do not add another negotiation or
+flow-control protocol.
+
+An active normal or bootstrap round suspends the idle-heartbeat timer. Ordinary
+round traffic proves liveness. During a prolonged local operation that cannot
+be safely cancelled after authoritative SQL activation begins, the owner may
+send the same encrypted Ping/Pong as a round-progress keepalive; round receivers
+consume it transparently without changing message order or commit meaning. A
+sent round keepalive remains matchable until its Pong is consumed or the session
+ends; the ordinary phase deadline must not turn a queued valid Pong into an
+unknown message after a long local commit.
+Local candidate validation, inactive-generation construction, activation, and
+projection are one cancellation-safe commit path rather than wire progress
+phases. A duplicate-session or identity-change request that arrives during that
+path is observed after the finite round reaches its terminal commit/reject
+boundary; it must not drop a future whose SQL activation may already have
+committed. Once a finite round has begun, daemon shutdown stops admitting new
+work but lets that round reach its terminal boundary until the node's single
+absolute deadline. Only the node shutdown coordinator may abort the connection
+task at that deadline, after which ordinary store/projection recovery is
+authoritative.
+
 ## Application handshake
 
 Immediately after Noise completes, both peers independently send one encrypted
@@ -216,6 +257,23 @@ request sent by the lexicographically smaller canonical `NodeId` wins and the
 other local request is coalesced into that same bidirectional operation. This
 request arbitration prevents two inventories from deadlocking or being mistaken
 for responses; it is not application flow control or replica authority.
+
+A normal or bootstrap round has no fixed total-duration limit. Each transport
+send, each wait for the next expected envelope, and the read-only starting
+inventory capture instead has a 120-second no-progress deadline. Completing a
+valid protocol step starts a fresh deadline, so a transfer that continues to
+produce frames may run for hours. The deadline is not applied by cancelling a
+store operation after an authoritative activation has begun.
+
+When a progress deadline expires, the local node records
+`sync_round_progress_timeout` with the connection, peer, correlation,
+`failure_stage`, `failure_source`, and `idle_ms`. Inventory capture uses
+`failure_source = local_store`; encrypted frame send/receive uses `transport`.
+The pending round returns unavailable, the entire session is removed and
+closed, and a configured outbound owner enters its normal reconnect path. A
+remaining `oll sync -n` attempt waits for a newly authenticated session rather
+than reusing the failed socket. Partial staging is discarded or recovered
+through the existing candidate rules.
 
 For each accepted request, the first source starts a round, captures a coherent
 starting inventory under a short replica write barrier, and then releases the
@@ -352,9 +410,10 @@ The sync stage adds only two Admin RPCs:
 viewer; neither is an Admin RPC. Admin connection establishment retains its
 short deadline. `PingPeer` is a short RPC. `SynchronizePeers` has no fixed
 10-second request deadline because connection attempts and valid transfers may
-take longer. Its `total_attempts` counts the initial attempt, is greater than
-zero, and is enforced by the daemon. Cancelling the Admin waiter does not tear
-down a durable background peer session.
+take longer; the transport and round liveness deadlines above still prevent a
+silent connection from holding it forever. Its `total_attempts` counts the
+initial attempt, is greater than zero, and is enforced by the daemon. Cancelling
+the Admin waiter does not tear down a durable background peer session.
 
 Status lists configured outbound targets even before authentication and also
 authenticated inbound-only peers. A connect target is optional on an inbound
@@ -376,6 +435,14 @@ bootstrap uses one inherited ID across every transfer and activation step. A
 background connection or inbound operation without an external ID creates one
 at its first local boundary. Network keys, handshake material, raw frames, Loro
 updates, and blobs are never logged.
+
+Normal-round phase visibility includes `sync_round_request_sent`,
+`sync_round_request_received`, `sync_inventory_capture_started`, and
+`sync_inventory_capture_completed`. The first two prove that the local channel
+respectively wrote or received the wire request; `sync_round_started` alone
+continues to mean that the Admin operation began. Liveness failures use
+`sync_session_liveness_failed` or `sync_round_progress_timeout`, never a generic
+protocol bucket. Heartbeat successes remain `TRACE` to avoid idle log noise.
 
 `sync_session_failed` is an actionable local diagnostic, not one generic
 `protocol` bucket. It always records:
@@ -436,6 +503,14 @@ Sync tests cover:
 - both-uninitialized peers retaining one authenticated waiting session without
   failure/backoff churn, then bootstrapping when either topology side creates
   its first replica;
+- idle ready/waiting sessions exchanging encrypted heartbeats, a silent peer
+  being removed after the heartbeat deadline, and TCP keepalive options being
+  applied where the platform exposes them;
+- a silent peer timing out each finite-round wire phase, unregistering the
+  failed session, reconnecting before a remaining attempt, and a continuously
+  progressing transfer exceeding 120 seconds in total without failure;
+- a stalled read-only inventory capture timing out without mutating active
+  replica state;
 - concurrent first-replica creation selecting normal sync for equal IDs or
   rejecting different IDs without overwriting either active replica;
 - fresh bootstrap `LoroPeerId` selection and `replica.json` recovery;
@@ -444,4 +519,9 @@ Sync tests cover:
 - inherited correlation through a normal transfer and an entire bootstrap;
 - stable, cause-specific session-failure diagnostics, including redaction of a
   peer-controlled close message and all network-key material;
+- sent/received round-request, inventory-capture, heartbeat-failure, and
+  progress-timeout events retaining the operation correlation and connection
+  identity;
+- shutdown draining an in-flight finite round until its terminal boundary while
+  retaining the node's absolute hard-stop deadline;
 - listener/session shutdown under the node's single absolute deadline.

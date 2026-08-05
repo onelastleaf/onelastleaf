@@ -216,6 +216,22 @@ async fn finite_bidirectional_round_converges_offline_catalog_changes() {
     })
     .expect("one inherited correlation must span both directions of the finite round");
     assert!(!round_correlation.is_empty());
+    for event_name in [
+        "sync_round_request_sent",
+        "sync_round_request_received",
+        "sync_inventory_capture_started",
+        "sync_inventory_capture_completed",
+    ] {
+        let event = logs
+            .iter()
+            .flat_map(|events| events.iter())
+            .find(|event| {
+                event["event"] == event_name && event["correlation_id"] == round_correlation
+            })
+            .unwrap_or_else(|| panic!("{event_name} did not retain the finite-round correlation"));
+        assert!(event["connection_id"].is_string());
+        assert!(event["peer_node_id"].is_string());
+    }
 
     let second_result = second_sync
         .synchronize(None, 1, "already-converged-correlation")

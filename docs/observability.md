@@ -78,11 +78,13 @@ stream:
 - Loro decode/import result and frontier/version summary;
 - binary blob verification, byte counts, and atomic materialization state;
 - EOF, retry, backoff, and reconnection;
+- TCP-liveness option failures, encrypted idle-heartbeat failures, finite-round
+  request send/receive, inventory capture, and no-progress timeout stages;
 - one `sync_session_waiting_for_replica` transition per authenticated waiting
   connection and the non-error replica-availability renegotiation that ends it.
 
 Normal levels record one event per operation or transfer phase, not one event per
-chunk. Individual chunk events are `TRACE` only.
+chunk. Individual chunk events and successful idle heartbeats are `TRACE` only.
 
 ### `plugin.log`
 
@@ -248,7 +250,7 @@ Relevant events SHOULD add typed fields rather than concatenate data into
 - `operation_id`, `snapshot_id`, and `artifact_id`;
 - `round_id`, `bootstrap_id`, and connection direction;
 - `error_code`, `failure_stage`, `failure_source`, `sync_close_code`,
-  `retryable`, `attempt`, and `backoff_ms`;
+  `retryable`, `attempt`, `backoff_ms`, and `idle_ms`;
 - `bytes`, `object_count`, `chunk_count`, and `duration_ms`.
 
 Each delayed working-tree projection retry is a structured `WARN` event with a
@@ -401,6 +403,9 @@ Tests must verify:
 - rotation/reopen behavior;
 - useful structured context on working-tree reconciliation, network, import,
   projection, and recovery failures;
+- distinct sync request-sent/request-received, inventory-capture,
+  heartbeat-failure, and round-progress-timeout events without heartbeat-success
+  noise at `INFO`;
 - readable foreground rendering, duplicate-failure suppression, automatic
   plain output for nonterminals, and explicit colored/plain overrides;
 - plugin package publication/removal, desired-state persistence, process-state

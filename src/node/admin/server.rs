@@ -607,6 +607,10 @@ fn sync_status(error: SyncError) -> Status {
         SyncError::NotFound(message) => Status::not_found(message),
         SyncError::FailedPrecondition(message) => Status::failed_precondition(message),
         SyncError::Unavailable(message) => Status::unavailable(message),
+        SyncError::SessionLost(error) => Status::unavailable(error.to_string()),
+        SyncError::ProgressTimeout { failure_stage } => Status::unavailable(format!(
+            "sync round made no progress during {failure_stage}"
+        )),
         SyncError::Protocol(message) => Status::aborted(message),
         SyncError::Store | SyncError::Internal(_) => {
             Status::internal("sync operation failed; inspect the correlated daemon log")

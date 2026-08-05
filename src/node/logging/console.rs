@@ -283,6 +283,8 @@ fn headline(record: &Value, event: &str) -> String {
         }
         "sync_connect_failed" => "could not connect to sync peer".to_owned(),
         "sync_session_failed" => "sync handshake failed".to_owned(),
+        "sync_session_liveness_failed" => "sync connection became unresponsive".to_owned(),
+        "sync_round_progress_timeout" => "sync round stopped making progress".to_owned(),
         "sync_session_ready" => match field(record, "remote_node_name") {
             Some(peer) => format!("connected to {peer}"),
             None => "sync session ready".to_owned(),
@@ -320,8 +322,11 @@ fn context(record: &Value) -> Vec<String> {
         ("process_id", "pid"),
         ("reason", "reason"),
         ("error_code", "error"),
+        ("failure_stage", "stage"),
         ("error_kind", "error_kind"),
+        ("peer_node_id", "peer_id"),
         ("replica_id", "replica"),
+        ("idle_ms", "idle_ms"),
         ("duration_ms", "duration_ms"),
     ] {
         if let Some(value) = scalar(record.get(field_name)) {

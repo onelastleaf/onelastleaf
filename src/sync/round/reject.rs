@@ -12,7 +12,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::ReplicaTransferReject(ReplicaTransferReject {
                 transfer_id: transfer_id.to_owned(),
                 code: code as i32,
@@ -20,7 +20,7 @@ where
             }),
             correlation_id,
             reply_to,
-            None,
+            "replica_reject_send",
         )
         .await?;
     Ok(())
@@ -38,7 +38,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::BlobTransferReject(BlobTransferReject {
                 transfer_id: transfer_id.to_owned(),
                 code: code as i32,
@@ -46,7 +46,7 @@ where
             }),
             correlation_id,
             reply_to,
-            None,
+            "blob_reject_send",
         )
         .await?;
     Ok(())
@@ -64,7 +64,7 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::RoundReject(SyncRoundReject {
                 round_id: round_id.to_owned(),
                 code: code as i32,
@@ -72,7 +72,7 @@ where
             }),
             correlation_id,
             Some(reply_to),
-            None,
+            "round_reject_send",
         )
         .await?;
     Err(RoundError::Rejected(message.to_owned()))

@@ -36,10 +36,22 @@ async fn an_unanswered_ping_expires_without_poisoning_the_session() {
                 .unwrap();
 
             let first = session.channel.receive(None).await.unwrap();
-            assert!(matches!(
-                first.payload,
-                Some(sync_envelope::Payload::Ping(_))
-            ));
+            let Some(sync_envelope::Payload::Ping(first_ping)) = first.payload else {
+                panic!("expected the first ping");
+            };
+            sleep(Duration::from_millis(120)).await;
+            session
+                .channel
+                .send(
+                    sync_envelope::Payload::Pong(SyncPong {
+                        nonce: first_ping.nonce,
+                    }),
+                    &first.correlation_id,
+                    Some(first.message_id),
+                    None,
+                )
+                .await
+                .unwrap();
             let second = session.channel.receive(None).await.unwrap();
             let Some(sync_envelope::Payload::Ping(ping)) = second.payload else {
                 panic!("expected the second ping after the first timed out");

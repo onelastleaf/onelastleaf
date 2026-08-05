@@ -90,6 +90,36 @@ fn waiting_for_a_replica_is_a_readable_info_transition() {
 }
 
 #[test]
+fn liveness_and_progress_failures_have_actionable_foreground_text() {
+    let heartbeat = record(
+        "sync_session_liveness_failed",
+        "WARN",
+        serde_json::json!({
+            "error_code": "heartbeat_timeout",
+            "failure_stage": "heartbeat_response",
+            "idle_ms": 40000
+        }),
+    );
+    let heartbeat = output(ColorChoice::Never, &heartbeat);
+    assert!(heartbeat.contains("sync connection became unresponsive"));
+    assert!(heartbeat.contains("stage heartbeat_response"));
+    assert!(heartbeat.contains("idle_ms 40000"));
+
+    let round = record(
+        "sync_round_progress_timeout",
+        "WARN",
+        serde_json::json!({
+            "error_code": "round_progress_timeout",
+            "failure_stage": "round_start_receive",
+            "idle_ms": 120000
+        }),
+    );
+    let round = output(ColorChoice::Never, &round);
+    assert!(round.contains("sync round stopped making progress"));
+    assert!(round.contains("stage round_start_receive"));
+}
+
+#[test]
 fn repeated_failures_are_suppressed_then_summarized_and_success_resets_them() {
     let mut presenter = ConsolePresenter::new(Vec::new());
     let failure = record(

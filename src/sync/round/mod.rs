@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, fmt, time::Instant};
+use std::{collections::BTreeMap, fmt, future::Future, time::Instant};
 
 use loro::{Frontiers, ID, VersionVector};
 use prost::Message;
@@ -27,7 +27,11 @@ use crate::{
     },
 };
 
-use super::{SessionChannel, SessionError, transport::MAX_PLAINTEXT};
+use super::{
+    SessionChannel, SessionError, SyncObservation,
+    session::{ROUND_KEEPALIVE_INTERVAL, ROUND_PROGRESS_DEADLINE},
+    transport::MAX_PLAINTEXT,
+};
 
 const INVENTORY_BATCH_ITEMS: usize = 64;
 
@@ -85,6 +89,38 @@ impl From<SessionError> for RoundError {
 impl From<ReplicaError> for RoundError {
     fn from(error: ReplicaError) -> Self {
         Self::Replica(error)
+    }
+}
+
+async fn await_with_round_keepalive<S, F, T>(
+    channel: &mut SessionChannel<S>,
+    correlation_id: &str,
+    failure_stage: &'static str,
+    operation: F,
+) -> (T, Option<SessionError>)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+    F: Future<Output = T>,
+{
+    tokio::pin!(operation);
+    let sleep = tokio::time::sleep(ROUND_KEEPALIVE_INTERVAL);
+    tokio::pin!(sleep);
+    let mut liveness_error = None;
+    loop {
+        tokio::select! {
+            biased;
+            result = &mut operation => return (result, liveness_error),
+            _ = &mut sleep, if liveness_error.is_none() => {
+                if let Err(error) = channel
+                    .send_round_keepalive(correlation_id, failure_stage)
+                    .await
+                {
+                    liveness_error = Some(error);
+                } else {
+                    sleep.as_mut().reset(tokio::time::Instant::now() + ROUND_KEEPALIVE_INTERVAL);
+                }
+            }
+        }
     }
 }
 

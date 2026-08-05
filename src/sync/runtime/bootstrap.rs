@@ -6,7 +6,7 @@ pub(super) async fn run_bootstrap_session(
     bound_epoch: u64,
     bootstrap_claim: Option<BootstrapClaim>,
     mut bootstrap_guard: Option<tokio::sync::OwnedMutexGuard<()>>,
-    correlation_id: &str,
+    observation: SyncObservation<'_>,
 ) {
     let replica_id = pending
         .replica_id
@@ -15,7 +15,7 @@ pub(super) async fn run_bootstrap_session(
         LogLevel::Info,
         "oll::sync",
         "sync_bootstrap_started",
-        correlation_id,
+        observation.correlation_id,
         json!({
             "source_node_id": match pending.mode {
                 SessionReplicaMode::BootstrapSource => runtime.identities.node_id().await,
@@ -25,9 +25,12 @@ pub(super) async fn run_bootstrap_session(
                 }
             }.to_string(),
             "replica_id": replica_id.to_string(),
+            "connection_id": observation.connection_id.to_string(),
+            "peer_node_id": observation.peer_node_id.to_string(),
+            "direction": observation.direction,
         }),
     );
-    let mut shutdown = runtime.shutdown.subscribe();
+    let shutdown = runtime.shutdown.subscribe();
     let mut epoch = runtime.identities.subscribe_epoch();
     // A receiver holds the identity commit gate for the whole transfer. Its own
     // successful activation advances this epoch before projection finishes;
@@ -47,29 +50,71 @@ pub(super) async fn run_bootstrap_session(
     let mut work = Box::pin(async {
         match pending.mode {
             SessionReplicaMode::BootstrapSource => {
-                match runtime.replica.capture_bootstrap_source().await {
-                    Ok(source) if source.inventory.replica_id == replica_id => {
+                let started = std::time::Instant::now();
+                runtime.logger.emit(
+                    LogLevel::Info,
+                    "oll::sync",
+                    "sync_inventory_capture_started",
+                    observation.correlation_id,
+                    json!({
+                        "mode": "bootstrap",
+                        "connection_id": observation.connection_id.to_string(),
+                        "peer_node_id": observation.peer_node_id.to_string(),
+                        "direction": observation.direction,
+                    }),
+                );
+                let capture = tokio::time::timeout(
+                    ROUND_PROGRESS_DEADLINE,
+                    runtime.replica.capture_bootstrap_source(),
+                )
+                .await;
+                match capture {
+                    Err(_) => Err(round_error_to_sync(RoundError::Session(
+                        SessionError::ProgressDeadlineExceeded {
+                            failure_stage: "bootstrap_inventory_capture",
+                        },
+                    ))),
+                    Ok(Ok(source)) if source.inventory.replica_id == replica_id => {
+                        runtime.logger.emit(
+                            LogLevel::Info,
+                            "oll::sync",
+                            "sync_inventory_capture_completed",
+                            observation.correlation_id,
+                            json!({
+                                "mode": "bootstrap",
+                                "object_count": source.inventory.objects.len(),
+                                "blob_count": source.inventory.blobs.len(),
+                                "duration_ms": u64::try_from(started.elapsed().as_millis())
+                                    .unwrap_or(u64::MAX),
+                                "connection_id": observation.connection_id.to_string(),
+                                "peer_node_id": observation.peer_node_id.to_string(),
+                                "direction": observation.direction,
+                            }),
+                        );
                         send_bootstrap_round(
                             &mut pending.channel,
                             &runtime.replica,
                             &source,
-                            correlation_id,
+                            observation.correlation_id,
                             pending.max_chunk_bytes,
                         )
                         .await
                         .map_err(round_error_to_sync)
                     }
-                    Ok(_) => Err(SyncError::Protocol(
+                    Ok(Ok(_)) => Err(SyncError::Protocol(
                         "local ReplicaId changed after bootstrap negotiation".to_owned(),
                     )),
-                    Err(error) => Err(round_error_to_sync(RoundError::Replica(error))),
+                    Ok(Err(error)) => Err(round_error_to_sync(RoundError::Replica(error))),
                 }
             }
             SessionReplicaMode::BootstrapReceiver => {
-                let received = pending.channel.receive(None).await;
+                let received = pending
+                    .channel
+                    .receive_progress("bootstrap_round_start_receive")
+                    .await;
                 match received {
                     Ok(envelope)
-                        if envelope.correlation_id == correlation_id
+                        if envelope.correlation_id == observation.correlation_id
                             && envelope.reply_to.is_none() =>
                     {
                         match envelope.payload {
@@ -86,7 +131,7 @@ pub(super) async fn run_bootstrap_session(
                                     &runtime.replica,
                                     envelope.message_id,
                                     start,
-                                    correlation_id,
+                                    observation.correlation_id,
                                     pending.max_chunk_bytes,
                                     claim.claim_id,
                                     replica_id,
@@ -105,7 +150,7 @@ pub(super) async fn run_bootstrap_session(
                         "bootstrap round metadata differs from its inherited correlation"
                             .to_owned(),
                     )),
-                    Err(error) => Err(SyncError::Unavailable(error.to_string())),
+                    Err(error) => Err(round_error_to_sync(RoundError::Session(error))),
                 }
             }
             SessionReplicaMode::Waiting | SessionReplicaMode::Normal => {
@@ -117,25 +162,17 @@ pub(super) async fn run_bootstrap_session(
         Err(SyncError::Unavailable(
             "bootstrap session was cancelled".to_owned(),
         ))
-    } else {
+    } else if watch_identity_changes_during_transfer {
         tokio::select! {
             biased;
-            _ = shutdown.changed() => {
-                cancellation = Some((SyncCloseCode::ShuttingDown, "local daemon is shutting down"));
-                Err(SyncError::Unavailable("bootstrap session was cancelled by shutdown".to_owned()))
-            }
-            _ = async {
-                if watch_identity_changes_during_transfer {
-                    let _ = epoch.changed().await;
-                } else {
-                    std::future::pending::<()>().await;
-                }
-            } => {
+            _ = epoch.changed() => {
                 cancellation = Some((SyncCloseCode::Normal, "local identity changed; reconnect required"));
                 Err(SyncError::Unavailable("bootstrap session was cancelled by an identity change".to_owned()))
             }
             result = &mut work => result,
         }
+    } else {
+        work.as_mut().await
     };
     drop(work);
 
@@ -150,7 +187,7 @@ pub(super) async fn run_bootstrap_session(
             LogLevel::Warn,
             "oll::sync",
             "sync_bootstrap_claim_release_failed",
-            correlation_id,
+            observation.correlation_id,
             json!({ "claim_id": claim.claim_id.to_string() }),
         );
     }
@@ -161,7 +198,7 @@ pub(super) async fn run_bootstrap_session(
             LogLevel::Info,
             "oll::sync",
             "sync_bootstrap_cancelled",
-            correlation_id,
+            observation.correlation_id,
             json!({
                 "reason": if code == SyncCloseCode::ShuttingDown {
                     "shutdown"
@@ -172,7 +209,12 @@ pub(super) async fn run_bootstrap_session(
         );
         pending
             .channel
-            .close(code, message, correlation_id, None)
+            .close(
+                code,
+                message,
+                observation.correlation_id,
+                Some(Instant::now() + SESSION_CLOSE_DEADLINE),
+            )
             .await;
         return;
     }
@@ -183,7 +225,7 @@ pub(super) async fn run_bootstrap_session(
                 LogLevel::Info,
                 "oll::sync",
                 "sync_bootstrap_completed",
-                correlation_id,
+                observation.correlation_id,
                 json!({
                     "replica_id": replica_id.to_string(),
                     "object_count": result.object_count,
@@ -196,17 +238,18 @@ pub(super) async fn run_bootstrap_session(
                 .close(
                     SyncCloseCode::Normal,
                     "bootstrap completed; reconnect for normal sync",
-                    correlation_id,
-                    None,
+                    observation.correlation_id,
+                    Some(Instant::now() + SESSION_CLOSE_DEADLINE),
                 )
                 .await;
         }
         Err(error) => {
+            log_round_session_failure(runtime, observation, &error);
             runtime.logger.emit(
                 LogLevel::Warn,
                 "oll::sync",
                 "sync_bootstrap_failed",
-                correlation_id,
+                observation.correlation_id,
                 json!({ "error_code": sync_error_name(&error) }),
             );
             let close_code = match error {
@@ -218,8 +261,8 @@ pub(super) async fn run_bootstrap_session(
                 .close(
                     close_code,
                     "bootstrap did not complete",
-                    correlation_id,
-                    None,
+                    observation.correlation_id,
+                    Some(Instant::now() + SESSION_CLOSE_DEADLINE),
                 )
                 .await;
         }

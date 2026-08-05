@@ -21,7 +21,7 @@ fn reconnect_backoff_is_bounded_even_after_saturation() {
 fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
     let transport = session_failure_fields(
         &SessionError::Transport(TransportError::NoiseHandshake),
-        Direction::Outbound,
+        "outbound",
         "transport_handshake",
         Some("oll://peer.example:17384"),
     );
@@ -38,7 +38,7 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
             error_code: "replica_mismatch",
             message: "peer ReplicaId differs from the local replica",
         },
-        Direction::Inbound,
+        "inbound",
         "sync_hello",
         None,
     );
@@ -55,7 +55,7 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
             code: SyncCloseCode::SchemaMismatch,
             message: "attacker-controlled network key material".to_owned(),
         },
-        Direction::Outbound,
+        "outbound",
         "sync_hello",
         Some("oll://peer.example:17384"),
     );
@@ -196,7 +196,7 @@ async fn identity_epoch_change_closes_an_existing_ready_session() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn shutdown_cancels_an_inflight_round_and_unregisters_its_ready_session() {
+async fn shutdown_hard_deadline_aborts_a_stalled_round_and_clears_its_registry_entry() {
     let client = SyncDeployment::new("shutdown-round-client");
     fs::write(client.root.join("ready.md"), "ready").unwrap();
     let (client_replica, client_logger) = client.start_replica().await;
@@ -236,13 +236,7 @@ async fn shutdown_cancels_an_inflight_round_and_unregisters_its_ready_session() 
                 Some(sync_envelope::Payload::RoundRequest(_))
             ));
             round_started.send(()).unwrap();
-            assert!(matches!(
-                session.channel.receive(None).await,
-                Err(SessionError::RemoteClosed {
-                    code: SyncCloseCode::ShuttingDown,
-                    ..
-                })
-            ));
+            assert!(session.channel.receive(None).await.is_err());
         }
     });
     let client_sync = SyncRuntime::start(
@@ -286,10 +280,10 @@ async fn shutdown_cancels_an_inflight_round_and_unregisters_its_ready_session() 
         .unwrap();
 
     let started = Instant::now();
-    client_sync
-        .shutdown(Instant::now() + Duration::from_secs(2))
-        .await
-        .unwrap();
+    let shutdown = client_sync
+        .shutdown(Instant::now() + Duration::from_millis(150))
+        .await;
+    assert!(matches!(shutdown, Err(SyncError::Unavailable(_))));
     assert!(started.elapsed() < Duration::from_secs(1));
     assert!(client_sync.sessions.lock().await.is_empty());
     let result = round.await.unwrap();
@@ -303,7 +297,7 @@ async fn shutdown_cancels_an_inflight_round_and_unregisters_its_ready_session() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn shutdown_cancels_an_inflight_bootstrap_before_its_absolute_deadline() {
+async fn shutdown_hard_deadline_aborts_a_stalled_bootstrap() {
     let source = SyncDeployment::new("shutdown-bootstrap-source");
     fs::write(source.root.join("ready.md"), "ready").unwrap();
     let (source_replica, source_logger) = source.start_replica().await;
@@ -348,13 +342,7 @@ async fn shutdown_cancels_an_inflight_bootstrap_before_its_absolute_deadline() {
                 }
             }
             inventory_received.send(()).unwrap();
-            assert!(matches!(
-                session.channel.receive(None).await,
-                Err(SessionError::RemoteClosed {
-                    code: SyncCloseCode::ShuttingDown,
-                    ..
-                })
-            ));
+            assert!(session.channel.receive(None).await.is_err());
         }
     });
     let source_sync = SyncRuntime::start(
@@ -375,9 +363,10 @@ async fn shutdown_cancels_an_inflight_bootstrap_before_its_absolute_deadline() {
 
     let started = Instant::now();
     source_sync
-        .shutdown(Instant::now() + Duration::from_secs(2))
+        .shutdown(Instant::now() + Duration::from_millis(150))
         .await
         .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(100));
     assert!(started.elapsed() < Duration::from_secs(1));
     receiver.await.unwrap();
 

@@ -40,6 +40,10 @@ pub(super) fn sync_node_error(error: SyncError) -> NodeError {
         | SyncError::FailedPrecondition(message)
         | SyncError::Protocol(message) => NodeError::Operation(message),
         SyncError::Unavailable(message) => NodeError::Unavailable(message),
+        SyncError::SessionLost(error) => NodeError::Unavailable(error.to_string()),
+        SyncError::ProgressTimeout { failure_stage } => NodeError::Unavailable(format!(
+            "sync round made no progress during {failure_stage}"
+        )),
         SyncError::Store | SyncError::Internal(_) => NodeError::Internal(error.to_string()),
     }
 }

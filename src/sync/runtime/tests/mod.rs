@@ -204,5 +204,6 @@ async fn delete_node(replica: &ReplicaRuntime, operation_id: &str, path: &str) {
 mod bootstrap;
 mod convergence;
 mod lifecycle;
+mod liveness;
 mod ping;
 mod waiting;

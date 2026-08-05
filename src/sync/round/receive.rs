@@ -14,7 +14,9 @@ pub(super) async fn receive_replica_transfer<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let envelope = channel.receive(None).await?;
+    let envelope = channel
+        .receive_progress("replica_transfer_start_receive")
+        .await?;
     let Some(sync_envelope::Payload::ReplicaTransferStart(start)) = envelope.payload else {
         return Err(RoundError::Protocol("expected ReplicaTransferStart"));
     };
@@ -162,7 +164,9 @@ pub(super) async fn receive_blob_transfer<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let envelope = channel.receive(None).await?;
+    let envelope = channel
+        .receive_progress("blob_transfer_start_receive")
+        .await?;
     let Some(sync_envelope::Payload::BlobTransferStart(start)) = envelope.payload else {
         return Err(RoundError::Protocol("expected BlobTransferStart"));
     };
@@ -257,7 +261,10 @@ where
     let mut hash = Sha256::new();
     let mut received = 0_u64;
     for expected_index in 0..chunk_count {
-        let envelope = channel.receive(None).await.map_err(ChunkError::Session)?;
+        let envelope = channel
+            .receive_progress("transfer_chunk_receive")
+            .await
+            .map_err(ChunkError::Session)?;
         if envelope.correlation_id != correlation_id || envelope.reply_to != Some(start_message_id)
         {
             return Err(ChunkError::Sequence);
@@ -283,7 +290,10 @@ where
         hash.update(&data);
         file.write_all(&data).await.map_err(|_| ChunkError::Store)?;
     }
-    let envelope = channel.receive(None).await.map_err(ChunkError::Session)?;
+    let envelope = channel
+        .receive_progress("transfer_complete_receive")
+        .await
+        .map_err(ChunkError::Session)?;
     if envelope.correlation_id != correlation_id || envelope.reply_to != Some(start_message_id) {
         return Err(ChunkError::Sequence);
     }

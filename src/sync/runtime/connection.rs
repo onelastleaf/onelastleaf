@@ -21,6 +21,22 @@ pub(super) async fn run_connection(
         return ConnectionDisposition::RetryWithBackoff;
     };
     let _ = stream.set_nodelay(true);
+    if let Err(error) = configure_tcp_liveness(&stream) {
+        runtime.logger.emit(
+            LogLevel::Warn,
+            "oll::sync",
+            "sync_tcp_liveness_configuration_failed",
+            &correlation_id,
+            json!({
+                "direction": match direction {
+                    Direction::Inbound => "inbound",
+                    Direction::Outbound => "outbound",
+                },
+                "connect_target": connect_target.as_deref(),
+                "io_error_kind": format!("{:?}", error.kind()),
+            }),
+        );
+    }
     let deadline = Instant::now() + HANDSHAKE_DEADLINE;
     let transport = match direction {
         Direction::Outbound => NoiseTransport::connect(stream, psk, deadline).await,
@@ -235,6 +251,7 @@ pub(super) async fn run_connection(
     let mode = pending.mode;
     let max_chunk_bytes = pending.max_chunk_bytes;
     let handshake_hash = *pending.channel.handshake_hash();
+    let connection_id = Uuid::new_v4();
     if matches!(
         mode,
         SessionReplicaMode::BootstrapSource | SessionReplicaMode::BootstrapReceiver
@@ -245,7 +262,12 @@ pub(super) async fn run_connection(
             bound_epoch,
             bootstrap_claim,
             bootstrap_guard,
-            &operation_correlation_id,
+            SyncObservation {
+                connection_id,
+                peer_node_id: remote.node_id(),
+                direction: direction_name(direction),
+                correlation_id: &operation_correlation_id,
+            },
         )
         .await;
         return ConnectionDisposition::RetryWithBackoff;
@@ -261,13 +283,16 @@ pub(super) async fn run_connection(
     let (cancel_tx, cancel_rx) = watch::channel(None);
     let session_id = match runtime
         .register_session(
-            remote.clone(),
-            direction,
-            connect_target.clone(),
-            handshake_hash,
-            connection_state,
-            commands_tx,
-            cancel_tx,
+            remote.node_id(),
+            ActiveSession {
+                session_id: connection_id,
+                direction,
+                connect_target: connect_target.clone(),
+                handshake_hash,
+                connection_state,
+                commands: commands_tx,
+                cancel: cancel_tx,
+            },
         )
         .await
     {
@@ -315,8 +340,10 @@ pub(super) async fn run_connection(
     let disposition = run_ready_session(
         &runtime,
         pending.channel,
+        session_id,
         bound_epoch,
         remote.node_id(),
+        direction,
         mode,
         max_chunk_bytes,
         commands_rx,

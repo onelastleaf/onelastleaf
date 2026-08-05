@@ -4,6 +4,13 @@ pub(crate) struct SessionChannel<S> {
     transport: NoiseTransport<S>,
     next_message_id: u64,
     last_received_message_id: u64,
+    last_activity: Instant,
+    transparent_pings: HashMap<u64, TransparentPing>,
+}
+
+struct TransparentPing {
+    message_id: u64,
+    expires_at: Option<Instant>,
 }
 
 impl<S> SessionChannel<S>
@@ -15,11 +22,17 @@ where
             transport,
             next_message_id: 1,
             last_received_message_id: 0,
+            last_activity: Instant::now(),
+            transparent_pings: HashMap::new(),
         }
     }
 
     pub(crate) fn handshake_hash(&self) -> &[u8; 32] {
         self.transport.handshake_hash()
+    }
+
+    pub(crate) fn last_activity(&self) -> Instant {
+        self.last_activity
     }
 
     pub(crate) async fn send(
@@ -56,7 +69,30 @@ where
                 deadline,
             )
             .await?;
+        self.last_activity = Instant::now();
         Ok(message_id)
+    }
+
+    pub(crate) async fn send_progress(
+        &mut self,
+        payload: sync_envelope::Payload,
+        correlation_id: &str,
+        reply_to: Option<u64>,
+        failure_stage: &'static str,
+    ) -> Result<u64, SessionError> {
+        self.send(
+            payload,
+            correlation_id,
+            reply_to,
+            Some(Instant::now() + ROUND_PROGRESS_DEADLINE),
+        )
+        .await
+        .map_err(|error| match error {
+            SessionError::Transport(TransportError::DeadlineExceeded) => {
+                SessionError::ProgressDeadlineExceeded { failure_stage }
+            }
+            other => other,
+        })
     }
 
     pub(crate) async fn receive(
@@ -83,7 +119,104 @@ where
                 message: close.message.clone(),
             });
         }
+        self.last_activity = Instant::now();
         Ok(envelope)
+    }
+
+    pub(crate) async fn receive_progress(
+        &mut self,
+        failure_stage: &'static str,
+    ) -> Result<SyncEnvelope, SessionError> {
+        loop {
+            let envelope = self
+                .receive(Some(Instant::now() + ROUND_PROGRESS_DEADLINE))
+                .await
+                .map_err(|error| match error {
+                    SessionError::Transport(TransportError::DeadlineExceeded) => {
+                        SessionError::ProgressDeadlineExceeded { failure_stage }
+                    }
+                    other => other,
+                })?;
+            match envelope.payload.as_ref() {
+                Some(sync_envelope::Payload::Ping(ping)) => {
+                    self.send_progress(
+                        sync_envelope::Payload::Pong(SyncPong { nonce: ping.nonce }),
+                        &envelope.correlation_id,
+                        Some(envelope.message_id),
+                        "round_pong_send",
+                    )
+                    .await?;
+                }
+                Some(sync_envelope::Payload::Pong(_)) => {
+                    if !self.consume_transparent_pong(&envelope)? {
+                        return Ok(envelope);
+                    }
+                }
+                _ => return Ok(envelope),
+            }
+        }
+    }
+
+    pub(crate) async fn send_round_keepalive(
+        &mut self,
+        correlation_id: &str,
+        failure_stage: &'static str,
+    ) -> Result<(), SessionError> {
+        let nonce = self.next_message_id;
+        let message_id = self
+            .send_progress(
+                sync_envelope::Payload::Ping(SyncPing {
+                    nonce,
+                    sent_at: None,
+                }),
+                correlation_id,
+                None,
+                failure_stage,
+            )
+            .await?;
+        self.track_transparent_ping(nonce, message_id, None);
+        Ok(())
+    }
+
+    pub(crate) fn track_transparent_ping(
+        &mut self,
+        nonce: u64,
+        message_id: u64,
+        expires_at: Option<Instant>,
+    ) {
+        let now = Instant::now();
+        self.transparent_pings
+            .retain(|_, ping| ping.expires_at.is_none_or(|expires_at| expires_at > now));
+        self.transparent_pings.insert(
+            nonce,
+            TransparentPing {
+                message_id,
+                expires_at,
+            },
+        );
+    }
+
+    pub(crate) fn consume_transparent_pong(
+        &mut self,
+        envelope: &SyncEnvelope,
+    ) -> Result<bool, SessionError> {
+        let Some(sync_envelope::Payload::Pong(pong)) = envelope.payload.as_ref() else {
+            return Ok(false);
+        };
+        let now = Instant::now();
+        self.transparent_pings
+            .retain(|_, ping| ping.expires_at.is_none_or(|expires_at| expires_at > now));
+        let Some(ping) = self.transparent_pings.remove(&pong.nonce) else {
+            return Ok(false);
+        };
+        if envelope.reply_to != Some(ping.message_id) {
+            return Err(SessionError::LocalProtocol {
+                code: SyncCloseCode::ProtocolViolation,
+                error_code: "invalid_transparent_pong_reply",
+                message: "sync keepalive reply does not name its request",
+            });
+        }
+        Ok(true)
     }
 
     pub(crate) async fn close(

@@ -2,7 +2,10 @@ use super::*;
 
 pub(super) fn round_error_to_sync(error: RoundError) -> SyncError {
     match error {
-        RoundError::Session(error) => SyncError::Unavailable(error.to_string()),
+        RoundError::Session(SessionError::ProgressDeadlineExceeded { failure_stage }) => {
+            SyncError::ProgressTimeout { failure_stage }
+        }
+        RoundError::Session(error) => SyncError::SessionLost(error),
         RoundError::Replica(ReplicaError::RevisionConflict(message)) => {
             SyncError::Unavailable(message)
         }
@@ -19,13 +22,21 @@ pub(super) fn sync_error_code(error: &SyncError) -> ErrorCode {
     match error {
         SyncError::NotFound(_) => ErrorCode::NotFound,
         SyncError::FailedPrecondition(_) => ErrorCode::FailedPrecondition,
-        SyncError::Unavailable(_) => ErrorCode::Unavailable,
+        SyncError::Unavailable(_)
+        | SyncError::SessionLost(_)
+        | SyncError::ProgressTimeout { .. } => ErrorCode::Unavailable,
         SyncError::Protocol(_) => ErrorCode::ProtocolMismatch,
         SyncError::Store | SyncError::Internal(_) => ErrorCode::Internal,
     }
 }
 
 pub(super) fn sync_error_name(error: &SyncError) -> &'static str {
+    if matches!(error, SyncError::ProgressTimeout { .. }) {
+        return "round_progress_timeout";
+    }
+    if matches!(error, SyncError::SessionLost(_)) {
+        return "session_lost";
+    }
     match sync_error_code(error) {
         ErrorCode::NotFound => "not_found",
         ErrorCode::FailedPrecondition => "failed_precondition",
@@ -64,14 +75,10 @@ pub(super) fn jittered(base: Duration) -> Duration {
 
 pub(super) fn session_failure_fields(
     error: &SessionError,
-    direction: Direction,
+    direction: &'static str,
     failure_stage: &'static str,
     connect_target: Option<&str>,
 ) -> serde_json::Value {
-    let direction = match direction {
-        Direction::Inbound => "inbound",
-        Direction::Outbound => "outbound",
-    };
     let close_code_name = |code| match code {
         SyncCloseCode::Unspecified => "unspecified",
         SyncCloseCode::Normal => "normal",
@@ -89,6 +96,18 @@ pub(super) fn session_failure_fields(
         SyncCloseCode::InternalError => "internal_error",
     };
     match error {
+        SessionError::ProgressDeadlineExceeded { failure_stage } => json!({
+            "direction": direction,
+            "failure_stage": failure_stage,
+            "failure_source": if failure_stage.contains("inventory_capture") {
+                "local_store"
+            } else {
+                "transport"
+            },
+            "error_code": "round_progress_timeout",
+            "message": error.to_string(),
+            "connect_target": connect_target,
+        }),
         SessionError::Transport(error) => {
             let (error_code, io_error_kind) = match error {
                 TransportError::Io(kind) => ("transport_io", Some(format!("{kind:?}"))),

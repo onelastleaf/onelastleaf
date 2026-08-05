@@ -34,9 +34,10 @@ use crate::{
 };
 
 use super::{
-    HANDSHAKE_DEADLINE, NoiseTransport, PendingSession, RoundError, RoundResult, SessionChannel,
-    SessionError, SessionReplicaMode, derive_noise_psk, receive_bootstrap_round, receive_round,
-    security::NoisePsk, send_bootstrap_round, send_round, transport::TransportError,
+    HANDSHAKE_DEADLINE, NoiseTransport, PendingSession, ROUND_PROGRESS_DEADLINE, RoundError,
+    RoundResult, SessionChannel, SessionError, SessionReplicaMode, SyncObservation,
+    derive_noise_psk, receive_bootstrap_round, receive_round, security::NoisePsk,
+    send_bootstrap_round, send_round, transport::TransportError,
 };
 
 const CONNECT_DEADLINE: Duration = Duration::from_secs(10);
@@ -57,6 +58,8 @@ pub(crate) enum SyncError {
     NotFound(String),
     FailedPrecondition(String),
     Unavailable(String),
+    SessionLost(SessionError),
+    ProgressTimeout { failure_stage: &'static str },
     Protocol(String),
     Store,
     Internal(String),
@@ -70,6 +73,13 @@ impl fmt::Display for SyncError {
             | Self::Unavailable(message)
             | Self::Protocol(message)
             | Self::Internal(message) => formatter.write_str(message),
+            Self::SessionLost(error) => error.fmt(formatter),
+            Self::ProgressTimeout { failure_stage } => {
+                write!(
+                    formatter,
+                    "sync round made no progress during {failure_stage}"
+                )
+            }
             Self::Store => formatter.write_str("sync peer state could not be persisted"),
         }
     }
@@ -102,7 +112,6 @@ struct ActiveSession {
     session_id: Uuid,
     direction: Direction,
     connect_target: Option<String>,
-    preferred_direction: bool,
     handshake_hash: [u8; 32],
     connection_state: PeerConnectionState,
     commands: mpsc::Sender<SessionCommand>,
@@ -118,13 +127,6 @@ enum SessionCommand {
         correlation_id: String,
         response: oneshot::Sender<Result<RoundResult, SyncError>>,
     },
-}
-
-struct PendingPing {
-    sent_message_id: u64,
-    started: Instant,
-    deadline: Instant,
-    response: oneshot::Sender<Result<Duration, SyncError>>,
 }
 
 pub(crate) struct SyncRuntime {
@@ -148,6 +150,7 @@ mod connection;
 mod control;
 mod lifecycle;
 mod listener;
+mod liveness;
 mod outbound;
 mod ready;
 mod registry;
@@ -161,6 +164,7 @@ use bidirectional::*;
 use bootstrap::*;
 use connection::*;
 use listener::*;
+use liveness::*;
 use outbound::*;
 use ready::*;
 use support::*;

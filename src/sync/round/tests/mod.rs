@@ -34,5 +34,6 @@ async fn test_channels() -> (
 }
 
 mod chunks;
+mod liveness;
 mod protocol;
 mod rejection;

@@ -5,13 +5,48 @@ pub(crate) async fn receive_round<S>(
     replica: &ReplicaRuntime,
     start_envelope_message_id: u64,
     start: SyncRoundStart,
-    correlation_id: &str,
+    observation: SyncObservation<'_>,
     max_chunk_bytes: u32,
 ) -> Result<RoundResult, RoundError>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let local = replica.capture_replica_inventory().await?;
+    let correlation_id = observation.correlation_id;
+    let started = Instant::now();
+    replica.logger.emit(
+        LogLevel::Info,
+        "oll::sync",
+        "sync_inventory_capture_started",
+        correlation_id,
+        json!({
+            "mode": "normal",
+            "connection_id": observation.connection_id.to_string(),
+            "peer_node_id": observation.peer_node_id.to_string(),
+            "direction": observation.direction,
+        }),
+    );
+    let local = tokio::time::timeout(ROUND_PROGRESS_DEADLINE, replica.capture_replica_inventory())
+        .await
+        .map_err(|_| {
+            RoundError::Session(SessionError::ProgressDeadlineExceeded {
+                failure_stage: "inventory_capture",
+            })
+        })??;
+    replica.logger.emit(
+        LogLevel::Info,
+        "oll::sync",
+        "sync_inventory_capture_completed",
+        correlation_id,
+        json!({
+            "mode": "normal",
+            "object_count": local.objects.len(),
+            "blob_count": local.blobs.len(),
+            "duration_ms": u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            "connection_id": observation.connection_id.to_string(),
+            "peer_node_id": observation.peer_node_id.to_string(),
+            "direction": observation.direction,
+        }),
+    );
     let remote = receive_inventory(
         channel,
         start_envelope_message_id,
@@ -50,7 +85,7 @@ where
             continue;
         }
         let request_message_id = channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::RequestUpdates(RequestReplicaUpdates {
                     round_id: start.round_id.clone(),
                     object: Some(replica_object_to_proto(*object)),
@@ -58,7 +93,7 @@ where
                 }),
                 correlation_id,
                 Some(start_envelope_message_id),
-                None,
+                "replica_update_request_send",
             )
             .await?;
         let (payload, transfer_id, summary, start_message_id) = receive_replica_transfer(
@@ -93,7 +128,7 @@ where
         );
         object_updates.insert(*object, payload);
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::ReplicaTransferAck(ReplicaTransferAck {
                     transfer_id,
                     object: Some(replica_object_to_proto(*object)),
@@ -101,7 +136,7 @@ where
                 }),
                 correlation_id,
                 Some(start_message_id),
-                None,
+                "replica_transfer_ack_send",
             )
             .await?;
     }
@@ -112,14 +147,14 @@ where
             continue;
         }
         let request_message_id = channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::RequestBlob(RequestBlob {
                     round_id: start.round_id.clone(),
                     sha256: decode_sha256(&sha256)?,
                 }),
                 correlation_id,
                 Some(start_envelope_message_id),
-                None,
+                "blob_request_send",
             )
             .await?;
         let (transfer_id, start_id, blob) = receive_blob_transfer(
@@ -146,20 +181,23 @@ where
         );
         blobs.insert(sha256.clone(), blob);
         channel
-            .send(
+            .send_progress(
                 sync_envelope::Payload::BlobTransferAck(BlobTransferAck {
                     transfer_id,
                     sha256: decode_sha256(&sha256)?,
                 }),
                 correlation_id,
                 Some(start_id),
-                None,
+                "blob_transfer_ack_send",
             )
             .await?;
     }
 
-    let commit = replica
-        .commit_replication_candidate(
+    let (commit, liveness_error) = await_with_round_keepalive(
+        channel,
+        correlation_id,
+        "candidate_commit_keepalive",
+        replica.commit_replication_candidate(
             ReplicationCandidate {
                 base_generation_id: local.generation_id,
                 base_state_token: local.state_token,
@@ -167,8 +205,12 @@ where
                 blobs,
             },
             correlation_id,
-        )
-        .await;
+        ),
+    )
+    .await;
+    if let Some(error) = liveness_error {
+        return Err(RoundError::Session(error));
+    }
     let result = match commit {
         Ok(ReplicationCommit::AlreadySatisfied) => RoundResult::default(),
         Ok(ReplicationCommit::Committed {
@@ -243,7 +285,7 @@ where
         }),
     );
     channel
-        .send(
+        .send_progress(
             sync_envelope::Payload::RoundCommitted(SyncRoundCommitted {
                 round_id: start.round_id,
                 object_count: result.object_count,
@@ -252,7 +294,7 @@ where
             }),
             correlation_id,
             Some(start_envelope_message_id),
-            None,
+            "round_commit_send",
         )
         .await?;
     Ok(result)

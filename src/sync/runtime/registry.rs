@@ -3,24 +3,24 @@ use super::*;
 impl SyncRuntime {
     pub(super) async fn register_session(
         &self,
-        remote: NodeIdentity,
-        direction: Direction,
-        connect_target: Option<String>,
-        handshake_hash: [u8; 32],
-        connection_state: PeerConnectionState,
-        commands: mpsc::Sender<SessionCommand>,
-        cancel: watch::Sender<Option<SyncCloseCode>>,
+        remote_node_id: Uuid,
+        session: ActiveSession,
     ) -> Result<Uuid, SyncError> {
         let local_id = self.identities.node_id().await;
-        let preferred_direction = match direction {
-            Direction::Outbound => local_id < remote.node_id(),
-            Direction::Inbound => remote.node_id() < local_id,
+        let preferred_direction = |direction| match direction {
+            Direction::Outbound => local_id < remote_node_id,
+            Direction::Inbound => remote_node_id < local_id,
         };
-        let session_id = Uuid::new_v4();
         let mut sessions = self.sessions.lock().await;
-        if let Some(existing) = sessions.get(&remote.node_id()) {
-            let existing_rank = (!existing.preferred_direction, existing.handshake_hash);
-            let new_rank = (!preferred_direction, handshake_hash);
+        if let Some(existing) = sessions.get(&remote_node_id) {
+            let existing_rank = (
+                !preferred_direction(existing.direction),
+                existing.handshake_hash,
+            );
+            let new_rank = (
+                !preferred_direction(session.direction),
+                session.handshake_hash,
+            );
             if existing_rank <= new_rank {
                 return Err(SyncError::Protocol(
                     "duplicate sync session lost arbitration".to_owned(),
@@ -28,19 +28,8 @@ impl SyncRuntime {
             }
             let _ = existing.cancel.send(Some(SyncCloseCode::DuplicateSession));
         }
-        sessions.insert(
-            remote.node_id(),
-            ActiveSession {
-                session_id,
-                direction,
-                connect_target,
-                preferred_direction,
-                handshake_hash,
-                connection_state,
-                commands,
-                cancel,
-            },
-        );
+        let session_id = session.session_id;
+        sessions.insert(remote_node_id, session);
         drop(sessions);
         self.session_changed.notify_waiters();
         Ok(session_id)
@@ -81,7 +70,12 @@ impl SyncRuntime {
             "oll::sync",
             "sync_session_failed",
             correlation_id,
-            session_failure_fields(error, direction, failure_stage, connect_target),
+            session_failure_fields(
+                error,
+                direction_name(direction),
+                failure_stage,
+                connect_target,
+            ),
         );
     }
 }
