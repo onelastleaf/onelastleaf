@@ -1,6 +1,6 @@
 <div align="center">
 
-  ![logo](https://preview.github.sov710.org/onelastleaf/onelastleaf-logo.svg)
+  <img src="https://preview.github.sov710.org/onelastleaf/onelastleaf-logo.svg" width="200" height="200">
 
   # onelastleaf
 
