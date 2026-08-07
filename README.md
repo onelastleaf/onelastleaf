@@ -22,6 +22,9 @@ documents across devices and extending document workflows with plugins.
   - [Why plugins?](#why-plugins)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+  - [`config.lua`](#configlua)
+  - [`node.json`](#nodejson)
+  - [`replica.json`](#replicajson)
 - [Installation](#installation)
 - [Project layout](#project-layout)
 - [License](#license)
@@ -159,15 +162,48 @@ oll init laptop
 ```
 
 This creates the configuration, node identity, working tree, and storage
-directories using the platform defaults. Before starting the daemon, enter the
-generated config root, save the network key in a separate file, and replace
-`network_key = nil` in `config.lua` with the expression shown below:
+directories using the platform defaults. Before starting the daemon, generate a
+network key:
+
+```sh
+oll psk
+```
+
+Copy the complete value printed by the command. On Linux, enter the default
+config root and open the generated `config.lua` with an editor:
+
+```sh
+cd ~/.config/oll/
+nano config.lua # or: vim config.lua
+```
+
+`config.lua` returns one top-level table. Find its `node` table, replace the
+generated `network_key = nil`, and paste the copied value as a quoted Lua
+string:
+
+```lua
+return {
+    format_version = 1,
+
+    node = {
+        -- Keep the other generated fields unchanged.
+        -- ...
+
+        network_key = "<network_key>",
+    },
+}
+```
+
+Replace `<network_key>` itself rather than keeping the angle brackets. Every
+node that should synchronize with this one must receive the exact same value.
+
+Storing the key in a separate file is the recommended approach:
 
 ```sh
 cd /absolute/path/to/config-root
 oll psk > network.key
 $EDITOR config.lua
-# network_key = oll.read_network_key("/absolute/path/to/config-root/network.key")
+# Set: network_key = oll.read_network_key("/absolute/path/to/config-root/network.key")
 ```
 
 Start the daemon in the foreground:
@@ -195,32 +231,91 @@ reference are available at [onelastleaf.org](https://onelastleaf.org).
 
 ## Configuration
 
-`oll init` writes a complete `config.lua` in the platform configuration
-directory. The main settings are:
+An oll deployment keeps three user-owned files in its config root. The examples
+below show their complete shapes with representative Linux paths and generated
+UUIDs; `oll init` writes the actual platform paths and identities.
 
-- `replica_root`: the ordinary, user-editable working tree;
-- `replica_store`: the authoritative SQLite or PostgreSQL store;
-- `log_dir`: structured daemon logs;
-- `artifact_download_dir`: verified files produced by plugins;
-- `listen` and `connect`: local binding and outbound sync topology.
-
-SQLite is the default, but a deployment can use PostgreSQL without putting its
-connection URL directly in the Lua source:
+### `config.lua`
 
 ```lua
-replica_store = {
-    driver = "postgres",
-    url = oll.getenv("OLL_POSTGRES_URL"),
+return {
+    format_version = 1, -- Configuration schema; currently only 1 is accepted.
+
+    node = {
+        -- Ordinary files edited by the user and watched by oll.
+        replica_root = "/home/alice/Documents/oll",
+
+        -- Authoritative replica data. Use "sqlite" with path, or
+        -- "postgres" with url = oll.getenv("OLL_POSTGRES_URL").
+        replica_store = {
+            driver = "sqlite",
+            path = "/home/alice/.local/share/oll/stores/<node-id>/replica.sqlite3",
+        },
+
+        -- Structured daemon logs and verified plugin output files.
+        log_dir = "/home/alice/.local/state/oll",
+        artifact_download_dir = "/home/alice/Downloads/oll",
+
+        -- Local bind address, or nil when this node does not accept connections.
+        listen = nil,
+
+        -- Remote peers. Every entry is an explicit oll://host:port URL.
+        connect = {},
+
+        -- Raw Lua bytes shared by peers; required when listen/connect is used.
+        network_key = nil,
+    },
 }
 ```
 
-The working tree, replica store, log directory, and artifact directory can be
-placed on different filesystems, but their paths must not overlap in ways that
-would expose oll-managed files to the working-tree watcher. Relative paths are
-resolved from the config root. Configuration is strict, and `config.lua` is
-trusted executable Lua rather than a loose key-value file. See
-[onelastleaf.org](https://onelastleaf.org) for the full schema, precedence
-rules, PostgreSQL setup, sync topology, and operational guidance.
+`replica_root` is the editable working tree; `replica_store` is the authoritative
+SQLite or PostgreSQL state and must be kept separate from it. `log_dir` and
+`artifact_download_dir` may be moved independently, but none of the oll-managed
+locations may overlap the watched tree. `listen` accepts one local socket
+address such as `"0.0.0.0:17384"`; `connect` accepts any number of explicit
+`oll://host:port` targets. Relative filesystem paths are resolved from the
+config root. The file is trusted executable Lua, but its returned table is
+strict: missing, unknown, or wrongly typed fields are rejected.
+
+### `node.json`
+
+```json
+{
+  "format_version": 1,
+  "node_id": "9ba4a1aa-4c7d-4b11-b902-3155cf8ca5f3",
+  "node_name": "laptop"
+}
+```
+
+`node_id` is the canonical UUID-v4 identity generated by `oll init`.
+`node_name` is its human-readable, lower-case DNS-label name and is the value
+shown by peer status and CLI selectors. Both fields form one identity pair.
+Editing either one deliberately changes this node's network identity; peers
+that already know the old pairing may reject it as an identity collision. The
+daemon hot-loads a valid replacement, but malformed JSON, unknown fields,
+noncanonical UUIDs, and unsupported `format_version` values are rejected.
+
+### `replica.json`
+
+```json
+{
+  "format_version": 1,
+  "replica_id": "44d62c47-0d82-42f0-a767-e3d6d5e75858"
+}
+```
+
+This file is absent immediately after `oll init` and appears only when the node
+creates, imports, or bootstraps its first replica. `replica_id` is the canonical
+UUID-v4 identity of the logical document library, independent of `node_id`.
+Changing it deliberately reidentifies that library; it does not create a copy,
+move the store, or rewrite document history, and existing peers will normally
+report a replica mismatch. oll coordinates valid runtime replacements with the
+SQL cache and rejects malformed JSON, unknown fields, noncanonical UUIDs, and
+unsupported versions.
+
+See [onelastleaf.org](https://onelastleaf.org) for platform paths, storage
+layout rules, PostgreSQL configuration, identity recovery, and the complete Lua
+contract.
 
 ## Installation
 
