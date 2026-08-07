@@ -239,31 +239,31 @@ UUIDs; `oll init` writes the actual platform paths and identities.
 
 ```lua
 return {
-    format_version = 1, -- Configuration schema; currently only 1 is accepted.
+    format_version = 1, -- 1; configuration schema version.
 
     node = {
         -- Ordinary files edited by the user and watched by oll.
-        replica_root = "/home/alice/Documents/oll",
+        replica_root = "/home/alice/Documents/oll", -- OS path; absolute or config-root-relative.
 
         -- Authoritative replica data. Use "sqlite" with path, or
         -- "postgres" with url = oll.getenv("OLL_POSTGRES_URL").
         replica_store = {
-            driver = "sqlite",
-            path = "/home/alice/.local/share/oll/stores/<node-id>/replica.sqlite3",
+            driver = "sqlite", -- "sqlite" | "postgres"; selects the SQL backend.
+            path = "/home/alice/.local/share/oll/stores/<node-id>/replica.sqlite3", -- SQLite only.
         },
 
         -- Structured daemon logs and verified plugin output files.
-        log_dir = "/home/alice/.local/state/oll",
-        artifact_download_dir = "/home/alice/Downloads/oll",
+        log_dir = "/home/alice/.local/state/oll", -- OS path; absolute or config-root-relative.
+        artifact_download_dir = "/home/alice/Downloads/oll", -- OS path; loaded at startup.
 
         -- Local bind address, or nil when this node does not accept connections.
-        listen = nil,
+        listen = nil, -- nil | "IP:port"; exactly one local bind endpoint.
 
         -- Remote peers. Every entry is an explicit oll://host:port URL.
-        connect = {},
+        connect = {}, -- { "oll://host:port", ... }; an ordered list of peers.
 
         -- Raw Lua bytes shared by peers; required when listen/connect is used.
-        network_key = nil,
+        network_key = nil, -- nil | byte string; no trimming or text normalization.
     },
 }
 ```
