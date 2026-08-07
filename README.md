@@ -159,7 +159,18 @@ oll init laptop
 ```
 
 This creates the configuration, node identity, working tree, and storage
-directories using the platform defaults. Start the daemon in the foreground:
+directories using the platform defaults. Before starting the daemon, enter the
+generated config root, save the network key in a separate file, and replace
+`network_key = nil` in `config.lua` with the expression shown below:
+
+```sh
+cd /absolute/path/to/config-root
+oll psk > network.key
+$EDITOR config.lua
+# network_key = oll.read_network_key("/absolute/path/to/config-root/network.key")
+```
+
+Start the daemon in the foreground:
 
 ```sh
 oll run
@@ -191,32 +202,25 @@ directory. The main settings are:
 - `replica_store`: the authoritative SQLite or PostgreSQL store;
 - `log_dir`: structured daemon logs;
 - `artifact_download_dir`: verified files produced by plugins;
-- `listen` and `connect`: sync topology;
-- `network_key`: the shared secret used to authenticate and encrypt sync
-  connections.
+- `listen` and `connect`: local binding and outbound sync topology.
 
-Generate a network key with:
-
-```sh
-oll psk
-```
-
-For a key file, redirect the command and reference the resulting absolute path
-from the generated configuration:
-
-```sh
-oll psk > network.key
-```
+SQLite is the default, but a deployment can use PostgreSQL without putting its
+connection URL directly in the Lua source:
 
 ```lua
-network_key = oll.read_network_key("/absolute/path/to/network.key")
+replica_store = {
+    driver = "postgres",
+    url = oll.getenv("OLL_POSTGRES_URL"),
+}
 ```
 
-Every node in the same sync network must use the same key. Never pass it as a
-command-line argument or commit it to the repository. Configuration is strict,
-and `config.lua` is trusted executable Lua rather than a loose key-value file.
-See [onelastleaf.org](https://onelastleaf.org) for the full schema, path rules,
-PostgreSQL setup, sync topology, and operational guidance.
+The working tree, replica store, log directory, and artifact directory can be
+placed on different filesystems, but their paths must not overlap in ways that
+would expose oll-managed files to the working-tree watcher. Relative paths are
+resolved from the config root. Configuration is strict, and `config.lua` is
+trusted executable Lua rather than a loose key-value file. See
+[onelastleaf.org](https://onelastleaf.org) for the full schema, precedence
+rules, PostgreSQL setup, sync topology, and operational guidance.
 
 ## Installation
 
