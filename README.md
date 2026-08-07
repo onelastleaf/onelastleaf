@@ -56,10 +56,9 @@ untrusted hosted service or from a malicious member with the key.
 
 ## Why build another document library?
 
-Memory is not a database. An idea should not be trusted to remain available just
-because it once felt unforgettable. Knowledge becomes durable when it is
-written down and revisited repeatedly. The simplest way to do that is to write
-notes—or, in more programmer-friendly language, to write documentation.
+Human memory is unreliable. Knowledge lasts longer when it is written down and
+revisited. The simplest way to do that is to write notes—or, in more
+programmer-friendly language, to write documentation.
 
 At first, that sounds like a solved problem: open any editor and keep a folder
 of Markdown files. That works until the folder needs to follow its user. A
