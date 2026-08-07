@@ -95,7 +95,7 @@ Two major families of algorithms are commonly used for collaborative editing:
 [Operational Transformation](https://en.wikipedia.org/wiki/Operational_transformation)
 (OT) and [Conflict-free Replicated Data Types](https://crdt.tech/) (CRDTs). OT
 came first and became widely known through real-time editors such as
-[Google Docs](https://workspace.google.com/products/docs/).
+Google Docs.
 
 OT is usually deployed as part of a coordinated editing session: known clients
 produce operations against a shared history, and a service continually orders
