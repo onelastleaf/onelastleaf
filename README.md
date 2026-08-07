@@ -12,6 +12,20 @@
 onelastleaf is a self-hosted, CRDT-powered document library for syncing
 documents across devices and extending document workflows with plugins.
 
+## Contents
+
+- [Why the name *onelastleaf*?](#why-the-name-onelastleaf)
+- [What is onelastleaf?](#what-is-onelastleaf)
+- [Why build another document library?](#why-build-another-document-library)
+  - [Why not just use Syncthing?](#why-not-just-use-syncthing)
+  - [Why a CRDT?](#why-a-crdt)
+  - [Why plugins?](#why-plugins)
+- [Quick start](#quick-start)
+- [Configuration](#configuration)
+- [Installation](#installation)
+- [Project layout](#project-layout)
+- [License](#license)
+
 ## Why the name *onelastleaf*?
 
 The first inspiration was [*One Last Kiss*](https://music.apple.com/us/album/one-last-kiss/1542953969),
@@ -134,3 +148,106 @@ document library itself into a collection of hard-coded integrations.
 
 **In one sentence:** onelastleaf is a multi-device document library with
 CRDT-based conflict resolution and plugins for document workflows.
+
+## Quick start
+
+Download `oll` from the [GitHub Releases](https://github.com/onelastleaf/onelastleaf/releases)
+page and place it somewhere on `PATH`. Then initialize a node:
+
+```sh
+oll init laptop
+```
+
+This creates the configuration, node identity, working tree, and storage
+directories using the platform defaults. Start the daemon in the foreground:
+
+```sh
+oll run
+```
+
+The default working tree is the platform Documents directory under `oll`—on a
+typical Linux system, `~/Documents/oll`. Files placed there remain ordinary
+files and can be edited with any editor. oll watches the tree and imports
+changes into its authoritative replica store.
+
+To run the daemon in the background instead:
+
+```sh
+oll start
+oll status
+oll stop
+```
+
+Synchronization between nodes requires a shared network key and at least one
+configured `listen` or `connect` endpoint. The complete setup guide and command
+reference are available at [onelastleaf.org](https://onelastleaf.org).
+
+## Configuration
+
+`oll init` writes a complete `config.lua` in the platform configuration
+directory. The main settings are:
+
+- `replica_root`: the ordinary, user-editable working tree;
+- `replica_store`: the authoritative SQLite or PostgreSQL store;
+- `log_dir`: structured daemon logs;
+- `artifact_download_dir`: verified files produced by plugins;
+- `listen` and `connect`: sync topology;
+- `network_key`: the shared secret used to authenticate and encrypt sync
+  connections.
+
+Generate a network key with:
+
+```sh
+oll psk
+```
+
+For a key file, redirect the command and reference the resulting absolute path
+from the generated configuration:
+
+```sh
+oll psk > network.key
+```
+
+```lua
+network_key = oll.read_network_key("/absolute/path/to/network.key")
+```
+
+Every node in the same sync network must use the same key. Never pass it as a
+command-line argument or commit it to the repository. Configuration is strict,
+and `config.lua` is trusted executable Lua rather than a loose key-value file.
+See [onelastleaf.org](https://onelastleaf.org) for the full schema, path rules,
+PostgreSQL setup, sync topology, and operational guidance.
+
+## Installation
+
+Prebuilt releases for supported platforms are published on the
+[GitHub Releases](https://github.com/onelastleaf/onelastleaf/releases) page.
+Download the appropriate archive, extract the `oll` executable, and place it on
+`PATH`. The current node runtime supports Linux and macOS; Windows support has
+not yet been implemented.
+
+## Project layout
+
+```text
+onelastleaf/
+├── src/
+│   ├── cli/             command parsing and intent validation
+│   ├── configuration/   trusted Lua configuration runtime
+│   ├── node/            daemon lifecycle, Admin API, and logging
+│   ├── replica/         working tree, CRDT state, store, and snapshots
+│   ├── sync/            Noise transport and replica synchronization
+│   └── plugin/          packages, processes, jobs, and artifacts
+├── proto/oll/           protobuf and gRPC contracts
+├── docs/                architecture and behavioral specifications
+├── tests/               executable and CLI integration tests
+├── build.rs             protobuf build integration
+└── Cargo.toml           Rust package and dependencies
+```
+
+The documents under [`docs/`](docs/README.md) are the source of truth for
+architecture and behavior. Wire contracts live under [`proto/oll/`](proto/oll/).
+
+## License
+
+onelastleaf is distributed under the
+[GNU General Public License v3.0](LICENSE).
