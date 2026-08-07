@@ -249,7 +249,8 @@ return {
         -- "postgres" with url = oll.getenv("OLL_POSTGRES_URL").
         replica_store = {
             driver = "sqlite", -- "sqlite" | "postgres"; selects the SQL backend.
-            path = "/home/alice/.local/share/oll/stores/<node-id>/replica.sqlite3", -- SQLite only.
+            path = "/home/alice/.local/share/oll/stores/<node-id>/replica.sqlite3", -- SQLite only; required for "sqlite" and forbidden for "postgres".
+            -- url = oll.getenv("OLL_POSTGRES_URL"), -- PostgreSQL only; required for "postgres" and forbidden for "sqlite".
         },
 
         -- Structured daemon logs and verified plugin output files.
