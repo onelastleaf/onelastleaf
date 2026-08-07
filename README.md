@@ -26,6 +26,7 @@ documents across devices and extending document workflows with plugins.
   - [`node.json`](#nodejson)
   - [`replica.json`](#replicajson)
 - [Installation](#installation)
+- [TODO](#todo)
 - [Project layout](#project-layout)
 - [License](#license)
 
@@ -325,6 +326,13 @@ Prebuilt releases for supported platforms are published on the
 Download the appropriate archive, extract the `oll` executable, and place it on
 `PATH`. The current node runtime supports Linux and macOS; Windows support has
 not yet been implemented.
+
+## TODO
+
+- [ ] Build a reusable library version of oll for mobile clients.
+- [ ] Develop an Android oll client.
+- [ ] Add the protocol and runtime support required to execute plugins remotely.
+- [ ] Add Windows support.
 
 ## Project layout
 
