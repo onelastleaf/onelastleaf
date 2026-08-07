@@ -9,8 +9,8 @@
   [![Stars](https://img.shields.io/github/stars/onelastleaf/onelastleaf?style=flat-square&labelColor=1a1b26&color=7aa2f7&logo=github&logoColor=white)](https://github.com/SOV710/nvim-config/stargazers)
 </div>
 
-onelastleaf is a self-hosted, CRDT-powered document library for multi-device
-synchronization, with plugins for extending what the library can do.
+onelastleaf is a self-hosted, CRDT-powered document library for syncing
+documents across devices and extending document workflows with plugins.
 
 ## Why the name *onelastleaf*?
 
@@ -29,12 +29,12 @@ here:
 
 Calling the project *One Last Kiss* would have made the reference a little too
 obvious, so *kiss* became *leaf*. A leaf is part of a book, a fig leaf is part of
-the NERV imagery, and both point back to the same idea: knowledge turned into
-something that can be preserved and used to create.
+the NERV imagery, and both point back to the same image: knowledge made tangible
+and preserved.
 
 ## What is onelastleaf?
 
-onelastleaf is being built around three ideas:
+onelastleaf has three central pieces:
 
 - **Multi-device, peer-to-peer synchronization.** Keep the same document
   library on a desktop, laptop, phone, or another machine without making one
@@ -44,16 +44,15 @@ onelastleaf is being built around three ideas:
   documents are merged through [Loro](https://loro.dev/); binary files are
   synchronized but do not receive text-level CRDT merging. The working tree
   remains a directory of ordinary files that can be edited with ordinary tools.
-- **A plugin system.** Turn documents into inputs and outputs for other
-  workflows: generate study material, transform notes, call external tools, or
-  build entirely new ways to work with a library.
+- **A plugin system.** Run document-focused workflows outside the core:
+  generate study material, transform notes, call external tools, or add new
+  interfaces over the same library.
 
-The project is self-hosted. There is no onelastleaf SaaS service at present;
-there may be one in the future, but a hosted service would first require a
-proper end-to-end encryption design. The current protocol encrypts and
-authenticates peer connections with a shared network key. It is designed for
-trusted members of a sync network, not to hide data from an untrusted hosted
-service or a malicious member that possesses that key.
+The project is self-hosted. There is no onelastleaf SaaS service today. A hosted
+version would need a real end-to-end encryption design first. The current
+protocol encrypts and authenticates peer connections with a shared network key.
+It is designed for trusted members of a sync network, not to hide data from an
+untrusted hosted service or from a malicious member with the key.
 
 ## Why build another document library?
 
@@ -67,8 +66,7 @@ of Markdown files. That works until the folder needs to follow its user. A
 document library should remain readable and editable from a phone, a lightweight
 laptop, or whichever machine happens to be nearby—not only from one desktop.
 
-That creates the first requirement: the document library must synchronize
-across devices.
+So synchronization is not an extra feature; it is the first requirement.
 
 ### Why not just use Syncthing?
 
@@ -112,13 +110,13 @@ why onelastleaf uses Loro: it provides the CRDT foundation while allowing the
 user-facing document library to remain a tree of ordinary, directly editable
 files.
 
-Synchronization gets the documents where they need to be. It does not yet make
-use of what is inside them.
+Synchronization moves the documents around. Plugins are for doing something
+with their contents.
 
 ### Why plugins?
 
-Storing knowledge is only one half of working with it. A document library also
-needs many ways to receive knowledge and produce something useful from it.
+Storing notes is only part of the job. A useful document library also needs ways
+to ingest, reshape, and export them.
 
 A document might need to be split into knowledge cards and sent to Anki for
 spaced-repetition training. Notes taken while reading a book might need to be
@@ -126,12 +124,10 @@ turned into a coherent, well-structured document. On a phone, where writing long
 passages is inconvenient, fragments might be captured through speech and
 processed later.
 
-Those capabilities do not all belong in the core. They are different ways of
-interpreting, transforming, and producing documents. The plugin system exists
-so that each workflow can be implemented independently, in any suitable
-language, without turning the document library itself into a collection of
-hard-coded integrations.
+Those jobs should not all live in the core. They interpret and transform
+documents in different ways. The plugin system allows each workflow to be
+implemented independently, in any suitable language, without turning the
+document library itself into a collection of hard-coded integrations.
 
-In one sentence: **onelastleaf is a multi-device document library with
-CRDT-based conflict resolution and a plugin system for processing documents in
-workflow-specific ways.**
+**In one sentence:** onelastleaf is a multi-device document library with
+CRDT-based conflict resolution and plugins for document workflows.
