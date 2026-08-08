@@ -212,6 +212,19 @@ preferred direction, both endpoints keep the one with the lexicographically
 smallest Noise handshake hash and close the rest as duplicates. Both endpoints
 can compute the same choice.
 
+Losing duplicate-session arbitration is successful topology convergence, not
+an outbound connection failure. When a configured outbound owner loses while
+another active session for that authenticated `NodeId` remains registered, it
+closes the duplicate and suppresses further connection attempts without
+entering backoff. It continues waiting across replacement sessions for that
+same peer and reconnects immediately only after the active-session registry no
+longer contains the peer. Shutdown interrupts the wait. This prevents two nodes
+that both listen and connect to each other from repeatedly completing Noise
+handshakes merely to reject the same non-preferred direction. Entering this
+wait records one `sync_duplicate_outbound_suppressed` `INFO` event with the
+configured target and authenticated peer `NodeId`; it emits neither a failure
+nor a reconnect-backoff event.
+
 ### Waiting for the first replica
 
 When both authenticated peers are uninitialized, the completed connection is a
@@ -489,7 +502,9 @@ Sync tests cover:
 - exact preface/prologue, one absolute handshake deadline, wrong-PSK silent
   close, and frame limits checked before allocation;
 - exact schema rejection, self/identity collision rejection, simultaneous
-  duplicate-session arbitration, and no protocol downgrade;
+  duplicate-session arbitration, suppression of the losing outbound owner
+  while the winning session remains active, immediate recovery after that
+  session disappears, and no protocol downgrade;
 - connect-only, listen-only, and mixed topologies using explicit `oll://` ports;
 - offline concurrent document edits and catalog move/rename/delete convergence;
 - coherent normal-round activation when catalog and content transfers arrive in

@@ -201,6 +201,7 @@ async fn delete_node(replica: &ReplicaRuntime, operation_id: &str, path: &str) {
         .unwrap();
 }
 
+mod arbitration;
 mod bootstrap;
 mod convergence;
 mod lifecycle;

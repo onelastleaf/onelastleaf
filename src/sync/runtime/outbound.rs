@@ -68,21 +68,64 @@ pub(super) async fn run_outbound(
         if *shutdown.borrow() {
             break;
         }
-        if disposition == ConnectionDisposition::ReconnectImmediately {
-            runtime
-                .target_states
-                .write()
-                .await
-                .insert(target_string.clone(), PeerConnectionState::Connecting);
-            runtime.session_changed.notify_waiters();
-            runtime.logger.emit(
-                LogLevel::Info,
-                "oll::sync",
-                "sync_replica_renegotiation_started",
-                &correlation_id,
-                json!({ "connect_target": &target_string }),
-            );
-            continue;
+        match disposition {
+            ConnectionDisposition::ReconnectImmediately => {
+                runtime
+                    .target_states
+                    .write()
+                    .await
+                    .insert(target_string.clone(), PeerConnectionState::Connecting);
+                runtime.session_changed.notify_waiters();
+                runtime.logger.emit(
+                    LogLevel::Info,
+                    "oll::sync",
+                    "sync_replica_renegotiation_started",
+                    &correlation_id,
+                    json!({ "connect_target": &target_string }),
+                );
+                continue;
+            }
+            ConnectionDisposition::SuppressedByActiveSession(remote_node_id) => {
+                let mut suppression_logged = false;
+                loop {
+                    let notified = runtime.session_changed.notified();
+                    tokio::pin!(notified);
+                    notified.as_mut().enable();
+                    if !runtime.sessions.lock().await.contains_key(&remote_node_id) {
+                        break;
+                    }
+                    if !suppression_logged {
+                        runtime.logger.emit(
+                            LogLevel::Info,
+                            "oll::sync",
+                            "sync_duplicate_outbound_suppressed",
+                            &correlation_id,
+                            json!({
+                                "connect_target": &target_string,
+                                "peer_node_id": remote_node_id.to_string(),
+                            }),
+                        );
+                        suppression_logged = true;
+                    }
+                    tokio::select! {
+                        _ = &mut notified => {}
+                        changed = shutdown.changed() => {
+                            if changed.is_err() || *shutdown.borrow_and_update() {
+                                break;
+                            }
+                        }
+                    }
+                    if *shutdown.borrow() {
+                        break;
+                    }
+                }
+                if *shutdown.borrow() {
+                    break;
+                }
+                backoff = INITIAL_BACKOFF;
+                continue;
+            }
+            ConnectionDisposition::RetryWithBackoff => {}
         }
         runtime
             .target_states

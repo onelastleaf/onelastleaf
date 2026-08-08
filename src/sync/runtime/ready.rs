@@ -33,7 +33,11 @@ pub(super) async fn run_ready_session(
             Some((
                 code,
                 "sync session was superseded",
-                ConnectionDisposition::RetryWithBackoff,
+                if code == SyncCloseCode::DuplicateSession {
+                    ConnectionDisposition::SuppressedByActiveSession(remote_node_id)
+                } else {
+                    ConnectionDisposition::RetryWithBackoff
+                },
             ))
         } else if mode == SessionReplicaMode::Waiting
             && !matches!(*replica_status.borrow(), ReplicaStatus::Uninitialized)
@@ -96,6 +100,9 @@ pub(super) async fn run_ready_session(
                 if let Some(code) = code {
                     let correlation_id = new_correlation_id();
                     channel.close(code, "sync session was superseded", &correlation_id, Some(Instant::now() + SESSION_CLOSE_DEADLINE)).await;
+                    if code == SyncCloseCode::DuplicateSession {
+                        disposition = ConnectionDisposition::SuppressedByActiveSession(remote_node_id);
+                    }
                     break;
                 }
             }
@@ -343,6 +350,13 @@ pub(super) async fn run_ready_session(
                         ..
                     }) if mode == SessionReplicaMode::Waiting => {
                         disposition = ConnectionDisposition::ReconnectImmediately;
+                        break;
+                    }
+                    Err(SessionError::RemoteClosed {
+                        code: SyncCloseCode::DuplicateSession,
+                        ..
+                    }) => {
+                        disposition = ConnectionDisposition::SuppressedByActiveSession(remote_node_id);
                         break;
                     }
                     Err(SessionError::RemoteClosed { .. }) => break,

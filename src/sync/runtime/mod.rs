@@ -97,6 +97,7 @@ enum Direction {
 enum ConnectionDisposition {
     RetryWithBackoff,
     ReconnectImmediately,
+    SuppressedByActiveSession(Uuid),
 }
 
 impl Direction {

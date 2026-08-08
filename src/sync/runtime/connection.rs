@@ -238,6 +238,15 @@ pub(super) async fn run_connection(
                 .release_bootstrap_claim(claim.claim_id)
                 .await;
         }
+        if matches!(
+            &error,
+            SessionError::RemoteClosed {
+                code: SyncCloseCode::DuplicateSession,
+                ..
+            }
+        ) {
+            return ConnectionDisposition::SuppressedByActiveSession(pending.remote.node_id());
+        }
         runtime.log_session_failure(
             &correlation_id,
             direction,
@@ -307,7 +316,7 @@ pub(super) async fn run_connection(
                     None,
                 )
                 .await;
-            return ConnectionDisposition::RetryWithBackoff;
+            return ConnectionDisposition::SuppressedByActiveSession(remote.node_id());
         }
     };
     if let Some(target) = connect_target.as_ref() {
