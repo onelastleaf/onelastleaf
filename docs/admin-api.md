@@ -76,11 +76,8 @@ fixed client request deadline: system Git, a source build, download, archive
 validation, package publication, and process cleanup may all legitimately take
 longer. Connection establishment remains independently bounded to 10 seconds.
 
-The service grows with the required implementation order. The node stage owns
-status, graceful shutdown, and typed live log-filter changes. Replica, sync, and
-plugin RPCs are added only when their domain models have met the preceding
-stage's completion criteria; the Admin API MUST NOT use stringly typed
-placeholders for those future methods.
+Admin RPCs are typed domain methods; the service MUST NOT use stringly typed
+placeholders.
 
 `GetStatus` returns the local node's complete `NodeIdentity`, not only its UUID-v4
 `NodeId`, its configured listen address when present, plus each configured

@@ -2,16 +2,13 @@
 
 ## Scope and availability
 
-`oll` is the only executable. The CLI schema is defined before node, replica,
-sync, and plugin implementations so their public command surface can be tested
-without fake side effects.
+`oll` is the only executable. Its CLI schema defines the complete public command
+surface and can be tested without fake side effects.
 
 Until an operational command has a real handler, it parses and validates its
 arguments, then fails with exit code `69` (`EX_UNAVAILABLE`) and the generic
 message `command is not implemented`. It MUST NOT create files, start a daemon,
-connect to a peer, or mutate a replica. The implementation order is not a
-runtime concept and MUST NOT appear in errors or source-level domain types. Clap
-syntax errors use exit code `2`.
+connect to a peer, or mutate a replica. Clap syntax errors use exit code `2`.
 
 `run` is the only daemon-side subcommand. Every other subcommand is a bounded
 client selected directly by the parsed subcommand, never by a global mode flag.
