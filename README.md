@@ -329,6 +329,7 @@ not yet been implemented.
 
 ## TODO
 
+- [ ] Build plugin SDK for C#/.NET, C++, Go, Java, Kotlin, Node.js/JS/TS, Python, Rust, Swift, Elixir, and Haskell
 - [ ] Build a reusable library version of oll for mobile clients.
 - [ ] Develop an Android oll client.
 - [ ] Add the protocol and runtime support required to execute plugins remotely.
