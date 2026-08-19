@@ -76,15 +76,20 @@ fn manifest(recipe: &Recipe, plugin_id: &str, plugin_name: &str) -> String {
         lower_hex(&PROTOCOL_SCHEMA_SHA256),
         recipe.checkout,
     );
-    for (executable, hint) in recipe.dependencies {
-        output.push_str(&format!(
-            "\n[[source.dependencies]]\nexecutable = \"{executable}\"\nhint = \"{hint}\"\n"
-        ));
-    }
-    for step in recipe.steps {
-        output.push_str("\n[[source.steps]]\nargv = [");
-        push_toml_array(&mut output, step);
+    if !recipe.steps.is_empty() {
+        output.push_str("steps = [\n");
+        for step in recipe.steps {
+            output.push_str("  [");
+            push_toml_array(&mut output, step);
+            output.push_str("],\n");
+        }
         output.push_str("]\n");
+    }
+    if !recipe.dependencies.is_empty() {
+        output.push_str("\n[source.dependencies]\n");
+        for (executable, hint) in recipe.dependencies {
+            output.push_str(&format!("\"{executable}\" = \"{hint}\"\n"));
+        }
     }
     output.push_str("\n[runtime]\nargv = [");
     push_toml_array(&mut output, recipe.runtime);

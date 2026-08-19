@@ -1,4 +1,4 @@
-use std::{path::Path, str::FromStr};
+use std::{collections::BTreeMap, path::Path, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
@@ -50,22 +50,9 @@ pub enum SourceCheckout {
 pub struct SourceRecipe {
     pub checkout: SourceCheckout,
     #[serde(default)]
-    pub dependencies: Vec<Dependency>,
+    pub dependencies: BTreeMap<String, String>,
     #[serde(default)]
-    pub steps: Vec<RecipeStep>,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct Dependency {
-    pub executable: String,
-    pub hint: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct RecipeStep {
-    pub argv: Vec<String>,
+    pub steps: Vec<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -95,8 +82,8 @@ pub struct PluginMask {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct SourceMask {
-    pub dependencies: Option<Vec<Dependency>>,
-    pub steps: Option<Vec<RecipeStep>>,
+    pub dependencies: Option<BTreeMap<String, String>>,
+    pub steps: Option<Vec<Vec<String>>>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq)]
@@ -238,7 +225,7 @@ impl EffectiveManifest {
             .iter()
             .map(|step| {
                 expand_argv(
-                    &step.argv,
+                    step,
                     paths,
                     arguments::PlaceholderScope::Step(self.source.checkout),
                 )
@@ -290,15 +277,15 @@ fn validate_fingerprint(value: &str) -> Result<(), PackageError> {
     Ok(())
 }
 
-fn validate_dependencies(dependencies: &[Dependency]) -> Result<(), PackageError> {
-    for dependency in dependencies {
-        if dependency.executable.is_empty() || dependency.hint.is_empty() {
+fn validate_dependencies(dependencies: &BTreeMap<String, String>) -> Result<(), PackageError> {
+    for (executable, hint) in dependencies {
+        if executable.is_empty() || hint.is_empty() {
             return Err(PackageError::manifest(
                 "source dependencies require nonempty executable and hint",
             ));
         }
-        let path = Path::new(&dependency.executable);
-        if !path.is_absolute() && dependency.executable.contains(std::path::MAIN_SEPARATOR) {
+        let path = Path::new(executable);
+        if !path.is_absolute() && executable.contains(std::path::MAIN_SEPARATOR) {
             return Err(PackageError::manifest(
                 "a dependency executable must be a basename or absolute path",
             ));
@@ -307,9 +294,9 @@ fn validate_dependencies(dependencies: &[Dependency]) -> Result<(), PackageError
     Ok(())
 }
 
-fn validate_steps(steps: &[RecipeStep]) -> Result<(), PackageError> {
+fn validate_steps(steps: &[Vec<String>]) -> Result<(), PackageError> {
     for step in steps {
-        validate_argv(&step.argv, "source.steps[].argv")?;
+        validate_argv(step, "source.steps[]")?;
     }
     Ok(())
 }
@@ -337,7 +324,7 @@ mod tests {
     }
 
     #[test]
-    fn typed_mask_replaces_arrays_whole_and_preserves_omitted_fields() {
+    fn typed_mask_replaces_dependency_table_and_preserves_omitted_steps() {
         let publisher = PublisherManifest::parse(&format!(
             r#"
 format_version = 1
@@ -347,11 +334,9 @@ name = "oll-test"
 protocol_fingerprint = "{}"
 [source]
 checkout = "source"
-[[source.dependencies]]
-executable = "cargo"
-hint = "install cargo"
-[[source.steps]]
-argv = ["cargo", "build", "--root", "{{install}}"]
+steps = [["cargo", "build", "--root", "{{install}}"]]
+[source.dependencies]
+"cargo" = "install cargo"
 [runtime]
 argv = ["{{install}}/bin/oll-test"]
 "#,
@@ -363,9 +348,8 @@ argv = ["{{install}}/bin/oll-test"]
 format_version = 1
 [plugin]
 name = "personal-test"
-[[source.dependencies]]
-executable = "/usr/bin/cargo"
-hint = "system cargo"
+[source.dependencies]
+"/usr/bin/cargo" = "system cargo"
 "#,
         )
         .unwrap();
@@ -374,10 +358,47 @@ hint = "system cargo"
         assert_eq!(effective.plugin_name, "personal-test");
         assert_eq!(effective.source.dependencies.len(), 1);
         assert_eq!(
-            effective.source.dependencies[0].executable,
-            "/usr/bin/cargo"
+            effective
+                .source
+                .dependencies
+                .get("/usr/bin/cargo")
+                .map(String::as_str),
+            Some("system cargo")
         );
         assert_eq!(effective.source.steps.len(), 1);
+    }
+
+    #[test]
+    fn typed_mask_can_clear_steps_and_dependencies() {
+        let publisher = PublisherManifest::parse(&format!(
+            r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+checkout = "source"
+steps = [["cargo", "build", "--root", "{{install}}"]]
+[source.dependencies]
+"cargo" = "install cargo"
+[runtime]
+argv = ["{{install}}/bin/oll-test"]
+"#,
+            fingerprint()
+        ))
+        .unwrap();
+        let mask = ManifestMask::parse(
+            r#"format_version = 1
+[source]
+steps = []
+[source.dependencies]
+"#,
+        )
+        .unwrap();
+
+        let effective = EffectiveManifest::merge(publisher, Some(mask)).unwrap();
+        assert!(effective.source.steps.is_empty());
+        assert!(effective.source.dependencies.is_empty());
     }
 
     #[test]
@@ -445,8 +466,7 @@ name = "oll-test"
 protocol_fingerprint = "{}"
 [source]
 checkout = "{checkout}"
-[[source.steps]]
-argv = ["/bin/true", "{step_path}"]
+steps = [["/bin/true", "{step_path}"]]
 [runtime]
 argv = ["{runtime_path}"]
 "#,
@@ -469,8 +489,7 @@ name = "oll-test"
 protocol_fingerprint = "{}"
 [source]
 checkout = "{checkout}"
-[[source.steps]]
-argv = ["/bin/true", "{unavailable}"]
+steps = [["/bin/true", "{unavailable}"]]
 [runtime]
 argv = ["/bin/true"]
 "#,
@@ -501,6 +520,44 @@ argv = ["/bin/true"]
 checkout = "generation"
 "#;
         assert!(ManifestMask::parse(mask).is_err());
+    }
+
+    #[test]
+    fn old_array_of_tables_source_shape_is_rejected() {
+        let old_dependencies = format!(
+            r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+checkout = "source"
+[[source.dependencies]]
+executable = "cargo"
+hint = "install cargo"
+[runtime]
+argv = ["/bin/true"]
+"#,
+            fingerprint()
+        );
+        assert!(PublisherManifest::parse(&old_dependencies).is_err());
+
+        let old_steps = format!(
+            r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+checkout = "source"
+[[source.steps]]
+argv = ["/bin/true"]
+[runtime]
+argv = ["/bin/true"]
+"#,
+            fingerprint()
+        );
+        assert!(PublisherManifest::parse(&old_steps).is_err());
     }
 
     #[cfg(unix)]

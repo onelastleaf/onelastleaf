@@ -28,8 +28,7 @@ name = "{plugin_name}"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "{checkout}"
-[[source.steps]]
-argv = ["{root_placeholder}/entry", "{root_placeholder}/built-at"]
+steps = [["{root_placeholder}/entry", "{root_placeholder}/built-at"]]
 [runtime]
 argv = ["{root_placeholder}/entry"]
 "#
@@ -113,8 +112,7 @@ name = "{plugin_name}"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "generation"
-[[source.steps]]
-argv = ["/bin/false"]
+steps = [["/bin/false"]]
 [runtime]
 argv = ["{{generation}}/entry"]
 "#
@@ -492,10 +490,10 @@ name = "package-test"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
-[[source.steps]]
-argv = ["/bin/mkdir", "-p", "{{install}}/bin"]
-[[source.steps]]
-argv = ["{step}", "{{source}}/entry", "{{install}}/bin/plugin"]
+steps = [
+  ["/bin/mkdir", "-p", "{{install}}/bin"],
+  ["{step}", "{{source}}/entry", "{{install}}/bin/plugin"],
+]
 [runtime]
 argv = ["{{install}}/bin/plugin"]
 "#

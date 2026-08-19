@@ -284,13 +284,10 @@ mod tests {
                 assert!(destination.join(required).is_file(), "missing {required}");
             }
             let manifest = fs::read_to_string(destination.join("oll.toml")).unwrap();
-            let manifest = crate::plugin::package::PublisherManifest::parse(&manifest).unwrap();
-            assert_eq!(manifest.source.checkout, checkout);
-            assert!(
-                !fs::read_to_string(destination.join("oll.toml"))
-                    .unwrap()
-                    .contains("{staging}")
-            );
+            let parsed = crate::plugin::package::PublisherManifest::parse(&manifest).unwrap();
+            assert_eq!(parsed.source.checkout, checkout);
+            assert!(!manifest.contains("[[source."));
+            assert!(!manifest.contains("{staging}"));
             assert!(
                 scaffold_plugin_project(
                     &destination,

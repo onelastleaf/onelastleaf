@@ -20,8 +20,8 @@ pub use manager::{
     PackageOperationOutcome, PackageOperationResult, PluginPackageGates, RemovalPreparation,
 };
 pub use manifest::{
-    Dependency, EffectiveManifest, ExpansionPaths, ManifestMask, PublisherManifest, RecipeStep,
-    SourceCheckout, executable_exists, validate_local_package_config,
+    EffectiveManifest, ExpansionPaths, ManifestMask, PublisherManifest, SourceCheckout,
+    executable_exists, validate_local_package_config,
 };
 pub(super) use process::{ProcessCancellation, ProcessOutcome, run_process_group};
 pub use release::{ArchiveKind, ReleaseArtifact, ReleaseIndex, ReleaseListing, local_target};

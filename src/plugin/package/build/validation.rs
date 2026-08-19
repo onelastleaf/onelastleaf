@@ -62,17 +62,14 @@ pub(super) fn check_dependencies(
     effective: &EffectiveManifest,
     source_root: &Path,
 ) -> Result<(), PackageError> {
-    for dependency in &effective.source.dependencies {
-        if !executable_exists(&dependency.executable, source_root) {
+    for (executable, hint) in &effective.source.dependencies {
+        if !executable_exists(executable, source_root) {
             return Err(PackageError::new(
                 "dependency_missing",
                 "dependency",
-                format!(
-                    "required executable {} is unavailable",
-                    dependency.executable
-                ),
+                format!("required executable {executable} is unavailable"),
             )
-            .with_hint(dependency.hint.clone()));
+            .with_hint(hint.clone()));
         }
     }
     Ok(())

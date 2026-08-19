@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use super::{PackageError, RecipeStep, SourceCheckout};
+use super::{PackageError, SourceCheckout};
 
 #[derive(Clone, Debug)]
 pub struct ExpansionPaths<'a> {
@@ -19,11 +19,11 @@ pub(super) enum PlaceholderScope {
 }
 
 pub(super) fn validate_step_placeholders(
-    steps: &[RecipeStep],
+    steps: &[Vec<String>],
     checkout: SourceCheckout,
 ) -> Result<(), PackageError> {
     for step in steps {
-        for value in &step.argv {
+        for value in step {
             scan_placeholders(value, PlaceholderScope::Step(checkout))?;
         }
     }
@@ -40,9 +40,9 @@ pub(super) fn validate_runtime_placeholders(
     Ok(())
 }
 
-pub(super) fn validate_mask_step_placeholders(steps: &[RecipeStep]) -> Result<(), PackageError> {
+pub(super) fn validate_mask_step_placeholders(steps: &[Vec<String>]) -> Result<(), PackageError> {
     for step in steps {
-        for value in &step.argv {
+        for value in step {
             scan_placeholders(value, PlaceholderScope::MaskStep)?;
         }
     }

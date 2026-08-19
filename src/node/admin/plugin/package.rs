@@ -307,16 +307,13 @@ fn decode_stored_manifest(
             .source
             .dependencies
             .into_iter()
-            .map(|dependency| oll::PluginDependency {
-                executable: dependency.executable,
-                hint: dependency.hint,
-            })
+            .map(|(executable, hint)| oll::PluginDependency { executable, hint })
             .collect(),
         source_steps: manifest
             .source
             .steps
             .into_iter()
-            .map(|step| oll::PluginRecipeStep { argv: step.argv })
+            .map(|argv| oll::PluginRecipeStep { argv })
             .collect(),
         runtime_argv: manifest.runtime.argv,
         source_checkout: match manifest.source.checkout {

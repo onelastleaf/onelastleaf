@@ -133,10 +133,7 @@ pub(super) fn test_publisher_with_step(
 ) -> String {
     let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     let source_step = step.map_or_else(String::new, |argv| {
-        format!(
-            "[[source.steps]]\nargv = {}\n",
-            serde_json::to_string(argv).unwrap()
-        )
+        format!("steps = [{}]\n", serde_json::to_string(argv).unwrap())
     });
     format!(
         r#"format_version = 1
@@ -208,10 +205,10 @@ name = "remote-install-test"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
-[[source.steps]]
-argv = ["/bin/echo", "recipe-log-marker"]
-[[source.steps]]
-argv = ["/bin/cp", "{{source}}/entry", "{{install}}/plugin"]
+steps = [
+  ["/bin/echo", "recipe-log-marker"],
+  ["/bin/cp", "{{source}}/entry", "{{install}}/plugin"],
+]
 [runtime]
 argv = ["{{install}}/plugin"]
 "#

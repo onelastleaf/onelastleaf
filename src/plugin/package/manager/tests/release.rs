@@ -363,9 +363,8 @@ name = "release-test"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "generation"
-[[source.dependencies]]
-executable = "/definitely/missing/release-build-tool"
-hint = "Only source installations require this tool."
+[source.dependencies]
+"/definitely/missing/release-build-tool" = "Only source installations require this tool."
 [runtime]
 argv = ["{{generation}}/plugin"]
 "#
@@ -524,9 +523,8 @@ name = "source-dependency-test"
 protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
-[[source.dependencies]]
-executable = "/definitely/missing/source-build-tool"
-hint = "Install the source build tool."
+[source.dependencies]
+"/definitely/missing/source-build-tool" = "Install the source build tool."
 [runtime]
 argv = ["/bin/true"]
 "#

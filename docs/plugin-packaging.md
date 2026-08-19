@@ -85,13 +85,12 @@ protocol_fingerprint = "hex-encoded-schema-fingerprint"
 
 [source]
 checkout = "source"
+steps = [
+  ["cargo", "install", "--locked", "--path", "{source}", "--root", "{install}"],
+]
 
-[[source.dependencies]]
-executable = "cargo"
-hint = "Install the Rust toolchain and ensure cargo is in PATH."
-
-[[source.steps]]
-argv = ["cargo", "install", "--locked", "--path", "{source}", "--root", "{install}"]
+[source.dependencies]
+"cargo" = "Install the Rust toolchain and ensure cargo is in PATH."
 
 [runtime]
 argv = ["{install}/bin/oll-anki"]
@@ -148,13 +147,20 @@ may use only `{generation}` and `{mask_dir}`. A source tree does not survive
 `source` publication, while install and generation placeholders are expanded
 to the selected published generation at process spawn.
 
-Dependencies declare executable capabilities only. A basename is resolved using
-the inherited PATH exactly as the recipe child will resolve it, including
+`source.dependencies` is a table from executable to nonempty diagnostic hint.
+Dependencies declare executable capabilities only. A basename is resolved
+using the inherited PATH exactly as the recipe child will resolve it, including
 relative or empty PATH entries relative to the source recipe working directory.
 An absolute path is checked directly; a relative value containing a path
-separator is rejected. oll does not invoke a system package manager, execute
-`--version`, parse version output, or enforce a dependency version. A missing
-executable aborts that plugin and displays its required nonempty hint.
+separator is rejected. Dependency keys containing characters outside TOML's
+bare-key grammar, including absolute paths, must be quoted. oll does not invoke
+a system package manager, execute `--version`, parse version output, or enforce
+a dependency version. A missing executable aborts that plugin and displays its
+configured hint.
+
+`source.steps` is an ordered array of argv arrays. The outer array preserves
+execution order; every inner array is one command whose first value is a
+nonempty executable. It is not an array of TOML tables.
 
 Each source recipe step:
 
@@ -205,12 +211,13 @@ format_version = 1
 [plugin]
 name = "personal-anki"
 
-[[source.dependencies]]
-executable = "/usr/bin/cargo"
-hint = "Use the system Cargo installation."
+[source]
+steps = [
+  ["{mask_dir}/build-anki", "{source}", "{install}"],
+]
 
-[[source.steps]]
-argv = ["{mask_dir}/build-anki", "{source}", "{install}"]
+[source.dependencies]
+"/usr/bin/cargo" = "Use the system Cargo installation."
 
 [runtime]
 argv = ["{install}/bin/oll-anki", "--profile", "personal"]
@@ -218,10 +225,12 @@ argv = ["{install}/bin/oll-anki", "--profile", "personal"]
 
 For each permitted scalar field, presence replaces the publisher value and
 absence retains it. A table header only scopes its typed child fields; it does
-not erase publisher siblings that the mask omits. An array field such as
-`source.dependencies`, `source.steps`, or `runtime.argv` is replaced in full
-when present; array elements are never matched or merged. Unknown fields are
-errors.
+not erase publisher siblings that the mask omits. `source.steps` and
+`runtime.argv` are replaced in full when present; array elements are never
+matched or merged. The complete `source.dependencies` table is likewise
+replaced when present rather than merged by executable. `steps = []` clears all
+steps, and a present empty `[source.dependencies]` clears all dependencies.
+Unknown fields are errors.
 
 A mask cannot contain or replace `plugin.id`, `protocol_fingerprint`, release
 IDs, artifact target, URL, archive kind, size, SHA-256, or other artifact
