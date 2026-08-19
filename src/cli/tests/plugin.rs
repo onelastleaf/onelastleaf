@@ -1,5 +1,4 @@
 use super::*;
-use crate::plugin::PluginLanguage;
 
 #[test]
 fn parses_documented_plugin_and_job_commands() {
@@ -90,7 +89,7 @@ fn plugin_new_accepts_an_omitted_identity() {
         ]),
         CliIntent::Plugin(PluginIntent::New {
             path: PathBuf::from("example-plugin"),
-            language: PluginLanguage::Rust,
+            language: PluginLanguageArg::Rust,
             plugin_id: None,
             plugin_name: None,
         })

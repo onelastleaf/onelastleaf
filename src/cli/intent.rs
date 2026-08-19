@@ -7,13 +7,13 @@ use std::{
 
 use clap::{CommandFactory, error::ErrorKind};
 
-use crate::{configuration::ResolvedNodeConfig, plugin::PluginLanguage};
+use crate::configuration::ResolvedNodeConfig;
 
 use super::environment::{ensure_persistable_path, resolve_log_dir};
 use super::{
     Cli, CliError, ColorMode, Command, ConnectUrl, Environment, GitRemote, InitStore, JobCommand,
     LogCommand, LogFilterLevel, LogTarget, LoopbackAddr, NodeName, OutputFormat, PluginArgs,
-    PluginCommand, ReplicaCommand, SnapshotCommand, resolve_client_path,
+    PluginCommand, PluginLanguageArg, ReplicaCommand, SnapshotCommand, resolve_client_path,
 };
 
 impl Cli {
@@ -289,7 +289,7 @@ pub enum PluginLogTarget {
 pub enum PluginIntent {
     New {
         path: PathBuf,
-        language: PluginLanguage,
+        language: PluginLanguageArg,
         plugin_id: Option<String>,
         plugin_name: Option<String>,
     },

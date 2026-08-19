@@ -7,11 +7,9 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use url::Url;
 
-use crate::plugin::PluginLanguage;
-
 use super::{
     ColorMode, ConnectUrl, GitRemote, InitStore, LogFilterDirective, LoopbackAddr, NodeName,
-    OutputFormat,
+    OutputFormat, PluginLanguageArg,
 };
 
 const DEFAULT_SYNC_PORT: u16 = 17_384;
@@ -238,7 +236,7 @@ pub enum PluginCommand {
         path: PathBuf,
         /// Programming language used by the generated project.
         #[arg(long, value_enum)]
-        language: PluginLanguage,
+        language: PluginLanguageArg,
         /// Immutable dotted plugin identity. A random identity is generated when omitted.
         #[arg(long, value_name = "PLUGIN_ID")]
         id: Option<String>,

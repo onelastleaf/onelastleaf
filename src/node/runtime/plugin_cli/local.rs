@@ -5,7 +5,7 @@ use std::{
 };
 
 use crate::{
-    cli::PluginLogTarget,
+    cli::{PluginLanguageArg, PluginLogTarget},
     node::runtime::NodeError,
     plugin::{
         PluginLanguage, PluginSelector, package::validate_local_package_config,
@@ -15,12 +15,13 @@ use crate::{
 
 pub(super) fn create_plugin_project(
     path: &Path,
-    language: PluginLanguage,
+    language: PluginLanguageArg,
     plugin_id: Option<&str>,
     plugin_name: Option<&str>,
 ) -> Result<(), NodeError> {
-    let generated = scaffold_plugin_project(path, language, plugin_id, plugin_name)
-        .map_err(|error| NodeError::Operation(error.to_string()))?;
+    let generated =
+        scaffold_plugin_project(path, scaffold_language(language), plugin_id, plugin_name)
+            .map_err(|error| NodeError::Operation(error.to_string()))?;
     println!(
         "created {} plugin ({}) at {}",
         generated.name,
@@ -28,6 +29,25 @@ pub(super) fn create_plugin_project(
         path.display()
     );
     Ok(())
+}
+
+fn scaffold_language(language: PluginLanguageArg) -> PluginLanguage {
+    match language {
+        PluginLanguageArg::Dotnet => PluginLanguage::Dotnet,
+        PluginLanguageArg::Cpp => PluginLanguage::Cpp,
+        PluginLanguageArg::Go => PluginLanguage::Go,
+        PluginLanguageArg::Java => PluginLanguage::Java,
+        PluginLanguageArg::Kotlin => PluginLanguage::Kotlin,
+        PluginLanguageArg::Scala => PluginLanguage::Scala,
+        PluginLanguageArg::Clojure => PluginLanguage::Clojure,
+        PluginLanguageArg::Javascript => PluginLanguage::Javascript,
+        PluginLanguageArg::Typescript => PluginLanguage::Typescript,
+        PluginLanguageArg::Python => PluginLanguage::Python,
+        PluginLanguageArg::Rust => PluginLanguage::Rust,
+        PluginLanguageArg::Swift => PluginLanguage::Swift,
+        PluginLanguageArg::Elixir => PluginLanguage::Elixir,
+        PluginLanguageArg::Haskell => PluginLanguage::Haskell,
+    }
 }
 
 pub(super) fn validate_package_configuration(config_root: &Path) -> Result<(), NodeError> {
@@ -130,4 +150,31 @@ pub(super) fn filter_plugin_log_for_test(
     target: PluginLogTarget,
 ) -> Result<(), NodeError> {
     filter_plugin_log(reader, writer, plugin_log_selector(target)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn every_cli_language_maps_to_the_scaffold_owner() {
+        for (argument, language) in [
+            (PluginLanguageArg::Dotnet, PluginLanguage::Dotnet),
+            (PluginLanguageArg::Cpp, PluginLanguage::Cpp),
+            (PluginLanguageArg::Go, PluginLanguage::Go),
+            (PluginLanguageArg::Java, PluginLanguage::Java),
+            (PluginLanguageArg::Kotlin, PluginLanguage::Kotlin),
+            (PluginLanguageArg::Scala, PluginLanguage::Scala),
+            (PluginLanguageArg::Clojure, PluginLanguage::Clojure),
+            (PluginLanguageArg::Javascript, PluginLanguage::Javascript),
+            (PluginLanguageArg::Typescript, PluginLanguage::Typescript),
+            (PluginLanguageArg::Python, PluginLanguage::Python),
+            (PluginLanguageArg::Rust, PluginLanguage::Rust),
+            (PluginLanguageArg::Swift, PluginLanguage::Swift),
+            (PluginLanguageArg::Elixir, PluginLanguage::Elixir),
+            (PluginLanguageArg::Haskell, PluginLanguage::Haskell),
+        ] {
+            assert_eq!(scaffold_language(argument), language);
+        }
+    }
 }

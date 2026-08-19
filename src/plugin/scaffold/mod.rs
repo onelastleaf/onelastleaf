@@ -8,13 +8,12 @@ use std::{
     path::Path,
 };
 
-use clap::ValueEnum;
 use uuid::Uuid;
 
 use crate::plugin::{PluginError, PluginId, PluginName};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
-pub enum PluginLanguage {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum PluginLanguage {
     Dotnet,
     Cpp,
     Go,

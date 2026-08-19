@@ -265,6 +265,24 @@ pub enum OutputFormat {
     Json,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, ValueEnum)]
+pub enum PluginLanguageArg {
+    Dotnet,
+    Cpp,
+    Go,
+    Java,
+    Kotlin,
+    Scala,
+    Clojure,
+    Javascript,
+    Typescript,
+    Python,
+    Rust,
+    Swift,
+    Elixir,
+    Haskell,
+}
+
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, ValueEnum)]
 pub enum ColorMode {
     #[default]

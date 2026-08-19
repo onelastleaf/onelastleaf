@@ -26,6 +26,7 @@ const SESSION_ID: &str = "sdk-conformance-session";
 const INSTANCE_ID: &str = "sdk-conformance-instance";
 const MAXIMUM_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_ARTIFACT_CHUNK_BYTES: u64 = 64 * 1024;
+const DEFAULT_GRPC_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
 
 type OutboundStream =
@@ -104,6 +105,34 @@ impl Driver {
         instance_id: &str,
         payload: plugin_envelope::Payload,
     ) -> Result<u64, String> {
+        self.send_envelope(
+            trace(correlation_id),
+            reply_to,
+            session_id,
+            instance_id,
+            payload,
+        )
+        .await
+    }
+
+    async fn reply(
+        &mut self,
+        request: &oll::PluginEnvelope,
+        payload: plugin_envelope::Payload,
+    ) -> Result<u64, String> {
+        let (reply_to, trace) = response_context(request)?;
+        self.send_envelope(trace, Some(reply_to), SESSION_ID, INSTANCE_ID, payload)
+            .await
+    }
+
+    async fn send_envelope(
+        &mut self,
+        trace: oll::TraceContext,
+        reply_to: Option<u64>,
+        session_id: &str,
+        instance_id: &str,
+        payload: plugin_envelope::Payload,
+    ) -> Result<u64, String> {
         let message_id = self.next_message_id;
         self.next_message_id = self
             .next_message_id
@@ -114,7 +143,7 @@ impl Driver {
             reply_to,
             session_id: session_id.to_owned(),
             plugin_instance_id: instance_id.to_owned(),
-            trace: Some(trace(correlation_id)),
+            trace: Some(trace),
             payload: Some(payload),
         };
         if envelope.encoded_len() > MAXIMUM_ENVELOPE_BYTES {
@@ -126,6 +155,17 @@ impl Driver {
             .await
             .map_err(|_| "plugin closed the response stream".to_owned())?;
         Ok(message_id)
+    }
+
+    async fn receive_exact_trace(
+        &mut self,
+        expected: &oll::TraceContext,
+    ) -> Result<oll::PluginEnvelope, String> {
+        let envelope = self.receive(&expected.correlation_id).await?;
+        if envelope.trace.as_ref() != Some(expected) {
+            return Err("plugin did not preserve the complete trace context".to_owned());
+        }
+        Ok(envelope)
     }
 
     async fn receive(&mut self, correlation_id: &str) -> Result<oll::PluginEnvelope, String> {
@@ -153,6 +193,14 @@ impl Driver {
         }
         Ok(envelope)
     }
+}
+
+fn response_context(request: &oll::PluginEnvelope) -> Result<(u64, oll::TraceContext), String> {
+    let trace = request
+        .trace
+        .clone()
+        .ok_or_else(|| "cannot reply to an envelope without trace context".to_owned())?;
+    Ok((request.message_id, trace))
 }
 
 pub(super) async fn run_conformance(command: FixtureCommand) -> Result<(), String> {
@@ -249,10 +297,11 @@ async fn start_connected(command: FixtureCommand) -> Result<RunningFixture, Stri
     };
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
+        let service = oll::plugin_runtime_server::PluginRuntimeServer::new(service)
+            .max_decoding_message_size(MAXIMUM_ENVELOPE_BYTES)
+            .max_encoding_message_size(MAXIMUM_ENVELOPE_BYTES);
         Server::builder()
-            .add_service(oll::plugin_runtime_server::PluginRuntimeServer::new(
-                service,
-            ))
+            .add_service(service)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
                 let _ = shutdown_rx.await;
             })
@@ -461,6 +510,9 @@ async fn exercise_protocol(driver: &mut Driver) -> Result<(), String> {
     concurrent_echo_jobs(driver)
         .await
         .map_err(|error| format!("concurrent echo: {error}"))?;
+    legal_large_echo_job(driver)
+        .await
+        .map_err(|error| format!("legal large envelope: {error}"))?;
     host_calls_and_log(driver)
         .await
         .map_err(|error| format!("host calls: {error}"))?;
@@ -474,6 +526,7 @@ async fn exercise_protocol(driver: &mut Driver) -> Result<(), String> {
 
 async fn handshake(driver: &mut Driver) -> Result<(), String> {
     let correlation = "00000000-0000-4000-8000-000000000001";
+    let handshake_trace = trace(correlation);
     driver
         .send(
             correlation,
@@ -500,7 +553,7 @@ async fn handshake(driver: &mut Driver) -> Result<(), String> {
             }),
         )
         .await?;
-    let hello = driver.receive(correlation).await?;
+    let hello = driver.receive_exact_trace(&handshake_trace).await?;
     if hello.reply_to.is_some() {
         return Err("PluginHello unexpectedly set reply_to".to_owned());
     }
@@ -531,7 +584,7 @@ async fn handshake(driver: &mut Driver) -> Result<(), String> {
             plugin_envelope::Payload::Ready(oll::SessionReady {}),
         )
         .await?;
-    let ready = driver.receive(correlation).await?;
+    let ready = driver.receive_exact_trace(&handshake_trace).await?;
     if ready.reply_to.is_some()
         || !matches!(required_payload(ready)?, plugin_envelope::Payload::Ready(_))
     {
@@ -541,56 +594,35 @@ async fn handshake(driver: &mut Driver) -> Result<(), String> {
 }
 
 async fn heartbeat_and_cancellation(driver: &mut Driver) -> Result<(), String> {
-    let correlation = "00000000-0000-4000-8000-000000000010";
-    let job_id = "00000000-0000-4000-8000-000000000011";
-    let start_id = start_job(driver, correlation, job_id, "wait", &[]).await?;
-    expect_job_accepted(driver, correlation, start_id, job_id).await?;
+    let cancelled_correlation = "00000000-0000-4000-8000-000000000010";
+    let cancelled_job = "00000000-0000-4000-8000-000000000011";
+    let surviving_correlation = "00000000-0000-4000-8000-000000000012";
+    let surviving_job = "00000000-0000-4000-8000-000000000013";
 
-    let heartbeat_id = driver
-        .send(
-            correlation,
-            None,
-            plugin_envelope::Payload::Heartbeat(oll::Heartbeat { nonce: 42 }),
-        )
-        .await?;
-    let heartbeat = driver.receive(correlation).await?;
-    if heartbeat.reply_to != Some(heartbeat_id)
-        || !matches!(
-            required_payload(heartbeat)?,
-            plugin_envelope::Payload::Heartbeat(oll::Heartbeat { nonce: 42 })
-        )
-    {
-        return Err("heartbeat response changed nonce or reply_to".to_owned());
-    }
+    let cancelled_start =
+        start_job(driver, cancelled_correlation, cancelled_job, "wait", &[]).await?;
+    expect_job_accepted(
+        driver,
+        cancelled_correlation,
+        cancelled_start,
+        cancelled_job,
+    )
+    .await?;
+    let surviving_start =
+        start_job(driver, surviving_correlation, surviving_job, "wait", &[]).await?;
+    expect_job_accepted(
+        driver,
+        surviving_correlation,
+        surviving_start,
+        surviving_job,
+    )
+    .await?;
 
-    let cancel_id = driver
-        .send(
-            correlation,
-            None,
-            plugin_envelope::Payload::CancelJob(oll::CancelJobRequest {
-                job_id: Some(oll::PluginJobId {
-                    value: job_id.to_owned(),
-                }),
-                reason: oll::JobCancellationReason::UserRequest as i32,
-            }),
-        )
-        .await?;
-    let cancelled = driver.receive(correlation).await?;
-    let plugin_envelope::Payload::CancelJobAcknowledged(acknowledged) =
-        required_payload(cancelled.clone())?
-    else {
-        return Err("plugin did not acknowledge job cancellation".to_owned());
-    };
-    if cancelled.reply_to != Some(cancel_id)
-        || acknowledged
-            .job_id
-            .as_ref()
-            .map(|value| value.value.as_str())
-            != Some(job_id)
-    {
-        return Err("cancellation acknowledgement names another request".to_owned());
-    }
-    Ok(())
+    cancel_job(driver, cancelled_correlation, cancelled_job).await?;
+    expect_heartbeat_response(driver, "00000000-0000-4000-8000-000000000014", 42).await?;
+    cancel_job(driver, surviving_correlation, surviving_job)
+        .await
+        .map_err(|error| format!("cancelling one job also stopped the other: {error}"))
 }
 
 async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
@@ -611,11 +643,6 @@ async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
     let mut accepted = HashSet::new();
     let mut completed = HashSet::new();
     while accepted.len() < jobs.len() || completed.len() < jobs.len() {
-        let correlation = jobs
-            .iter()
-            .find(|(_, job_id, _, _)| !completed.contains(job_id.as_str()))
-            .map(|value| value.0.as_str())
-            .unwrap_or(jobs[0].0.as_str());
         let envelope = timeout(STEP_TIMEOUT, driver.connection.incoming.message())
             .await
             .map_err(|_| "timed out waiting for concurrent jobs".to_owned())?
@@ -626,7 +653,7 @@ async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
             .trace
             .as_ref()
             .map(|trace| trace.correlation_id.as_str())
-            .unwrap_or(correlation);
+            .ok_or_else(|| "concurrent job event omitted trace context".to_owned())?;
         let payload = required_payload(envelope.clone())?;
         match payload {
             plugin_envelope::Payload::JobAccepted(value) => {
@@ -638,11 +665,14 @@ async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
                     .get(job_id.as_str())
                     .ok_or_else(|| "JobAccepted names an unknown job".to_owned())?;
                 if actual_correlation != *expected_correlation
+                    || envelope.trace.as_ref() != Some(&trace(expected_correlation))
                     || envelope.reply_to != Some(*start_id)
                 {
                     return Err("JobAccepted changed routing context".to_owned());
                 }
-                accepted.insert(job_id);
+                if !accepted.insert(job_id) {
+                    return Err("plugin accepted the same job more than once".to_owned());
+                }
             }
             plugin_envelope::Payload::JobUpdate(value) => {
                 let job_id = value
@@ -655,13 +685,17 @@ async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
                     .iter()
                     .find(|(_, expected_job, _, _)| expected_job == job_id)
                     .ok_or_else(|| "JobUpdate names an unknown job".to_owned())?;
+                require_job_accepted(&accepted, job_id)?;
                 if actual_correlation != expected.0
+                    || envelope.trace.as_ref() != Some(&trace(&expected.0))
                     || value.state != oll::JobState::Succeeded as i32
                     || value.result.as_ref().and_then(config_string) != Some(expected.3.as_str())
                 {
                     return Err("echo job returned the wrong terminal result".to_owned());
                 }
-                completed.insert(job_id.to_owned());
+                if !completed.insert(job_id.to_owned()) {
+                    return Err("plugin completed the same job more than once".to_owned());
+                }
             }
             _ => return Err("unexpected payload during concurrent echo jobs".to_owned()),
         }
@@ -669,24 +703,48 @@ async fn concurrent_echo_jobs(driver: &mut Driver) -> Result<(), String> {
     Ok(())
 }
 
+fn require_job_accepted(accepted: &HashSet<String>, job_id: &str) -> Result<(), String> {
+    if accepted.contains(job_id) {
+        Ok(())
+    } else {
+        Err(format!(
+            "plugin sent JobUpdate for `{job_id}` before JobAccepted"
+        ))
+    }
+}
+
+async fn legal_large_echo_job(driver: &mut Driver) -> Result<(), String> {
+    let correlation = "00000000-0000-4000-8000-000000000020";
+    let job_id = "00000000-0000-4000-8000-000000000021";
+    let expected = "x".repeat(DEFAULT_GRPC_MESSAGE_BYTES);
+    let start_id = start_job(driver, correlation, job_id, "echo", &[expected.as_str()]).await?;
+    expect_job_accepted(driver, correlation, start_id, job_id).await?;
+    let update = driver.receive_exact_trace(&trace(correlation)).await?;
+    if update.encoded_len() <= DEFAULT_GRPC_MESSAGE_BYTES {
+        return Err("large echo response did not exceed tonic's default receive limit".to_owned());
+    }
+    expect_success(update, job_id, &expected)
+}
+
 async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
     let correlation = "00000000-0000-4000-8000-000000000030";
     let job_id = "00000000-0000-4000-8000-000000000031";
+    let job_trace = trace(correlation);
     let start_id = start_job(driver, correlation, job_id, "host", &[]).await?;
     expect_job_accepted(driver, correlation, start_id, job_id).await?;
 
     let get_config = driver.receive(correlation).await?;
-    assert_nested_call(&get_config, start_id)?;
+    assert_nested_call(&get_config, start_id, &job_trace)?;
     let plugin_envelope::Payload::HostCall(call) = required_payload(get_config.clone())? else {
         return Err("host action did not request configuration".to_owned());
     };
     if !matches!(call.call, Some(oll::host_call_request::Call::GetConfig(_))) {
         return Err("first nested call is not GetConfig".to_owned());
     }
+    expect_heartbeat_response(driver, "00000000-0000-4000-8000-000000000032", 43).await?;
     driver
-        .send(
-            correlation,
-            Some(get_config.message_id),
+        .reply(
+            &get_config,
             plugin_envelope::Payload::HostResult(oll::HostCallResponse {
                 result: Some(oll::host_call_response::Result::GetConfig(
                     oll::GetConfigResponse {
@@ -705,7 +763,7 @@ async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
         .await?;
 
     let invoke = driver.receive(correlation).await?;
-    assert_nested_call(&invoke, start_id)?;
+    assert_nested_call(&invoke, start_id, &job_trace)?;
     let plugin_envelope::Payload::HostCall(call) = required_payload(invoke.clone())? else {
         return Err("host action did not invoke the configuration function".to_owned());
     };
@@ -721,9 +779,8 @@ async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
         return Err("plugin changed the configuration function handle".to_owned());
     }
     driver
-        .send(
-            correlation,
-            Some(invoke.message_id),
+        .reply(
+            &invoke,
             plugin_envelope::Payload::HostResult(oll::HostCallResponse {
                 result: Some(oll::host_call_response::Result::InvokeConfigFunction(
                     oll::InvokeConfigFunctionResponse {
@@ -735,7 +792,7 @@ async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
         .await?;
 
     let read = driver.receive(correlation).await?;
-    assert_nested_call(&read, start_id)?;
+    assert_nested_call(&read, start_id, &job_trace)?;
     let plugin_envelope::Payload::HostCall(call) = required_payload(read.clone())? else {
         return Err("host action did not read a document".to_owned());
     };
@@ -746,9 +803,8 @@ async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
         return Err("third nested call is not ReadDocument".to_owned());
     }
     driver
-        .send(
-            correlation,
-            Some(read.message_id),
+        .reply(
+            &read,
             plugin_envelope::Payload::HostResult(oll::HostCallResponse {
                 result: Some(oll::host_call_response::Result::ReadDocument(
                     oll::ReadDocumentResponse {
@@ -764,23 +820,24 @@ async fn host_calls_and_log(driver: &mut Driver) -> Result<(), String> {
         )
         .await?;
 
-    let log = driver.receive(correlation).await?;
+    let log = driver.receive_exact_trace(&job_trace).await?;
     let plugin_envelope::Payload::Log(log) = required_payload(log)? else {
         return Err("host action did not emit a structured log".to_owned());
     };
     if log.target != "conformance" || log.message != "host action complete" {
         return Err("structured log content differs".to_owned());
     }
-    let update = driver.receive(correlation).await?;
+    let update = driver.receive_exact_trace(&job_trace).await?;
     expect_success(update, job_id, "function|document")
 }
 
 async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
     let correlation = "00000000-0000-4000-8000-000000000040";
     let job_id = "00000000-0000-4000-8000-000000000041";
+    let job_trace = trace(correlation);
     let start_id = start_job(driver, correlation, job_id, "artifact", &[]).await?;
     expect_job_accepted(driver, correlation, start_id, job_id).await?;
-    let start = driver.receive(correlation).await?;
+    let start = driver.receive_exact_trace(&job_trace).await?;
     let plugin_envelope::Payload::ArtifactStart(transfer) = required_payload(start.clone())? else {
         return Err("artifact action omitted ArtifactTransferStart".to_owned());
     };
@@ -801,9 +858,8 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         return Err("artifact descriptor does not match the fixture payload".to_owned());
     }
     driver
-        .send(
-            correlation,
-            Some(start.message_id),
+        .reply(
+            &start,
             plugin_envelope::Payload::ArtifactAccepted(oll::ArtifactTransferAccepted {
                 artifact_id: Some(artifact_id.clone()),
             }),
@@ -811,7 +867,7 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         .await?;
     let mut bytes = Vec::new();
     for expected_index in 0..2 {
-        let chunk = driver.receive(correlation).await?;
+        let chunk = driver.receive_exact_trace(&job_trace).await?;
         let payload = required_payload(chunk)?;
         let plugin_envelope::Payload::ArtifactChunk(chunk) = payload else {
             return Err(format!(
@@ -826,7 +882,7 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
     if bytes != b"artifact payload" {
         return Err("artifact chunk bytes differ".to_owned());
     }
-    let complete = driver.receive(correlation).await?;
+    let complete = driver.receive_exact_trace(&job_trace).await?;
     let plugin_envelope::Payload::ArtifactComplete(completed) = required_payload(complete.clone())?
     else {
         return Err("artifact transfer omitted completion".to_owned());
@@ -835,15 +891,14 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         return Err("artifact completion changed identity".to_owned());
     }
     driver
-        .send(
-            correlation,
-            Some(complete.message_id),
+        .reply(
+            &complete,
             plugin_envelope::Payload::ArtifactStored(oll::ArtifactStored {
                 artifact_id: Some(artifact_id.clone()),
             }),
         )
         .await?;
-    let update = driver.receive(correlation).await?;
+    let update = driver.receive_exact_trace(&job_trace).await?;
     let plugin_envelope::Payload::JobUpdate(update) = required_payload(update)? else {
         return Err("artifact action omitted terminal JobUpdate".to_owned());
     };
@@ -861,8 +916,7 @@ async fn shutdown(driver: &mut Driver) -> Result<(), String> {
     let deadline = std::time::SystemTime::now()
         .checked_add(Duration::from_secs(5))
         .ok_or_else(|| "shutdown deadline overflowed".to_owned())?;
-    let deadline = prost_types::Timestamp::try_from(deadline)
-        .map_err(|error| format!("create shutdown deadline: {error}"))?;
+    let deadline = prost_types::Timestamp::from(deadline);
     let message_id = driver
         .send(
             correlation,
@@ -873,7 +927,7 @@ async fn shutdown(driver: &mut Driver) -> Result<(), String> {
             }),
         )
         .await?;
-    let acknowledged = driver.receive(correlation).await?;
+    let acknowledged = driver.receive_exact_trace(&trace(correlation)).await?;
     if acknowledged.reply_to != Some(message_id)
         || !matches!(
             required_payload(acknowledged)?,
@@ -912,13 +966,66 @@ async fn start_job(
         .await
 }
 
+async fn cancel_job(driver: &mut Driver, correlation_id: &str, job_id: &str) -> Result<(), String> {
+    let cancel_id = driver
+        .send(
+            correlation_id,
+            None,
+            plugin_envelope::Payload::CancelJob(oll::CancelJobRequest {
+                job_id: Some(oll::PluginJobId {
+                    value: job_id.to_owned(),
+                }),
+                reason: oll::JobCancellationReason::UserRequest as i32,
+            }),
+        )
+        .await?;
+    let cancelled = driver.receive_exact_trace(&trace(correlation_id)).await?;
+    let plugin_envelope::Payload::CancelJobAcknowledged(acknowledged) =
+        required_payload(cancelled.clone())?
+    else {
+        return Err("plugin did not acknowledge job cancellation".to_owned());
+    };
+    if cancelled.reply_to != Some(cancel_id)
+        || acknowledged
+            .job_id
+            .as_ref()
+            .map(|value| value.value.as_str())
+            != Some(job_id)
+    {
+        return Err("cancellation acknowledgement names another request".to_owned());
+    }
+    Ok(())
+}
+
+async fn expect_heartbeat_response(
+    driver: &mut Driver,
+    correlation_id: &str,
+    nonce: u64,
+) -> Result<(), String> {
+    let heartbeat_id = driver
+        .send(
+            correlation_id,
+            None,
+            plugin_envelope::Payload::Heartbeat(oll::Heartbeat { nonce }),
+        )
+        .await?;
+    let heartbeat = driver.receive_exact_trace(&trace(correlation_id)).await?;
+    let plugin_envelope::Payload::Heartbeat(response) = required_payload(heartbeat.clone())? else {
+        return Err("plugin did not answer heartbeat while other work was pending".to_owned());
+    };
+    if heartbeat.reply_to != Some(heartbeat_id) || response.nonce != nonce {
+        return Err("heartbeat response changed nonce or reply_to".to_owned());
+    }
+    Ok(())
+}
+
 async fn expect_job_accepted(
     driver: &mut Driver,
     correlation_id: &str,
     start_id: u64,
     job_id: &str,
 ) -> Result<(), String> {
-    let envelope = driver.receive(correlation_id).await?;
+    let envelope = driver.receive_exact_trace(&trace(correlation_id)).await?;
     let plugin_envelope::Payload::JobAccepted(accepted) = required_payload(envelope.clone())?
     else {
         return Err("plugin did not send JobAccepted first".to_owned());
@@ -948,13 +1055,23 @@ fn expect_success(
     Ok(())
 }
 
-fn assert_nested_call(envelope: &oll::PluginEnvelope, parent: u64) -> Result<(), String> {
-    let trace = envelope
+fn assert_nested_call(
+    envelope: &oll::PluginEnvelope,
+    parent: u64,
+    root: &oll::TraceContext,
+) -> Result<(), String> {
+    let actual = envelope
         .trace
         .as_ref()
         .ok_or_else(|| "nested call omitted trace context".to_owned())?;
-    if trace.parent_call_id != Some(parent) || trace.call_depth != 1 {
-        return Err("nested host call did not set parent_call_id and call_depth".to_owned());
+    let mut expected = root.clone();
+    expected.parent_call_id = Some(parent);
+    expected.call_depth = root
+        .call_depth
+        .checked_add(1)
+        .ok_or_else(|| "nested call depth overflowed".to_owned())?;
+    if actual != &expected {
+        return Err("nested host call did not preserve and extend its trace context".to_owned());
     }
     Ok(())
 }
@@ -1018,3 +1135,36 @@ fn config_string(value: &oll::ConfigValue) -> Option<&str> {
 }
 
 use prost::Message as _;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn host_responses_reuse_the_complete_request_context() {
+        let expected = oll::TraceContext {
+            correlation_id: "00000000-0000-4000-8000-000000000070".to_owned(),
+            parent_call_id: Some(41),
+            call_depth: 3,
+            causal_depth: 2,
+            task_id: Some("task-1".to_owned()),
+            task_group_id: Some("group-1".to_owned()),
+        };
+        let request = oll::PluginEnvelope {
+            message_id: 71,
+            trace: Some(expected.clone()),
+            ..Default::default()
+        };
+
+        assert_eq!(response_context(&request).unwrap(), (71, expected));
+    }
+
+    #[test]
+    fn concurrent_updates_require_prior_acceptance() {
+        let job_id = "00000000-0000-4000-8000-000000000071";
+        let mut accepted = HashSet::new();
+        assert!(require_job_accepted(&accepted, job_id).is_err());
+        accepted.insert(job_id.to_owned());
+        assert!(require_job_accepted(&accepted, job_id).is_ok());
+    }
+}
