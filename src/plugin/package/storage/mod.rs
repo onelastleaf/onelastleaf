@@ -32,8 +32,8 @@ impl PackageLayout {
         self.root.join(plugin_id.as_str())
     }
 
-    pub fn discovery_staging(&self, operation_id: &str) -> Result<PathBuf, PackageError> {
-        let path = self.root.join(format!(".discovery-{operation_id}"));
+    pub fn resolution_directory(&self, operation_id: &str) -> Result<PathBuf, PackageError> {
+        let path = self.root.join(format!(".resolve-{operation_id}"));
         create_private_directory(&path)?;
         Ok(path)
     }
@@ -66,6 +66,20 @@ impl PackageLayout {
         self.plugin_root(plugin_id)
             .join("generations")
             .join(generation.to_string())
+    }
+
+    pub fn direct_generation(
+        &self,
+        plugin_id: &PluginId,
+        generation: Uuid,
+    ) -> Result<PathBuf, PackageError> {
+        let plugin_root = self.prepare_plugin_root(plugin_id)?;
+        let path = plugin_root.join("generations").join(generation.to_string());
+        fs::create_dir(&path)
+            .map_err(|error| package_io("create direct package generation", error))?;
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o700))
+            .map_err(|error| package_io("restrict direct package generation", error))?;
+        Ok(path)
     }
 
     pub fn build_log(
@@ -147,7 +161,7 @@ mod tests {
     }
 
     #[test]
-    fn completed_candidate_tree_is_synchronized_recursively() {
+    fn completed_pending_tree_is_synchronized_recursively() {
         let directory = tempfile::TempDir::new().unwrap();
         let layout = PackageLayout::initialize(directory.path().join("plugins")).unwrap();
         let plugin_id: PluginId = "oll.test".parse().unwrap();
@@ -163,7 +177,7 @@ mod tests {
         )
         .unwrap();
 
-        layout.sync_candidate_tree(&plugin_id, generation).unwrap();
+        layout.sync_pending_tree(&plugin_id, generation).unwrap();
     }
 
     #[test]
@@ -172,7 +186,9 @@ mod tests {
         let layout = PackageLayout::initialize(directory.path().join("plugins")).unwrap();
         let plugin_id: PluginId = "oll.cleanup-test".parse().unwrap();
         let orphan_id: PluginId = "oll.orphan-test".parse().unwrap();
-        let discovery = layout.discovery_staging("interrupted-discovery").unwrap();
+        let discovery = layout
+            .resolution_directory("interrupted-discovery")
+            .unwrap();
         let operation = layout
             .operation_staging(&plugin_id, "interrupted-operation")
             .unwrap();

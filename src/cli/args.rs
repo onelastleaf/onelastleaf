@@ -7,6 +7,8 @@ use std::{
 use clap::{Args, Parser, Subcommand};
 use url::Url;
 
+use crate::plugin::PluginLanguage;
+
 use super::{
     ColorMode, ConnectUrl, GitRemote, InitStore, LogFilterDirective, LoopbackAddr, NodeName,
     OutputFormat,
@@ -229,6 +231,21 @@ pub struct PluginArgs {
 
 #[derive(Debug, Subcommand)]
 pub enum PluginCommand {
+    /// Create a local plugin project without installing it.
+    New {
+        /// Destination directory, which must not already exist.
+        #[arg(value_name = "PATH")]
+        path: PathBuf,
+        /// Programming language used by the generated project.
+        #[arg(long, value_enum)]
+        language: PluginLanguage,
+        /// Immutable dotted plugin identity. A random identity is generated when omitted.
+        #[arg(long, value_name = "PLUGIN_ID")]
+        id: Option<String>,
+        /// User-facing plugin name. Defaults to the destination basename.
+        #[arg(long, value_name = "PLUGIN_NAME")]
+        name: Option<String>,
+    },
     /// Install a plugin from a Git repository.
     Install {
         /// Git remote. Omit it to install declarations from plugins.lua.

@@ -33,6 +33,20 @@ pub(super) fn execute_plugin(
     dependency: ClientDependency,
 ) -> Result<(), NodeError> {
     match (intent, dependency) {
+        (
+            PluginIntent::New {
+                path,
+                language,
+                plugin_id,
+                plugin_name,
+            },
+            ClientDependency::None,
+        ) => local::create_plugin_project(
+            &path,
+            language,
+            plugin_id.as_deref(),
+            plugin_name.as_deref(),
+        ),
         (PluginIntent::Validate, ClientDependency::ConfigRoot(config_root)) => {
             local::validate_package_configuration(&config_root)
         }
@@ -163,9 +177,9 @@ async fn execute_admin_plugin(intent: PluginIntent, config_root: &Path) -> Resul
             .await?;
             output::show_started_job(&response, json)
         }
-        PluginIntent::Validate | PluginIntent::ViewLog { .. } => Err(NodeError::Internal(
-            "local plugin command reached the Admin dispatcher".to_owned(),
-        )),
+        PluginIntent::New { .. } | PluginIntent::Validate | PluginIntent::ViewLog { .. } => Err(
+            NodeError::Internal("local plugin command reached the Admin dispatcher".to_owned()),
+        ),
     }
 }
 

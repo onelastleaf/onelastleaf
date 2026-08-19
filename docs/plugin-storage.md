@@ -27,6 +27,27 @@ Each installation is addressed by immutable `PluginId`, never by mutable
 `PluginName`:
 
 ```text
+<plugin-data-root>/
+├── .resolve-<operation-id>/
+│   └── repository/
+└── <plugin-id>/
+    ├── .operation-<operation-id>/
+    ├── candidates/
+    │   └── <install-generation>/
+    ├── generations/
+    │   └── <install-generation>/
+    ├── current -> generations/<install-generation>
+    └── build-logs/
+```
+
+`.resolve-*` is the temporary checkout used before a remote repository's
+PluginId is known. `.operation-*` contains private per-plugin temporary inputs
+such as release downloads. Neither is a publisher-visible source layout or
+placeholder.
+
+The durable portion of one plugin root is:
+
+```text
 <plugin-data-root>/<plugin-id>/
 ├── candidates/
 │   └── <install-generation>/
@@ -95,14 +116,19 @@ deployment.
 
 One source build or release extraction follows this recovery boundary:
 
-1. create a private candidate generation and a per-install build log;
+1. create a per-install build log and materialize the install tree according to
+   `source.checkout`: a separate source workspace plus candidate, the repository
+   directly in a candidate, or the repository directly in its final generation;
+   release extraction always uses a candidate;
 2. fetch, build or extract, then validate the complete effective manifest,
-   protocol fingerprint, target, runtime entrypoint, and candidate contents;
-3. persist a SQL publish intent containing the declaration digest, candidate
-   generation, and expected current generation, and block new spawns for that
-   PluginId while the transition is prepared;
-4. move the verified candidate beneath `generations/` and atomically replace
-   the `current` symlink if the expected generation still matches;
+   protocol fingerprint, target, runtime entrypoint, and install-tree contents;
+3. synchronize the completed tree and persist a SQL publish intent containing
+   the declaration digest, install generation, expected current generation, and
+   effective manifest, and block new spawns for that PluginId while the
+   transition is prepared;
+4. move a verified candidate beneath `generations/` when one exists, then
+   atomically replace the `current` symlink if the expected generation still
+   matches; a direct generation requires no move;
 5. finalize the SQL current-generation pointer and clear the publish intent;
 6. delete generations no longer referenced by current state, a running
    instance, or recovery.
@@ -111,17 +137,20 @@ Step 4 is the atomic filesystem switch. The per-PluginId package gate remains
 held through step 5, so a new spawn can observe neither a switched symlink with
 old SQL nor new SQL with an old symlink; after the gate opens it uses the new
 generation. There is no transaction spanning SQL and filesystem rename, so the
-intent makes either side recoverable. Startup deletes an incomplete build for
-which no verified publish intent exists. A verified candidate with a matching
-intent completes publication; a pointer already switched before SQL finalization
-causes SQL to be finalized idempotently. A candidate whose declaration or
-expected current generation no longer matches is discarded. No `.lock` file or
-semantic package-version directory is used.
+intent makes either side recoverable. Startup deletes an incomplete candidate
+or direct generation for which no verified publish intent exists. A verified
+candidate or direct generation with a matching intent completes publication; a
+pointer already switched before SQL finalization causes SQL to be finalized
+idempotently. A pending tree whose declaration or expected current generation
+no longer matches is discarded. No `.lock` file or semantic package-version
+directory is used.
 
 SQL installed rows and durable package/removal intents are the authority for
-package ownership. After intent recovery, startup removes any path-safe
-`PluginId` package root that no remaining SQL row or intent references; an old
-`current` symlink or generation tree alone must never block a clean reinstall.
+package ownership. After intent recovery, startup removes every generation not
+referenced by current SQL state, a running instance, or recovery. It also
+removes any path-safe `PluginId` package root that no remaining SQL row or
+intent references; an old `current` symlink or generation tree alone must never
+block a clean reinstall.
 
 A failed install/update of an existing ID leaves `current` and the old SQL
 current generation unchanged. Publishing any replacement generation does not

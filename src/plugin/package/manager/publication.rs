@@ -61,7 +61,7 @@ impl PackageManager {
         );
         if let Err(error) = self
             .layout
-            .sync_candidate_tree(&intent.plugin_id, intent.candidate_generation)
+            .sync_pending_tree(&intent.plugin_id, intent.candidate_generation)
         {
             self.logger.emit(
                 LogLevel::Error,

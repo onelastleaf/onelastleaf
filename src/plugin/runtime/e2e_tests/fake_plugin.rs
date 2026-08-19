@@ -117,13 +117,16 @@ impl FakeSession {
         if envelope.reply_to.is_some() {
             return Err("HostHello unexpectedly replies to another message".to_owned());
         }
+        if envelope.session_id.is_empty() || envelope.plugin_instance_id.is_empty() {
+            return Err("HostHello envelope omitted its session or instance identity".to_owned());
+        }
+        self.session_id = envelope.session_id.clone();
+        self.instance_id = envelope.plugin_instance_id.clone();
         let trace = required_trace(&envelope)?.clone();
         let Some(plugin_envelope::Payload::HostHello(hello)) = envelope.payload else {
             return Err("HostHello was not the first host message".to_owned());
         };
         if hello.node.is_none()
-            || hello.session_id.is_empty()
-            || hello.plugin_instance_id.is_empty()
             || hello.protocol_schema_sha256.as_slice() != PROTOCOL_SCHEMA_SHA256
             || hello.plugin_id.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_ID)
             || hello.plugin_name.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_NAME)
@@ -133,8 +136,6 @@ impl FakeSession {
         {
             return Err("HostHello does not describe the expected instance".to_owned());
         }
-        self.session_id = hello.session_id;
-        self.instance_id = hello.plugin_instance_id;
 
         self.send(
             None,

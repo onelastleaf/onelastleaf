@@ -107,8 +107,12 @@ async fn run_plugin_instance_inner(
     let argv = effective
         .expanded_runtime_argv(&ExpansionPaths {
             source: None,
-            staging: None,
-            install: &install,
+            install: (effective.source.checkout
+                != crate::plugin::package::SourceCheckout::Generation)
+                .then_some(install.as_path()),
+            generation: (effective.source.checkout
+                == crate::plugin::package::SourceCheckout::Generation)
+                .then_some(install.as_path()),
             mask_dir: &mask_dir,
         })
         .map_err(|error| PluginError::FailedPrecondition(error.to_string()))?;

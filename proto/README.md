@@ -24,6 +24,10 @@ published build hash rather than guessing a source-file set or compiler flags.
 Changing a proto changes the descriptor and therefore requires coordinated
 binary replacement, as intended.
 
+Official SDK repositories embed that published value alongside code generated
+from `plugin.proto` and its imports. Their common state-machine and release
+contract is documented in [`docs/plugin-sdk.md`](../docs/plugin-sdk.md).
+
 ## Files
 
 - `oll/admin.proto`: the local typed gRPC administration service, node status,
@@ -47,7 +51,10 @@ binary replacement, as intended.
 Package file formats, Git execution, source-recipe mechanics, archive extraction,
 process spawning, and filesystem publication are not wire protocols and remain
 in the design documents. Typed plugin Admin requests orchestrate that work
-without carrying CLI argv or package payload bytes.
+without carrying CLI argv or package payload bytes. Plugin package inspection
+reports the publisher's source checkout policy as a typed enum alongside the
+rest of the effective manifest; it does not infer a language or move package
+mechanics into protobuf.
 
 ## Local administration
 
@@ -199,12 +206,19 @@ and passes the endpoint through `OLL_PLUGIN_ENDPOINT`. oll hosts
 either endpoint can initiate messages on the same bidirectional stream. The
 session starts as follows:
 
-1. oll sends `HostHello` with the expected PluginId, effective PluginName,
-   session and instance identifiers, schema fingerprint, and limits.
+1. oll sends a `HostHello` envelope. Its outer nonempty session and instance
+   identifiers establish the authoritative identity pair for the stream;
+   `HostHello` carries the expected PluginId, effective PluginName, schema
+   fingerprint, and limits without duplicating those identifiers.
 2. The plugin validates those values, then sends `PluginHello` repeating its
    identity and declaring actions.
 3. Both endpoints send `SessionReady`. No job or host call is valid before both
    ready messages have been observed.
+
+The plugin copies the first envelope's identity pair onto `PluginHello` and
+every later envelope. After that first bootstrap message, either side rejects
+any envelope whose outer pair differs. The removed `HostHello` field names and
+numbers remain reserved and cannot become a second identity authority later.
 
 Each sender owns an independent `message_id` sequence for the session. Its first
 ID and every later ID are non-zero, and every later ID is strictly greater than

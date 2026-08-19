@@ -73,20 +73,33 @@ impl PackageLayout {
         self.replace_current(plugin_id, expected_current, Some(candidate_generation))
     }
 
-    pub fn sync_candidate_tree(
+    pub fn sync_pending_tree(
         &self,
         plugin_id: &PluginId,
-        candidate_generation: Uuid,
+        install_generation: Uuid,
     ) -> Result<(), PackageError> {
         let plugin_root = self.plugin_root(plugin_id);
         let candidates = plugin_root.join("candidates");
-        let candidate = candidates.join(candidate_generation.to_string());
-        sync_tree(&candidate)?;
+        let generations = plugin_root.join("generations");
+        let candidate = candidates.join(install_generation.to_string());
+        let generation = generations.join(install_generation.to_string());
+        let (pending, parent) = if candidate.is_dir() {
+            (candidate, candidates)
+        } else if generation.is_dir() {
+            (generation, generations)
+        } else {
+            return Err(PackageError::new(
+                "install_publish_failed",
+                "storage",
+                "completed plugin install tree is missing",
+            ));
+        };
+        sync_tree(&pending)?;
 
         // A durable intent may recover only paths whose complete ancestry was
-        // already made durable. Synchronize from the candidate's parent back
+        // already made durable. Synchronize from the pending tree's parent back
         // through the package root after every child has reached storage.
-        sync_directory(&candidates)?;
+        sync_directory(&parent)?;
         sync_directory(&plugin_root)?;
         sync_directory(&self.root)
     }

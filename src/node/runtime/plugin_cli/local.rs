@@ -7,8 +7,28 @@ use std::{
 use crate::{
     cli::PluginLogTarget,
     node::runtime::NodeError,
-    plugin::{PluginSelector, package::validate_local_package_config},
+    plugin::{
+        PluginLanguage, PluginSelector, package::validate_local_package_config,
+        scaffold_plugin_project,
+    },
 };
+
+pub(super) fn create_plugin_project(
+    path: &Path,
+    language: PluginLanguage,
+    plugin_id: Option<&str>,
+    plugin_name: Option<&str>,
+) -> Result<(), NodeError> {
+    let generated = scaffold_plugin_project(path, language, plugin_id, plugin_name)
+        .map_err(|error| NodeError::Operation(error.to_string()))?;
+    println!(
+        "created {} plugin ({}) at {}",
+        generated.name,
+        generated.id,
+        path.display()
+    );
+    Ok(())
+}
 
 pub(super) fn validate_package_configuration(config_root: &Path) -> Result<(), NodeError> {
     validate_local_package_config(config_root).map_err(|error| {

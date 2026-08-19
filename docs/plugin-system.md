@@ -12,6 +12,11 @@ language with a gRPC client capable of using the protobuf contract. Trust does
 not waive validation at the process, protobuf, revision, path, or artifact
 boundary.
 
+Official language runtimes, their common state-machine obligations, package
+identities, and `oll plugin new` are defined in
+[plugin-sdk.md](plugin-sdk.md). An SDK hides envelope routing but does not
+weaken any validation or lifecycle rule in this document.
+
 The first implementation is local-only. The local CLI may invoke a plugin
 running under the same daemon. Remote plugin invocation and a separate input-file
 upload protocol are deferred; no unapproved remote authorization or routing
@@ -128,9 +133,10 @@ authentication credentials.
 
 The application handshake is:
 
-1. oll sends `HostHello` with `NodeIdentity`, the expected PluginId and effective
-   PluginName, session/instance IDs, exact schema fingerprint, depth limits, and
-   artifact chunk limit;
+1. oll sends a `HostHello` envelope. The envelope's nonempty session and
+   instance IDs establish the authoritative identity pair for the stream;
+   `HostHello` carries `NodeIdentity`, the expected PluginId and effective
+   PluginName, exact schema fingerprint, depth limits, and artifact chunk limit;
 2. the plugin validates it and sends `PluginHello` repeating the expected
    identity and declaring actions;
 3. both endpoints send `SessionReady`;
@@ -147,6 +153,13 @@ envelopes, job updates, cancellation acknowledgements, or artifact messages
 from it are rejected and cannot attach to a replacement instance. Rejecting
 stale output closes or fails only the stale session or work item and must not
 wait on, or block admission and shutdown of, the current instance.
+
+The first `HostHello` envelope is the only bootstrap exception to ordinary
+identity comparison because the plugin has not yet learned the pair. The plugin
+requires both outer identifiers to be nonempty, adopts them, and copies that
+exact pair onto `PluginHello` and every later envelope. `HostHello` does not
+duplicate them as payload fields. After bootstrap, either endpoint rejects an
+envelope whose outer identity differs from the established pair.
 
 All calls share the one bidirectional stream. `PluginEnvelope.message_id` is
 nonzero and strictly increasing per sender within the session. Gaps are allowed

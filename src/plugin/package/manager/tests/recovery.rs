@@ -1,6 +1,73 @@
 use super::*;
 
 #[tokio::test]
+async fn recovery_publishes_a_direct_generation_and_prunes_later_orphans() {
+    let directory = tempfile::TempDir::new().unwrap();
+    let config_root = directory.path().join("config");
+    fs::create_dir(&config_root).unwrap();
+    let plugin_id: PluginId = "oll.direct-recovery".parse().unwrap();
+    let plugin_name: PluginName = "direct-recovery".parse().unwrap();
+    let declaration = test_declaration(plugin_name.as_str());
+    let mut declarations = PluginDeclarations::default();
+    declarations.insert(plugin_id.clone(), declaration.clone());
+    write_plugin_declarations(&config_root, &declarations).unwrap();
+    let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
+    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
+    let publisher = format!(
+        r#"format_version = 1
+[plugin]
+id = "{plugin_id}"
+name = "{plugin_name}"
+protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "generation"
+[runtime]
+argv = ["{{generation}}/plugin"]
+"#
+    );
+    let generation = Uuid::new_v4();
+    let direct = layout.direct_generation(&plugin_id, generation).unwrap();
+    fs::write(direct.join("oll.toml"), &publisher).unwrap();
+    fs::write(direct.join("plugin"), b"ready").unwrap();
+    let intent = package_intent(
+        plugin_id.clone(),
+        plugin_name,
+        generation,
+        None,
+        &declaration,
+        &publisher,
+    );
+    store.prepare_package_publish(&intent).await.unwrap();
+
+    manager.recover("direct-generation-recovery").await.unwrap();
+    assert_eq!(
+        layout.current_generation(&plugin_id).unwrap(),
+        Some(generation)
+    );
+    assert_eq!(
+        store
+            .get_plugin(&PluginSelector::Id(plugin_id.clone()))
+            .await
+            .unwrap()
+            .current_generation,
+        generation
+    );
+
+    let orphan = Uuid::new_v4();
+    fs::write(
+        layout
+            .direct_generation(&plugin_id, orphan)
+            .unwrap()
+            .join("partial"),
+        b"partial",
+    )
+    .unwrap();
+    manager.recover("direct-generation-prune").await.unwrap();
+    assert!(!layout.generation(&plugin_id, orphan).exists());
+    assert!(layout.generation(&plugin_id, generation).exists());
+}
+
+#[tokio::test]
 async fn recovery_completes_publication_on_both_sides_of_the_symlink_switch() {
     let directory = tempfile::TempDir::new().unwrap();
     let config_root = directory.path().join("config");

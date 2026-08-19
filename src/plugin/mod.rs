@@ -5,6 +5,7 @@ mod error;
 pub mod package;
 pub(crate) mod protocol;
 pub mod runtime;
+mod scaffold;
 mod store;
 mod system;
 mod types;
@@ -18,6 +19,8 @@ pub(crate) use artifact::ArtifactPublisher;
 #[cfg(test)]
 pub(crate) use artifact::{ArtifactSession, MAX_ARTIFACT_CHUNK_BYTES};
 pub use error::PluginError;
+pub use scaffold::PluginLanguage;
+pub(crate) use scaffold::scaffold_plugin_project;
 pub use store::PluginStore;
 pub use system::{
     PluginInspection, PluginJobInspection, PluginJobListEntry, PluginListEntry, PluginRuntime,

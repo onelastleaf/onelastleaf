@@ -384,8 +384,9 @@ struct PreparedCandidate {
 impl Drop for PreparedCandidate {
     fn drop(&mut self) {
         if !self.recovery_owned {
-            self.layout
-                .remove_candidate(&self.built.plugin_id, self.built.generation);
+            let _ = self
+                .layout
+                .discard_unpublished_generation(&self.built.plugin_id, self.built.generation);
         }
     }
 }

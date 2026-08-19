@@ -332,6 +332,70 @@ fn local_plugin_validation_fails_without_side_effects() {
 }
 
 #[test]
+fn plugin_new_is_local_and_never_replaces_an_existing_project() {
+    let deployment = TestDeployment::empty();
+    fs::create_dir_all(deployment.root()).unwrap();
+    let first = oll()
+        .current_dir(deployment.root())
+        .env_remove("HOME")
+        .env_remove("OLL_CONFIG")
+        .args([
+            "plugin",
+            "new",
+            "example-plugin",
+            "--language",
+            "rust",
+            "--name",
+            "example-echo",
+        ])
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "unexpected stderr: {}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    assert!(first.stderr.is_empty());
+    let manifest = deployment.root().join("example-plugin/oll.toml");
+    assert!(manifest.is_file());
+    let before = fs::read(&manifest).unwrap();
+    let parsed = toml::from_str::<toml::Value>(std::str::from_utf8(&before).unwrap()).unwrap();
+    let plugin_id = parsed["plugin"]["id"].as_str().unwrap();
+    let uuid = plugin_id.strip_prefix("generated.").unwrap();
+    assert_eq!(uuid::Uuid::parse_str(uuid).unwrap().get_version_num(), 4);
+    assert_eq!(
+        String::from_utf8(first.stdout).unwrap(),
+        format!(
+            "created example-echo plugin ({plugin_id}) at {}\n",
+            deployment.root().join("example-plugin").display()
+        )
+    );
+
+    let second = oll()
+        .current_dir(deployment.root())
+        .env_remove("HOME")
+        .env_remove("OLL_CONFIG")
+        .args([
+            "plugin",
+            "new",
+            "example-plugin",
+            "--language",
+            "rust",
+            "--id",
+            "org.example.replacement",
+        ])
+        .output()
+        .unwrap();
+    assert!(!second.status.success());
+    assert!(
+        String::from_utf8(second.stderr)
+            .unwrap()
+            .contains("destination already exists")
+    );
+    assert_eq!(fs::read(manifest).unwrap(), before);
+}
+
+#[test]
 fn explicit_and_environment_paths_do_not_require_home() {
     let explicit_deployment = TestDeployment::empty();
     let explicit_replica = explicit_deployment.root().join("replica");

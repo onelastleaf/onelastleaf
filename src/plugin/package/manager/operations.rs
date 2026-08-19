@@ -57,7 +57,7 @@ impl PackageManager {
             .validate()
             .map_err(package_configuration_error)?;
         let operation_id = Uuid::new_v4().to_string();
-        let staging = match self.layout.discovery_staging(&operation_id) {
+        let staging = match self.layout.resolution_directory(&operation_id) {
             Ok(staging) => staging,
             Err(error) => {
                 return Ok(vec![PackageOperationResult::failed(
@@ -217,7 +217,7 @@ impl PackageManager {
         let operation_id = Uuid::new_v4().to_string();
         let staging = self
             .layout
-            .discovery_staging(&operation_id)
+            .resolution_directory(&operation_id)
             .map_err(package_configuration_error)?;
         let _guard = StagingGuard(staging.clone());
         let checkout = self

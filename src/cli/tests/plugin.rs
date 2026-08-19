@@ -1,8 +1,10 @@
 use super::*;
+use crate::plugin::PluginLanguage;
 
 #[test]
 fn parses_documented_plugin_and_job_commands() {
     for arguments in [
+        vec!["oll", "plugin", "new", "example", "--language", "rust"],
         vec!["oll", "plugin", "install"],
         vec!["oll", "plugin", "install", "--json"],
         vec![
@@ -73,6 +75,26 @@ fn parses_documented_plugin_and_job_commands() {
     ] {
         parse(&arguments);
     }
+}
+
+#[test]
+fn plugin_new_accepts_an_omitted_identity() {
+    assert_eq!(
+        intent(&[
+            "oll",
+            "plugin",
+            "new",
+            "example-plugin",
+            "--language",
+            "rust",
+        ]),
+        CliIntent::Plugin(PluginIntent::New {
+            path: PathBuf::from("example-plugin"),
+            language: PluginLanguage::Rust,
+            plugin_id: None,
+            plugin_name: None,
+        })
+    );
 }
 
 #[test]

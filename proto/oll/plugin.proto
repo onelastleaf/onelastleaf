@@ -15,9 +15,10 @@ service PluginRuntime {
 }
 
 message HostHello {
+  reserved 2, 3;
+  reserved "session_id", "plugin_instance_id";
+
   NodeIdentity node = 1;
-  string session_id = 2;
-  string plugin_instance_id = 3;
   bytes protocol_schema_sha256 = 4;
   uint32 maximum_call_depth = 5;
   uint32 maximum_causal_depth = 6;

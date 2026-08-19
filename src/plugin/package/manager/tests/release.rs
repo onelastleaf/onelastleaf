@@ -112,7 +112,7 @@ async fn remote_install_preserves_one_operation_log_and_correlation_through_publ
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".discovery-")
+            .starts_with(".resolve-")
     }));
     assert!(
         fs::read_dir(layout.plugin_root(&plugin_id))
@@ -278,7 +278,7 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
             .unwrap()
             .file_name()
             .to_string_lossy()
-            .starts_with(".discovery-")
+            .starts_with(".resolve-")
     }));
 }
 
@@ -361,11 +361,13 @@ async fn release_publication_ignores_source_dependencies_and_preserves_current_o
 id = "oll.release-test"
 name = "release-test"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "generation"
 [[source.dependencies]]
 executable = "/definitely/missing/release-build-tool"
 hint = "Only source installations require this tool."
 [runtime]
-argv = ["{{install}}/plugin"]
+argv = ["{{generation}}/plugin"]
 "#
     );
     fs::write(checkout_root.join("oll.toml"), &publisher).unwrap();
@@ -418,6 +420,18 @@ argv = ["{{install}}/plugin"]
             "release-e2e",
         )
         .await;
+    let pending_generation = match &prepared {
+        Prepared::Candidate(candidate) => candidate.built.generation,
+        Prepared::Result(result) => panic!("release build failed: {result:#?}"),
+    };
+    assert!(
+        layout
+            .plugin_root(&plugin_id)
+            .join("candidates")
+            .join(pending_generation.to_string())
+            .is_dir()
+    );
+    assert!(!layout.generation(&plugin_id, pending_generation).exists());
     let published = manager.finish_single(prepared).await;
     assert_eq!(
         published.outcome,
@@ -508,6 +522,8 @@ async fn source_installation_still_requires_its_declared_build_dependencies() {
 id = "oll.source-dependency-test"
 name = "source-dependency-test"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 [[source.dependencies]]
 executable = "/definitely/missing/source-build-tool"
 hint = "Install the source build tool."
@@ -567,6 +583,8 @@ async fn daemon_shutdown_cancels_an_active_release_download_without_publication(
 id = "oll.release-cancel-test"
 name = "release-cancel-test"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 [runtime]
 argv = ["{{install}}/plugin"]
 "#

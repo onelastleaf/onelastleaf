@@ -43,8 +43,6 @@ pub(super) async fn establish_session(
     let hello_trace = root_trace(lifecycle_correlation_id);
     let host_hello = oll::HostHello {
         node: Some(dependencies.identities.node().await.to_proto()),
-        session_id: session_id.clone(),
-        plugin_instance_id: instance_id.to_string(),
         protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
         maximum_call_depth: super::super::MAXIMUM_CALL_DEPTH,
         maximum_causal_depth: super::super::MAXIMUM_CAUSAL_DEPTH,

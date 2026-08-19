@@ -331,6 +331,8 @@ oll plugin install [--json]
 oll plugin install <git-remote>
   [--rev <revision> | --branch <branch>]
   [--release <release-id> | --source] [--json]
+oll plugin new <path> --language <language>
+  [--id <plugin-id>] [--name <plugin-name>]
 oll plugin reconcile [--json]
 oll plugin validate
 oll plugin list [--json]
@@ -345,6 +347,15 @@ oll plugin log [<plugin-id-or-name>]
 oll plugin call [--operation-id <operation-id>] [--json]
   <plugin-id-or-name> <action> [--] [arguments...]
 ```
+
+`plugin new` is a pure local project generator and never opens Admin, loads a
+deployment, runs Git, or accesses the network. Its language values, destination
+publication rules, generated files, and SDK dependencies are fixed in
+`plugin-sdk.md`. It is distinct from `plugin install`: generation creates a new
+publisher source tree, while installation reconciles a user's deployment from
+an existing Git remote or `plugins.lua` declaration. If `--id` is omitted, the
+generator creates one immutable `generated.<uuid-v4>` PluginId and reports it
+with the completed project.
 
 `git-remote` accepts standard Git URLs and SCP-style SSH syntax such as
 `git@github.com:example/oll-anki.git`. Source installation is the default.
@@ -469,9 +480,11 @@ JSON is `{"plugin_id": ..., "releases": [{"release_id": ..., "targets": [...]}]}
 `plugin info --json` uses one `plugin` object containing the same summary fields
 plus `declaration`, `effective_manifest`, `package_state`, `restart_state`,
 `process_instance`, and `job_counts` objects. The declaration's remote is
-sanitized. A present `last_error` is a diagnostic object. Absent generations,
-instances, and errors are JSON `null`, not omitted fields. `plugin call --json`
-returns exactly `{"job_id": ..., "state": "running"}` after `JobAccepted`.
+sanitized. The effective manifest reports `source_checkout` as `source`,
+`install`, or `generation`. A present `last_error` is a diagnostic object.
+Absent generations, instances, and errors are JSON `null`, not omitted fields.
+`plugin call --json` returns exactly
+`{"job_id": ..., "state": "running"}` after `JobAccepted`.
 
 ## Job commands
 

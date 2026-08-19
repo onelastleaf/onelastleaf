@@ -144,6 +144,8 @@ pub(super) fn test_publisher_with_step(
 id = "{plugin_id}"
 name = "{plugin_name}"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 {source_step}
 [runtime]
 argv = ["/bin/true"]
@@ -204,6 +206,8 @@ pub(super) fn create_source_repository(root: &Path) -> PathBuf {
 id = "oll.remote-install-test"
 name = "remote-install-test"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 [[source.steps]]
 argv = ["/bin/echo", "recipe-log-marker"]
 [[source.steps]]

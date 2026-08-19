@@ -7,7 +7,7 @@ use std::{
 
 use clap::{CommandFactory, error::ErrorKind};
 
-use crate::configuration::ResolvedNodeConfig;
+use crate::{configuration::ResolvedNodeConfig, plugin::PluginLanguage};
 
 use super::environment::{ensure_persistable_path, resolve_log_dir};
 use super::{
@@ -287,6 +287,12 @@ pub enum PluginLogTarget {
 
 #[derive(Debug, PartialEq)]
 pub enum PluginIntent {
+    New {
+        path: PathBuf,
+        language: PluginLanguage,
+        plugin_id: Option<String>,
+        plugin_name: Option<String>,
+    },
     Install(PluginInstallIntent),
     Reconcile {
         json: bool,
@@ -353,6 +359,17 @@ pub enum PluginInstallMode {
 
 fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
     match args.command {
+        PluginCommand::New {
+            path,
+            language,
+            id,
+            name,
+        } => Ok(PluginIntent::New {
+            path,
+            language,
+            plugin_id: id,
+            plugin_name: name,
+        }),
         PluginCommand::Install {
             repository,
             rev,
@@ -557,7 +574,8 @@ impl CliIntent {
                         ReplicaIntent::SnapshotInspect { .. }
                         | ReplicaIntent::SnapshotVerify { .. },
                     )
-                    | Self::Psk => ClientDependency::None,
+                    | Self::Psk
+                    | Self::Plugin(PluginIntent::New { .. }) => ClientDependency::None,
                     Self::Sync(SyncIntent::ViewLog)
                     | Self::Plugin(PluginIntent::ViewLog { .. }) => {
                         ClientDependency::LogDir(resolve_client_path(&environment.log_dir()?, cwd))
@@ -589,16 +607,17 @@ impl CliIntent {
     /// Resolve client OS paths without checking the filesystem or normalizing
     /// `.` and `..` segments. Operation handlers apply their own validation.
     pub(super) fn resolve_client_paths(&mut self, cwd: &Path) {
-        let Self::Replica(intent) = self else {
-            return;
-        };
-
-        let path = match intent {
-            ReplicaIntent::Inspect { document } | ReplicaIntent::Ops { document, .. } => document,
-            ReplicaIntent::Export { output } => output,
-            ReplicaIntent::Import { snapshot }
-            | ReplicaIntent::SnapshotInspect { snapshot, .. }
-            | ReplicaIntent::SnapshotVerify { snapshot } => snapshot,
+        let path = match self {
+            Self::Replica(ReplicaIntent::Inspect { document })
+            | Self::Replica(ReplicaIntent::Ops { document, .. }) => document,
+            Self::Replica(ReplicaIntent::Export { output }) => output,
+            Self::Replica(
+                ReplicaIntent::Import { snapshot }
+                | ReplicaIntent::SnapshotInspect { snapshot, .. }
+                | ReplicaIntent::SnapshotVerify { snapshot },
+            ) => snapshot,
+            Self::Plugin(PluginIntent::New { path, .. }) => path,
+            _ => return,
         };
         *path = resolve_client_path(path, cwd);
     }

@@ -31,6 +31,8 @@ documents describe the larger runtime and storage model around those messages.
   correlation propagation, file routing, and retention.
 - [Plugin system](plugin-system.md): process lifecycle, oll-hosted bidi gRPC,
   jobs, configuration callbacks, artifacts, and logs.
+- [Plugin SDKs](plugin-sdk.md): official language runtimes, package identities,
+  conformance, and local project generation.
 - [Plugin storage](plugin-storage.md): deployment-local package generations,
   SQL authority, recovery, desired state, jobs, and removal.
 - [Plugin packaging](plugin-packaging.md): system Git, `oll.toml`, typed masks,

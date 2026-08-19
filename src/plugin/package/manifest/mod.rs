@@ -13,7 +13,10 @@ mod arguments;
 mod host;
 
 pub use arguments::ExpansionPaths;
-use arguments::{expand_argv, validate_placeholders, validate_runtime_placeholders};
+use arguments::{
+    expand_argv, validate_mask_runtime_placeholders, validate_mask_step_placeholders,
+    validate_runtime_placeholders, validate_step_placeholders,
+};
 pub(crate) use host::ensure_contained_path;
 pub use host::{executable_exists, validate_local_package_config};
 
@@ -22,7 +25,6 @@ pub use host::{executable_exists, validate_local_package_config};
 pub struct PublisherManifest {
     pub format_version: u32,
     pub plugin: PublisherPlugin,
-    #[serde(default)]
     pub source: SourceRecipe,
     pub runtime: RuntimeRecipe,
 }
@@ -35,9 +37,18 @@ pub struct PublisherPlugin {
     pub protocol_fingerprint: String,
 }
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SourceCheckout {
+    Source,
+    Install,
+    Generation,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SourceRecipe {
+    pub checkout: SourceCheckout,
     #[serde(default)]
     pub dependencies: Vec<Dependency>,
     #[serde(default)]
@@ -128,8 +139,8 @@ impl PublisherManifest {
         validate_dependencies(&self.source.dependencies)?;
         validate_steps(&self.source.steps)?;
         validate_argv(&self.runtime.argv, "runtime.argv")?;
-        validate_placeholders(&self.source.steps, true)?;
-        validate_runtime_placeholders(&self.runtime.argv)?;
+        validate_step_placeholders(&self.source.steps, self.source.checkout)?;
+        validate_runtime_placeholders(&self.runtime.argv, self.source.checkout)?;
         Ok(())
     }
 }
@@ -157,14 +168,14 @@ impl ManifestMask {
             }
             if let Some(steps) = &source.steps {
                 validate_steps(steps).map_err(PackageError::as_mask)?;
-                validate_placeholders(steps, true).map_err(PackageError::as_mask)?;
+                validate_mask_step_placeholders(steps).map_err(PackageError::as_mask)?;
             }
         }
         if let Some(runtime) = &mask.runtime
             && let Some(argv) = &runtime.argv
         {
             validate_argv(argv, "runtime.argv").map_err(PackageError::as_mask)?;
-            validate_runtime_placeholders(argv).map_err(PackageError::as_mask)?;
+            validate_mask_runtime_placeholders(argv).map_err(PackageError::as_mask)?;
         }
         Ok(mask)
     }
@@ -225,7 +236,13 @@ impl EffectiveManifest {
         self.source
             .steps
             .iter()
-            .map(|step| expand_argv(&step.argv, paths, true))
+            .map(|step| {
+                expand_argv(
+                    &step.argv,
+                    paths,
+                    arguments::PlaceholderScope::Step(self.source.checkout),
+                )
+            })
             .collect()
     }
 
@@ -233,7 +250,11 @@ impl EffectiveManifest {
         &self,
         paths: &ExpansionPaths<'_>,
     ) -> Result<Vec<String>, PackageError> {
-        expand_argv(&self.runtime.argv, paths, false)
+        expand_argv(
+            &self.runtime.argv,
+            paths,
+            arguments::PlaceholderScope::Runtime(self.source.checkout),
+        )
     }
 
     pub(crate) fn validate(&self) -> Result<(), PackageError> {
@@ -245,8 +266,8 @@ impl EffectiveManifest {
         validate_dependencies(&self.source.dependencies)?;
         validate_steps(&self.source.steps)?;
         validate_argv(&self.runtime.argv, "runtime.argv")?;
-        validate_placeholders(&self.source.steps, true)?;
-        validate_runtime_placeholders(&self.runtime.argv)
+        validate_step_placeholders(&self.source.steps, self.source.checkout)?;
+        validate_runtime_placeholders(&self.runtime.argv, self.source.checkout)
     }
 }
 
@@ -324,6 +345,8 @@ format_version = 1
 id = "oll.test"
 name = "oll-test"
 protocol_fingerprint = "{}"
+[source]
+checkout = "source"
 [[source.dependencies]]
 executable = "cargo"
 hint = "install cargo"
@@ -397,12 +420,87 @@ format_version = 1
 id = "oll.test"
 name = "oll-test"
 protocol_fingerprint = "{}"
+[source]
+checkout = "source"
 [runtime]
 argv = ["{{source}}/plugin"]
 "#,
             fingerprint()
         );
         assert!(PublisherManifest::parse(&source).is_err());
+    }
+
+    #[test]
+    fn checkout_controls_source_and_runtime_placeholders() {
+        for (checkout, step_path, runtime_path) in [
+            ("source", "{source}/input", "{install}/plugin"),
+            ("install", "{install}/input", "{install}/plugin"),
+            ("generation", "{generation}/input", "{generation}/plugin"),
+        ] {
+            let manifest = format!(
+                r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+checkout = "{checkout}"
+[[source.steps]]
+argv = ["/bin/true", "{step_path}"]
+[runtime]
+argv = ["{runtime_path}"]
+"#,
+                fingerprint()
+            );
+            PublisherManifest::parse(&manifest).unwrap();
+        }
+
+        for (checkout, unavailable) in [
+            ("source", "{generation}/input"),
+            ("install", "{source}/input"),
+            ("generation", "{install}/input"),
+            ("source", "{staging}/input"),
+        ] {
+            let manifest = format!(
+                r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+checkout = "{checkout}"
+[[source.steps]]
+argv = ["/bin/true", "{unavailable}"]
+[runtime]
+argv = ["/bin/true"]
+"#,
+                fingerprint()
+            );
+            assert!(PublisherManifest::parse(&manifest).is_err());
+        }
+    }
+
+    #[test]
+    fn checkout_is_required_and_cannot_be_masked() {
+        let missing = format!(
+            r#"format_version = 1
+[plugin]
+id = "oll.test"
+name = "oll-test"
+protocol_fingerprint = "{}"
+[source]
+[runtime]
+argv = ["/bin/true"]
+"#,
+            fingerprint()
+        );
+        assert!(PublisherManifest::parse(&missing).is_err());
+
+        let mask = r#"format_version = 1
+[source]
+checkout = "generation"
+"#;
+        assert!(ManifestMask::parse(mask).is_err());
     }
 
     #[cfg(unix)]

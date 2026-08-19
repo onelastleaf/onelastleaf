@@ -352,11 +352,24 @@ fn declaration_json(value: &oll::PluginDeclaration) -> Result<Value, NodeError> 
 }
 
 fn manifest_json(value: &oll::PluginEffectiveManifest) -> Result<Value, NodeError> {
+    let source_checkout = match oll::PluginSourceCheckout::try_from(value.source_checkout)
+        .unwrap_or(oll::PluginSourceCheckout::Unspecified)
+    {
+        oll::PluginSourceCheckout::Source => "source",
+        oll::PluginSourceCheckout::Install => "install",
+        oll::PluginSourceCheckout::Generation => "generation",
+        oll::PluginSourceCheckout::Unspecified => {
+            return Err(NodeError::Internal(
+                "daemon returned an unspecified source checkout".to_owned(),
+            ));
+        }
+    };
     Ok(json!({
         "format_version": value.format_version,
         "plugin_id": required_id(value.plugin_id.as_ref(), "manifest PluginId")?,
         "plugin_name": required_name(value.plugin_name.as_ref(), "manifest PluginName")?,
         "protocol_schema_sha256": encode_hex(&value.protocol_schema_sha256),
+        "source_checkout": source_checkout,
         "source_dependencies": value.source_dependencies.iter().map(|dependency| json!({
             "executable": dependency.executable,
             "hint": dependency.hint,

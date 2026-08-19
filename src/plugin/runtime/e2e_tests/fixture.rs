@@ -432,7 +432,7 @@ async fn publish_fake_plugin(
         "plugin_id": plugin_id.as_str(),
         "plugin_name": "runtime-e2e",
         "protocol_fingerprint": crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256),
-        "source": { "dependencies": [], "steps": [] },
+        "source": { "checkout": "source", "dependencies": [], "steps": [] },
         "runtime": {
             "argv": [
                 executable.to_str().expect("test executable path is UTF-8"),

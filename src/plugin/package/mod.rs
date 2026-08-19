@@ -21,7 +21,7 @@ pub use manager::{
 };
 pub use manifest::{
     Dependency, EffectiveManifest, ExpansionPaths, ManifestMask, PublisherManifest, RecipeStep,
-    executable_exists, validate_local_package_config,
+    SourceCheckout, executable_exists, validate_local_package_config,
 };
 pub(super) use process::{ProcessCancellation, ProcessOutcome, run_process_group};
 pub use release::{ArchiveKind, ReleaseArtifact, ReleaseIndex, ReleaseListing, local_target};

@@ -165,7 +165,7 @@ impl PackageManager {
             && !matches!(declaration.selection, GitSelection::Revision(_))
         {
             let checkout_operation_id = Uuid::new_v4().to_string();
-            let staging = match self.layout.discovery_staging(&checkout_operation_id) {
+            let staging = match self.layout.resolution_directory(&checkout_operation_id) {
                 Ok(path) => path,
                 Err(error) => {
                     return Resolved::Result(PackageOperationResult::failed(

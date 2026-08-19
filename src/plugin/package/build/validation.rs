@@ -2,8 +2,8 @@ use std::{fs, path::Path};
 
 use crate::plugin::PluginId;
 use crate::plugin::package::{
-    ArchiveKind, EffectiveManifest, ExpansionPaths, ManifestMask, PackageError, executable_exists,
-    mask_path,
+    ArchiveKind, EffectiveManifest, ExpansionPaths, ManifestMask, PackageError, SourceCheckout,
+    executable_exists, mask_path,
 };
 
 pub(in crate::plugin::package) fn read_mask(
@@ -85,13 +85,17 @@ pub(super) fn validate_runtime(
 ) -> Result<(), PackageError> {
     let paths = ExpansionPaths {
         source: None,
-        staging: None,
-        install,
+        install: (effective.source.checkout != SourceCheckout::Generation).then_some(install),
+        generation: (effective.source.checkout == SourceCheckout::Generation).then_some(install),
         mask_dir,
     };
     let argv = effective.expanded_runtime_argv(&paths)?;
     for (template, expanded) in effective.runtime.argv.iter().zip(&argv) {
-        for (placeholder, root) in [("{install}", install), ("{mask_dir}", mask_dir)] {
+        for (placeholder, root) in [
+            ("{install}", install),
+            ("{generation}", install),
+            ("{mask_dir}", mask_dir),
+        ] {
             if template.contains(placeholder) {
                 let root = root.to_str().ok_or_else(|| {
                     PackageError::entrypoint("runtime path root is not valid UTF-8")

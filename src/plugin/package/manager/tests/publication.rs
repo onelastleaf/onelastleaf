@@ -1,6 +1,164 @@
 use super::*;
 
 #[tokio::test]
+async fn source_checkout_can_build_in_install_or_final_generation() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for (suffix, checkout, root_placeholder, direct) in [
+        ("install", "install", "{install}", false),
+        ("generation", "generation", "{generation}", true),
+    ] {
+        let directory = tempfile::TempDir::new().unwrap();
+        let config_root = directory.path().join("config");
+        let checkout_root = directory.path().join("checkout");
+        fs::create_dir(&config_root).unwrap();
+        fs::create_dir(&checkout_root).unwrap();
+        let plugin_id: PluginId = format!("oll.layout-{suffix}").parse().unwrap();
+        let plugin_name: PluginName = format!("layout-{suffix}").parse().unwrap();
+        let declaration = test_declaration(plugin_name.as_str());
+        let mut declarations = PluginDeclarations::default();
+        declarations.insert(plugin_id.clone(), declaration.clone());
+        write_plugin_declarations(&config_root, &declarations).unwrap();
+        let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
+        let publisher = format!(
+            r#"format_version = 1
+[plugin]
+id = "{plugin_id}"
+name = "{plugin_name}"
+protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "{checkout}"
+[[source.steps]]
+argv = ["{root_placeholder}/entry", "{root_placeholder}/built-at"]
+[runtime]
+argv = ["{root_placeholder}/entry"]
+"#
+        );
+        fs::write(checkout_root.join("oll.toml"), publisher).unwrap();
+        fs::write(checkout_root.join("entry"), b"#!/bin/sh\npwd > \"$1\"\n").unwrap();
+        fs::set_permissions(
+            checkout_root.join("entry"),
+            fs::Permissions::from_mode(0o755),
+        )
+        .unwrap();
+        fs::write(checkout_root.join("source-marker"), b"retained").unwrap();
+        let (_store, layout, manager, _shutdown) =
+            test_manager(directory.path(), &config_root).await;
+
+        let result = manager
+            .finish_single(
+                manager
+                    .prepare_candidate(
+                        plugin_id.clone(),
+                        declaration,
+                        false,
+                        Some((
+                            Uuid::new_v4().to_string(),
+                            GitCheckout {
+                                source_root: checkout_root.clone(),
+                                commit: "1".repeat(40),
+                            },
+                        )),
+                        "checkout-layout-test",
+                    )
+                    .await,
+            )
+            .await;
+        assert_eq!(result.outcome, PackageOperationOutcome::Installed);
+        let generation = layout.current_generation(&plugin_id).unwrap().unwrap();
+        let published = layout.generation(&plugin_id, generation);
+        assert_eq!(
+            fs::read(published.join("source-marker")).unwrap(),
+            b"retained"
+        );
+        let built_at = fs::read_to_string(published.join("built-at")).unwrap();
+        if direct {
+            assert_eq!(built_at.trim(), published.to_str().unwrap());
+        } else {
+            assert!(built_at.contains("/candidates/"));
+        }
+        assert!(!checkout_root.exists());
+        assert!(
+            fs::read_dir(layout.plugin_root(&plugin_id).join("candidates"))
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+}
+
+#[tokio::test]
+async fn failed_direct_generation_build_is_removed_immediately() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let directory = tempfile::TempDir::new().unwrap();
+    let config_root = directory.path().join("config");
+    let checkout_root = directory.path().join("checkout");
+    fs::create_dir(&config_root).unwrap();
+    fs::create_dir(&checkout_root).unwrap();
+    let plugin_id: PluginId = "oll.failed-generation".parse().unwrap();
+    let plugin_name: PluginName = "failed-generation".parse().unwrap();
+    let declaration = test_declaration(plugin_name.as_str());
+    let mut declarations = PluginDeclarations::default();
+    declarations.insert(plugin_id.clone(), declaration.clone());
+    write_plugin_declarations(&config_root, &declarations).unwrap();
+    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
+    fs::write(
+        checkout_root.join("oll.toml"),
+        format!(
+            r#"format_version = 1
+[plugin]
+id = "{plugin_id}"
+name = "{plugin_name}"
+protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "generation"
+[[source.steps]]
+argv = ["/bin/false"]
+[runtime]
+argv = ["{{generation}}/entry"]
+"#
+        ),
+    )
+    .unwrap();
+    fs::write(checkout_root.join("entry"), b"#!/bin/sh\nexit 0\n").unwrap();
+    fs::set_permissions(
+        checkout_root.join("entry"),
+        fs::Permissions::from_mode(0o755),
+    )
+    .unwrap();
+    let (_store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
+
+    let result = manager
+        .finish_single(
+            manager
+                .prepare_candidate(
+                    plugin_id.clone(),
+                    declaration,
+                    false,
+                    Some((
+                        Uuid::new_v4().to_string(),
+                        GitCheckout {
+                            source_root: checkout_root,
+                            commit: "1".repeat(40),
+                        },
+                    )),
+                    "failed-generation-test",
+                )
+                .await,
+        )
+        .await;
+    assert_eq!(result.outcome, PackageOperationOutcome::Failed);
+    assert_eq!(layout.current_generation(&plugin_id).unwrap(), None);
+    assert!(
+        fs::read_dir(layout.plugin_root(&plugin_id).join("generations"))
+            .unwrap()
+            .next()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn publication_rejects_declaration_and_mask_changes_after_build() {
     for change_mask in [false, true] {
         let directory = tempfile::TempDir::new().unwrap();
@@ -332,6 +490,8 @@ async fn source_publication_keeps_a_running_generation_and_failed_update_keeps_c
 id = "oll.package-test"
 name = "package-test"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 [[source.steps]]
 argv = ["/bin/mkdir", "-p", "{{install}}/bin"]
 [[source.steps]]

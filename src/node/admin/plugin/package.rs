@@ -319,6 +319,17 @@ fn decode_stored_manifest(
             .map(|step| oll::PluginRecipeStep { argv: step.argv })
             .collect(),
         runtime_argv: manifest.runtime.argv,
+        source_checkout: match manifest.source.checkout {
+            crate::plugin::package::SourceCheckout::Source => {
+                oll::PluginSourceCheckout::Source as i32
+            }
+            crate::plugin::package::SourceCheckout::Install => {
+                oll::PluginSourceCheckout::Install as i32
+            }
+            crate::plugin::package::SourceCheckout::Generation => {
+                oll::PluginSourceCheckout::Generation as i32
+            }
+        },
     })
 }
 

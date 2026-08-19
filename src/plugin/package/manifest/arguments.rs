@@ -1,35 +1,62 @@
 use std::path::Path;
 
-use super::{PackageError, RecipeStep};
+use super::{PackageError, RecipeStep, SourceCheckout};
 
 #[derive(Clone, Debug)]
 pub struct ExpansionPaths<'a> {
     pub source: Option<&'a Path>,
-    pub staging: Option<&'a Path>,
-    pub install: &'a Path,
+    pub install: Option<&'a Path>,
+    pub generation: Option<&'a Path>,
     pub mask_dir: &'a Path,
 }
 
-pub(super) fn validate_placeholders(
+#[derive(Clone, Copy)]
+pub(super) enum PlaceholderScope {
+    Step(SourceCheckout),
+    Runtime(SourceCheckout),
+    MaskStep,
+    MaskRuntime,
+}
+
+pub(super) fn validate_step_placeholders(
     steps: &[RecipeStep],
-    source_allowed: bool,
+    checkout: SourceCheckout,
 ) -> Result<(), PackageError> {
     for step in steps {
         for value in &step.argv {
-            scan_placeholders(value, source_allowed)?;
+            scan_placeholders(value, PlaceholderScope::Step(checkout))?;
         }
     }
     Ok(())
 }
 
-pub(super) fn validate_runtime_placeholders(argv: &[String]) -> Result<(), PackageError> {
+pub(super) fn validate_runtime_placeholders(
+    argv: &[String],
+    checkout: SourceCheckout,
+) -> Result<(), PackageError> {
     for value in argv {
-        scan_placeholders(value, false)?;
+        scan_placeholders(value, PlaceholderScope::Runtime(checkout))?;
     }
     Ok(())
 }
 
-fn scan_placeholders(value: &str, source_allowed: bool) -> Result<(), PackageError> {
+pub(super) fn validate_mask_step_placeholders(steps: &[RecipeStep]) -> Result<(), PackageError> {
+    for step in steps {
+        for value in &step.argv {
+            scan_placeholders(value, PlaceholderScope::MaskStep)?;
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn validate_mask_runtime_placeholders(argv: &[String]) -> Result<(), PackageError> {
+    for value in argv {
+        scan_placeholders(value, PlaceholderScope::MaskRuntime)?;
+    }
+    Ok(())
+}
+
+fn scan_placeholders(value: &str, scope: PlaceholderScope) -> Result<(), PackageError> {
     let bytes = value.as_bytes();
     let mut index = 0;
     while index < bytes.len() {
@@ -41,8 +68,26 @@ fn scan_placeholders(value: &str, source_allowed: bool) -> Result<(), PackageErr
                     .map(|offset| index + 1 + offset)
                     .ok_or_else(|| PackageError::manifest("unterminated argv placeholder"))?;
                 let name = &value[index + 1..end];
-                let allowed = matches!(name, "install" | "mask_dir")
-                    || (source_allowed && matches!(name, "source" | "staging"));
+                let allowed = match scope {
+                    PlaceholderScope::Step(SourceCheckout::Source) => {
+                        matches!(name, "source" | "install" | "mask_dir")
+                    }
+                    PlaceholderScope::Step(SourceCheckout::Install)
+                    | PlaceholderScope::Runtime(SourceCheckout::Source)
+                    | PlaceholderScope::Runtime(SourceCheckout::Install) => {
+                        matches!(name, "install" | "mask_dir")
+                    }
+                    PlaceholderScope::Step(SourceCheckout::Generation)
+                    | PlaceholderScope::Runtime(SourceCheckout::Generation) => {
+                        matches!(name, "generation" | "mask_dir")
+                    }
+                    PlaceholderScope::MaskStep => {
+                        matches!(name, "source" | "install" | "generation" | "mask_dir")
+                    }
+                    PlaceholderScope::MaskRuntime => {
+                        matches!(name, "install" | "generation" | "mask_dir")
+                    }
+                };
                 if !allowed {
                     return Err(PackageError::manifest(format!(
                         "unknown or unavailable argv placeholder {{{name}}}"
@@ -74,17 +119,17 @@ fn scan_placeholders(value: &str, source_allowed: bool) -> Result<(), PackageErr
 pub(super) fn expand_argv(
     argv: &[String],
     paths: &ExpansionPaths<'_>,
-    source_allowed: bool,
+    scope: PlaceholderScope,
 ) -> Result<Vec<String>, PackageError> {
     argv.iter()
         .map(|value| {
-            scan_placeholders(value, source_allowed)?;
+            scan_placeholders(value, scope)?;
             let mut expanded = value.clone();
             for (name, path) in [
-                ("install", Some(paths.install)),
+                ("install", paths.install),
                 ("mask_dir", Some(paths.mask_dir)),
-                ("source", paths.source.filter(|_| source_allowed)),
-                ("staging", paths.staging.filter(|_| source_allowed)),
+                ("source", paths.source),
+                ("generation", paths.generation),
             ] {
                 if expanded.contains(&format!("{{{name}}}")) {
                     let path = path.ok_or_else(|| {

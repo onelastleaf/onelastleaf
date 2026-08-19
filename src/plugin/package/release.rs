@@ -274,6 +274,8 @@ format_version = 1
 id = "oll.test"
 name = "oll-test"
 protocol_fingerprint = "{}"
+[source]
+checkout = "source"
 [runtime]
 argv = ["{{install}}/bin/test"]
 "#,

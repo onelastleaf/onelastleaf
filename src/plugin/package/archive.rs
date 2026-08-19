@@ -451,6 +451,8 @@ mod tests {
 id = "oll.archive-test"
 name = "archive-test"
 protocol_fingerprint = "{}"
+[source]
+checkout = "source"
 [runtime]
 argv = ["/bin/true"]
 "#,
@@ -688,6 +690,8 @@ argv = ["/bin/true"]
 id = "oll.archive-cancel"
 name = "archive-cancel"
 protocol_fingerprint = "{fingerprint}"
+[source]
+checkout = "source"
 [runtime]
 argv = ["/bin/true"]
 "#

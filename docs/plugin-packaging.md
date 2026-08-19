@@ -8,6 +8,10 @@ or interpreted. A source package declares commands that prepare an install
 tree; a release package declares downloadable ready-to-launch artifacts. Both
 publish the same effective runtime manifest.
 
+The official SDK and generated-project contract is defined in
+[plugin-sdk.md](plugin-sdk.md). Project generation is local scaffolding; it is
+not plugin installation, Git cloning, or a fifth package-ownership file.
+
 The package contract has four files with separate owners:
 
 | File | Owner | Purpose |
@@ -49,10 +53,15 @@ default-branch declaration records the resolved commit but remains updateable;
 an exact revision is pinned and `plugin update` reports it already satisfied.
 Git tags and semantic-version ranges have no oll meaning.
 
-Git fetches use a private staging checkout. oll does not adopt a pre-existing
-user checkout, run a hosting-platform Release API, or parse Git command output
-as a package-manager protocol beyond the exit status and the exact commit it
-asked Git to resolve.
+Git fetches use a private checkout. Before oll knows the repository's PluginId
+and source-checkout policy, a remote install clones into
+`<plugin-data-root>/.resolve-<operation-id>/repository/`. This resolution
+directory exists only to select the Git state and read publisher metadata; it
+is not a public package layout or argv placeholder. Once the manifest is
+resolved, source installation follows its declared checkout policy below. oll
+does not adopt a pre-existing user checkout, run a hosting-platform Release API,
+or parse Git command output as a package-manager protocol beyond the exit
+status and the exact commit it asked Git to resolve.
 
 Each Git child inherits the daemon user's environment, runs without a shell as
 the foreground leader of its own Unix process group, and writes stdout/stderr to
@@ -74,6 +83,9 @@ id = "oll.anki"
 name = "oll-anki"
 protocol_fingerprint = "hex-encoded-schema-fingerprint"
 
+[source]
+checkout = "source"
+
 [[source.dependencies]]
 executable = "cargo"
 hint = "Install the Rust toolchain and ensure cargo is in PATH."
@@ -87,39 +99,67 @@ argv = ["{install}/bin/oll-anki"]
 
 The manifest has no language or compiled/interpreted enum. An interpreted
 plugin declares the interpreter in its dependency, source steps, and runtime
-argv. `plugin.id`, `plugin.name`, the exact protocol fingerprint, and a nonempty
-runtime argv are required. Fingerprints are lower-case 64-character SHA-256
-hex and must match the running oll descriptor. Once installed, every later
-fetch for that declaration must present the same ID; an upstream ID change is a
-manifest failure and cannot silently install a second identity or move state.
+argv. `plugin.id`, `plugin.name`, the exact protocol fingerprint,
+`source.checkout`, and a nonempty runtime argv are required. Fingerprints are
+lower-case 64-character SHA-256 hex and must match the running oll descriptor.
+Once installed, every later fetch for that declaration must present the same
+ID; an upstream ID change is a manifest failure and cannot silently install a
+second identity or move state.
+
+`source.checkout` controls the filesystem root used only by source-mode
+installation:
+
+| Value | Source recipe working directory | Publication |
+| --- | --- | --- |
+| `source` | a private temporary repository checkout | recipe output is written to a candidate through `{install}`, then renamed into `generations/` |
+| `install` | the candidate install tree containing the repository checkout | the complete tree is renamed into `generations/` |
+| `generation` | the final `generations/<install-generation>/` directory containing the repository checkout | the directory is built in place and publication only switches `current` |
+
+The publisher selects this value explicitly. oll does not infer it from a
+language or runtime. Both `source` and `install` require all files retained in
+the install tree to remain valid after the candidate-to-generation rename.
+`generation` exists for tools such as Python virtual environments that record
+their absolute installation prefix. Release-mode installation ignores
+`source.checkout` and always extracts its relocatable artifact through a
+candidate generation.
 
 Commands are argv arrays, never shell programs. Placeholder replacement occurs
-inside individual argv values and recognizes only:
+inside individual argv values. Source steps receive placeholders according to
+the declared checkout:
 
-- `{source}`: the private selected Git checkout;
-- `{staging}`: the private operation staging root;
-- `{install}`: the candidate install-generation root, not the public `current`
-  symlink;
-- `{mask_dir}`: the directory containing the selected user mask.
+| `source.checkout` | Source-step placeholders |
+| --- | --- |
+| `source` | `{source}`, `{install}`, `{mask_dir}` |
+| `install` | `{install}`, `{mask_dir}` |
+| `generation` | `{generation}`, `{mask_dir}` |
+
+`{source}` is the private selected repository checkout. `{install}` is the
+candidate install-generation root, not the public `current` symlink.
+`{generation}` is the final UUID-named generation being built. `{mask_dir}` is
+the directory containing the selected user mask. There is no public staging
+placeholder.
 
 An absent mask still gives `{mask_dir}` its deterministic
 `<config-root>/plugin-masks` parent. Unknown or malformed placeholders are
 errors. There is no shell expansion, command substitution, glob expansion, or
-environment interpolation. Source steps may use all four placeholders. Runtime
-argv may use only `{install}` and `{mask_dir}` because source/staging trees do
-not survive package publication.
+environment interpolation. Runtime argv for `source` and `install` checkout may
+use only `{install}` and `{mask_dir}`. Runtime argv for `generation` checkout
+may use only `{generation}` and `{mask_dir}`. A source tree does not survive
+`source` publication, while install and generation placeholders are expanded
+to the selected published generation at process spawn.
 
 Dependencies declare executable capabilities only. A basename is resolved using
 the inherited PATH exactly as the recipe child will resolve it, including
-relative or empty PATH entries relative to the selected source directory. An
-absolute path is checked directly; a relative value containing a path separator
-is rejected. oll does not invoke a system package manager, execute `--version`,
-parse version output, or enforce a dependency version. A missing executable
-aborts that plugin and displays its required nonempty hint.
+relative or empty PATH entries relative to the source recipe working directory.
+An absolute path is checked directly; a relative value containing a path
+separator is rejected. oll does not invoke a system package manager, execute
+`--version`, parse version output, or enforce a dependency version. A missing
+executable aborts that plugin and displays its required nonempty hint.
 
 Each source recipe step:
 
-- runs with the selected source directory as its working directory;
+- runs with the checkout-specific directory in the table above as its working
+  directory;
 - inherits the daemon user's complete environment;
 - has stdin closed;
 - writes stdout and stderr to that install operation's retained build log;
@@ -133,12 +173,12 @@ process group, waits through a bounded grace capped by the node's absolute
 shutdown deadline, then uses `SIGKILL` and reaps it. A recipe that daemonizes or
 leaves work outside its process group violates the package contract.
 
-After every step, oll validates the candidate without executing its runtime
-command. Runtime `argv[0]` may be an executable found through inherited PATH,
-with relative or empty PATH entries resolved from the published install
-generation just as at process spawn, or a path beneath `{install}`/`{mask_dir}`;
-a relative pathname containing a separator is resolved from the install
-generation and must remain contained.
+After every step, oll validates the completed install tree without executing
+its runtime command. Runtime `argv[0]` may be an executable found through
+inherited PATH, with relative or empty PATH entries resolved from the completed
+install generation just as at process spawn, or a path beneath the checkout's
+runtime root/`{mask_dir}`; a relative pathname containing a separator is
+resolved from the install generation and must remain contained.
 Any other runtime argv value produced from a path placeholder is checked for
 the same containment but is not interpreted to guess whether it must already
 exist. This supports both a compiled binary and a
@@ -359,9 +399,9 @@ oll plugin validate
 - `remove` uses the durable removal owner in `plugin-storage.md` and removes the
   declaration as well as local state.
 - `releases` reads the selected repository state and lists opaque release IDs;
-  for a branch it fetches the current remote head in private staging, while a
-  `rev` remains exact. It changes no declaration, recorded/current generation,
-  or installation.
+  for a branch it fetches the current remote head in a private resolution
+  checkout, while a `rev` remains exact. It changes no declaration,
+  recorded/current generation, or installation.
 - `validate` is a bounded local command. It validates `plugins.lua` and every
   present typed mask without opening Admin, accessing a remote, or changing a
   file.

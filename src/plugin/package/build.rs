@@ -18,7 +18,7 @@ use super::manager::owner::PackageTaskOwner;
 use super::{
     EffectiveManifest, ExpansionPaths, GitCheckout, PackageError, PackageLayout,
     PhaseCancellationGuard, PluginDeclaration, ProcessCancellation, ProcessOutcome,
-    PublisherManifest, checkout_git_remote, run_process_group,
+    PublisherManifest, SourceCheckout, checkout_git_remote, run_process_group,
 };
 
 mod release_install;
@@ -134,7 +134,7 @@ impl CandidateBuilder {
         let result = checkout_git_remote(
             &declaration.remote,
             &declaration.selection,
-            &staging.join("source"),
+            &staging.join("repository"),
             build_log,
             ProcessCancellation::from_receiver(self.shutdown.clone())
                 .with_owner(Arc::clone(&self.package_tasks))
@@ -224,10 +224,6 @@ impl CandidateBuilder {
         let mask = read_mask(&self.config_root, expected_plugin_id)?;
         let effective = EffectiveManifest::merge(publisher.clone(), mask)?;
         let plugin_name = effective.plugin_name()?;
-        if declaration.mode == super::DeclarationMode::Source {
-            check_dependencies(&effective, &checkout.source_root)?;
-        }
-
         Ok(ResolvedCandidate {
             plugin_id: actual_id,
             plugin_name,
@@ -250,22 +246,41 @@ impl CandidateBuilder {
         correlation_id: &str,
     ) -> Result<BuiltCandidate, PackageError> {
         let generation = Uuid::new_v4();
-
-        let install = self.layout.candidate(&resolved.plugin_id, generation)?;
+        let checkout = resolved.effective.source.checkout;
+        let install = if declaration.mode == super::DeclarationMode::Source
+            && checkout == SourceCheckout::Generation
+        {
+            self.layout
+                .direct_generation(&resolved.plugin_id, generation)?
+        } else {
+            self.layout.candidate(&resolved.plugin_id, generation)?
+        };
         let mut candidate_guard = DirectoryGuard::new(install.clone());
+        let recipe_root = if declaration.mode == super::DeclarationMode::Source {
+            match checkout {
+                SourceCheckout::Source => resolved.checkout.source_root.clone(),
+                SourceCheckout::Install | SourceCheckout::Generation => {
+                    move_checkout(&resolved.checkout.source_root, &install)?;
+                    install.clone()
+                }
+            }
+        } else {
+            resolved.checkout.source_root.clone()
+        };
         let mask_dir = self.config_root.join("plugin-masks");
         let paths = ExpansionPaths {
-            source: Some(&resolved.checkout.source_root),
-            staging: Some(&resolved.staging),
-            install: &install,
+            source: (checkout == SourceCheckout::Source).then_some(recipe_root.as_path()),
+            install: (checkout != SourceCheckout::Generation).then_some(install.as_path()),
+            generation: (checkout == SourceCheckout::Generation).then_some(install.as_path()),
             mask_dir: &mask_dir,
         };
         match declaration.mode {
             super::DeclarationMode::Source => {
+                check_dependencies(&resolved.effective, &recipe_root)?;
                 for argv in resolved.effective.expanded_source_steps(&paths)? {
                     match run_process_group(
                         &argv,
-                        &resolved.checkout.source_root,
+                        &recipe_root,
                         &resolved.build_log,
                         ProcessCancellation::from_receiver(self.shutdown.clone())
                             .with_owner(Arc::clone(&self.package_tasks))
@@ -434,4 +449,24 @@ impl Drop for DirectoryGuard {
             let _ = fs::remove_dir_all(&self.path);
         }
     }
+}
+
+fn move_checkout(source: &Path, destination: &Path) -> Result<(), PackageError> {
+    fs::remove_dir(destination).map_err(|error| {
+        PackageError::io(
+            "install_publish_failed",
+            "storage",
+            "prepare source checkout destination",
+            error,
+        )
+    })?;
+    fs::rename(source, destination).map_err(|error| {
+        PackageError::io(
+            "install_publish_failed",
+            "storage",
+            "move source checkout into install tree",
+            error,
+        )
+    })?;
+    Ok(())
 }

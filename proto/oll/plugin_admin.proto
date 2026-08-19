@@ -166,6 +166,13 @@ message PluginDependency {
 
 message PluginRecipeStep { repeated string argv = 1; }
 
+enum PluginSourceCheckout {
+  PLUGIN_SOURCE_CHECKOUT_UNSPECIFIED = 0;
+  PLUGIN_SOURCE_CHECKOUT_SOURCE = 1;
+  PLUGIN_SOURCE_CHECKOUT_INSTALL = 2;
+  PLUGIN_SOURCE_CHECKOUT_GENERATION = 3;
+}
+
 message PluginEffectiveManifest {
   uint32 format_version = 1;
   PluginId plugin_id = 2;
@@ -175,6 +182,7 @@ message PluginEffectiveManifest {
   repeated PluginDependency source_dependencies = 5;
   repeated PluginRecipeStep source_steps = 6;
   repeated string runtime_argv = 7;
+  PluginSourceCheckout source_checkout = 8;
 }
 
 enum PluginPackageTransitionState {

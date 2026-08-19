@@ -70,7 +70,7 @@ impl PackageLayout {
             let Some(name) = name.to_str() else {
                 continue;
             };
-            if name.starts_with(".discovery-") || name.starts_with(".trash-") {
+            if name.starts_with(".resolve-") || name.starts_with(".trash-") {
                 remove_private_tree(&entry.path())?;
                 continue;
             }

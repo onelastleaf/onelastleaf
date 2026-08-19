@@ -251,6 +251,7 @@ fn plugin_info_json_contains_every_documented_section() {
             source_dependencies: vec![],
             source_steps: vec![],
             runtime_argv: vec!["plugin".to_owned()],
+            source_checkout: oll::PluginSourceCheckout::Source as i32,
         }),
         package_state: Some(oll::PluginPackageState {
             transition_state: oll::PluginPackageTransitionState::Stable as i32,
@@ -282,6 +283,7 @@ fn plugin_info_json_contains_every_documented_section() {
     }
     assert!(value["process_instance"].is_null());
     assert!(value["restart_state"]["next_attempt_at"].is_null());
+    assert_eq!(value["effective_manifest"]["source_checkout"], "source");
 }
 
 #[test]
