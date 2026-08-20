@@ -56,7 +56,14 @@ Every SDK MUST:
 - answer a host heartbeat promptly with the same nonce, direct `reply_to`, and
   correlation context;
 - admit multiple concurrent jobs, send `JobAccepted` before asynchronous job
-  progress, and ensure a job-scoped `CancelJobRequest` cancels only that job;
+  progress, and serialize completion and cancellation for each job;
+- treat `CancelJobAcknowledged` as an idempotent assertion that the named job is
+  no longer executing: cancel and await an active action, immediately
+  acknowledge a syntactically valid inactive or unknown JobId, and never emit a
+  replacement terminal update merely because cancellation arrived late;
+- queue a terminal `JobUpdate` on the ordered sender before removing that job
+  from the active set, and produce no new job work or output after acknowledging
+  its cancellation;
 - stop new admission on `ShutdownRequest`, acknowledge it, settle local work,
   and exit without inventing a process-kill operation;
 - reject or terminate on malformed identity, ordering, depth, correlation,
@@ -172,7 +179,8 @@ The common conformance suite exercises at least:
 1. endpoint validation, connection, handshake sequencing, and readiness;
 2. ordered concurrent send/receive and the encoded receive bound;
 3. echo job admission, progress, success, and structured result;
-4. multiple simultaneous jobs and cancellation of exactly one job;
+4. multiple simultaneous jobs, cancellation of exactly one job, and completion
+   crossing an idempotently acknowledged cancellation;
 5. heartbeat response while jobs and host calls are pending;
 6. configuration read/function invocation and one document host call;
 7. structured log correlation and a complete chunked artifact transfer;

@@ -219,11 +219,21 @@ and ordered shell-style UTF-8 argv strings. Empty strings, duplicates, and
 leading `-` values are preserved without type inference. Without an explicit
 deadline the host uses 24 hours.
 
-`job stop` and deadline expiry send a job-scoped `CancelJobRequest`. The plugin
-ceases only that job and returns `CancelJobAcknowledged`; the host then records
-`cancelled` or `timed_out` according to the trigger. A rejection, protocol
-violation, or missing acknowledgement fails that job without killing the plugin.
-Cancellation cannot roll back completed replica writes or external effects.
+`job stop` and deadline expiry send a job-scoped `CancelJobRequest`.
+`CancelJobAcknowledged` idempotently asserts that no action is still executing
+for that JobId; it does not assert that cancellation caused the stop or won the
+terminal-state race. The plugin cancels an active action and waits for it to
+cease before acknowledging. It immediately acknowledges a syntactically valid
+JobId that is no longer active, including one whose terminal `JobUpdate` is
+already queued or one the SDK no longer knows. A late cancellation MUST NOT
+create a replacement terminal update.
+
+If no earlier terminal transition committed, the host records `cancelled` or
+`timed_out` according to the trigger. Completion and cancellation may cross in
+flight, so the first terminal transition durably committed by the host wins. A
+rejection, protocol violation, or missing acknowledgement fails that job
+without killing the plugin. Cancellation cannot roll back completed replica
+writes or external effects.
 
 If the plugin process, session, or daemon ends while a job is nonterminal, the
 host records that job as failed. Daemon startup marks every job left nonterminal

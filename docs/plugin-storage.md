@@ -213,13 +213,21 @@ Admin call after `JobAccepted` or a terminal admission failure. Acceptance
 changes the SQL state to `running`; it does not mean the action completed.
 
 `StopPluginJob` changes a nonterminal job to `cancelling` and sends the
-job-scoped `CancelJobRequest`. The plugin MUST cease that job before replying
-with `CancelJobAcknowledged`; acknowledgement publishes `cancelled`. The
-24-hour default job deadline follows the same path but publishes `timed_out`.
-Neither path changes plugin desired state or terminates unrelated jobs. A
-missing cancellation acknowledgement fails that job and records a job-scoped
-protocol error; it is not promoted into process shutdown merely to enforce one
-job request.
+job-scoped `CancelJobRequest`. `CancelJobAcknowledged` is an idempotent
+settlement assertion: it means no action is still executing for that JobId, not
+that this cancellation request caused the job to stop or won its terminal-state
+race. If the job is active, the plugin MUST request cancellation, wait until the
+action has ceased, and only then acknowledge. If no action is active for a
+syntactically valid JobId, including because its terminal `JobUpdate` has
+already been queued or because the SDK no longer knows that JobId, the plugin
+MUST acknowledge immediately. An invalid JobId remains a protocol violation.
+
+For a host row that is still nonterminal, acknowledgement publishes
+`cancelled`. The 24-hour default job deadline follows the same path but
+publishes `timed_out`. Neither path changes plugin desired state or terminates
+unrelated jobs. A missing cancellation acknowledgement fails that job and
+records a job-scoped protocol error; it is not promoted into process shutdown
+merely to enforce one job request.
 
 Completion and cancellation may cross in flight. The job coordinator serializes
 them and the first terminal transition durably committed wins. A success/failure
@@ -227,6 +235,13 @@ committed before the cancellation acknowledgement remains that result; a later
 acknowledgement is ignored. Once cancellation or timeout commits its terminal
 state, a later `JobUpdate` cannot replace it. Repeated stop requests return the
 current row and do not send process-scoped shutdown.
+
+Each SDK MUST serialize completion and cancellation for one job. A completion
+path queues its terminal `JobUpdate` on the SDK's ordered sender before removing
+the job from its active set. A late `CancelJobRequest` receives the idempotent
+acknowledgement and MUST NOT cause a replacement terminal update. Once an SDK
+has acknowledged cancellation, it MUST NOT produce new work, progress, results,
+logs, or artifacts for that job.
 
 A plugin process exit or session failure marks every nonterminal job owned by
 that instance `failed`. At daemon startup, every job left in `dispatching`,
