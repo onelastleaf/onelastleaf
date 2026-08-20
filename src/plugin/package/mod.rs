@@ -121,10 +121,6 @@ impl PackageError {
         Self::new("mask_invalid", "mask", message)
     }
 
-    pub fn protocol(message: impl Into<String>) -> Self {
-        Self::new("protocol_incompatible", "manifest", message)
-    }
-
     pub fn entrypoint(message: impl Into<String>) -> Self {
         Self::new("entrypoint_invalid", "validation", message)
     }

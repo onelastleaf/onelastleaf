@@ -368,7 +368,6 @@ fn manifest_json(value: &oll::PluginEffectiveManifest) -> Result<Value, NodeErro
         "format_version": value.format_version,
         "plugin_id": required_id(value.plugin_id.as_ref(), "manifest PluginId")?,
         "plugin_name": required_name(value.plugin_name.as_ref(), "manifest PluginName")?,
-        "protocol_schema_sha256": encode_hex(&value.protocol_schema_sha256),
         "source_checkout": source_checkout,
         "source_dependencies": value.source_dependencies.iter().map(|dependency| json!({
             "executable": dependency.executable,

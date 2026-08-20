@@ -131,7 +131,6 @@ pub(super) fn test_publisher_with_step(
     plugin_name: &PluginName,
     step: Option<&[&str]>,
 ) -> String {
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     let source_step = step.map_or_else(String::new, |argv| {
         format!("steps = [{}]\n", serde_json::to_string(argv).unwrap())
     });
@@ -140,7 +139,6 @@ pub(super) fn test_publisher_with_step(
 [plugin]
 id = "{plugin_id}"
 name = "{plugin_name}"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 {source_step}
@@ -194,7 +192,6 @@ pub(super) fn create_source_repository(root: &Path) -> PathBuf {
     let source = root.join("publisher");
     let repository = root.join("remote.git");
     fs::create_dir(&source).unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     fs::write(
         source.join("oll.toml"),
         format!(
@@ -202,7 +199,6 @@ pub(super) fn create_source_repository(root: &Path) -> PathBuf {
 [plugin]
 id = "oll.remote-install-test"
 name = "remote-install-test"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 steps = [

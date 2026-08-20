@@ -167,12 +167,31 @@ starting replica, sync, or plugin work. See
 
 ## Compatibility policy
 
-The runtime protobuf package has no `v1` namespace and provides no downgrade or
-backward-compatibility negotiation. Peers and plugins require an exact schema
-fingerprint match.
+Every protobuf protocol in this repository and every related onelastleaf
+project MUST NOT compute, publish, exchange, or compare a schema hash or schema
+fingerprint. Protobuf contracts MUST evolve through wire-compatible changes
+wherever possible instead of API-version fields, versioned package namespaces,
+or version negotiation. Existing field numbers and wire types remain stable;
+additions use new fields with defaults that are safe when an older endpoint
+does not know them; and implementations tolerate protobuf's unknown fields and
+unknown enum values at the decoding boundary while still validating the
+semantics required by the current operation.
 
-Persistent snapshot files are different: they can outlive a running binary and
-therefore carry an explicit format version. Unsupported snapshot versions are
-rejected rather than migrated implicitly. Replica and sync compatibility use
-the exact protobuf descriptor fingerprint; Loro payload compatibility is proven
-by actual decode/import rather than a second Loro encoding fingerprint.
+The reason is structural: protobuf already supports additive evolution on the
+wire, whereas a digest of the complete descriptor changes for compatible
+additions and for unrelated protocol edits. Exact digest equality therefore
+rejects compatible peers and couples otherwise independent APIs without proving
+that their actual message exchange is incompatible.
+
+The repository's only protocol API-versioning mechanism is the major byte in
+the exact cleartext sync preface and Noise prologue `b"OLLSYNC\x01"`. It
+versions framing, security handshake, and the pre-protobuf transport state
+machine, not the protobuf schema. It MUST remain `\x01` unless an unavoidable
+incompatible change at that transport layer cannot be expressed through
+wire-compatible protobuf evolution; `\x02` is a last resort, not the normal
+schema-evolution mechanism.
+
+Persistent snapshot and package files are different from protocol APIs: they
+can outlive a running binary and carry their own `format_version`. Unsupported
+file-format versions are rejected rather than migrated implicitly. Loro payload
+compatibility is proven by actual decode/import, not by an encoding fingerprint.

@@ -14,7 +14,7 @@ use crate::{
         },
         protocol,
     },
-    protocol::{PROTOCOL_SCHEMA_SHA256, oll},
+    protocol::oll,
 };
 
 use super::{corrupt_plugin_state, plugin_status};
@@ -302,7 +302,6 @@ fn decode_stored_manifest(
         format_version: 1,
         plugin_id: Some(protocol::encode_plugin_id(&installed.plugin_id)),
         plugin_name: Some(protocol::encode_plugin_name(&installed.plugin_name)),
-        protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
         source_dependencies: manifest
             .source
             .dependencies

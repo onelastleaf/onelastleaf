@@ -43,9 +43,9 @@ Every SDK MUST:
 - require nonempty session and instance IDs on the first `HostHello` envelope,
   adopt those outer fields as the stream's authoritative identity pair, and
   require the exact pair on every later envelope in either direction;
-- validate `HostHello`, including the immutable PluginId and exact published
-  schema fingerprint, and echo the effective PluginName supplied by the host so
-  a user mask does not conflict with a publisher-compiled name;
+- validate `HostHello`, including the immutable PluginId, and echo the effective
+  PluginName supplied by the host so a user mask does not conflict with a
+  publisher-compiled name;
 - complete the `HostHello`/`PluginHello`/two-sided `SessionReady` handshake
   before admitting work;
 - serialize writes through one ordered sender, accept inbound messages
@@ -104,20 +104,19 @@ commit, then links `onelastleaf::plugin_sdk`. Fetching happens during the
 plugin's build, not during project generation. The SDK in turn presents normal
 CMake dependency diagnostics for gRPC and protobuf.
 
-## Protocol publication and versioning
+## Protocol publication and evolution
 
 Each SDK release contains or generates from the canonical `plugin.proto` and
-its transitive imports, and embeds the exact full descriptor fingerprint
-published by the matching oll build. SDK packages and generated projects pin
-an exact initial SDK version rather than a floating branch or unconstrained
-range. The manifest, `PluginHello`, generated protocol code, and SDK constant
-MUST describe the same fingerprint.
+its transitive imports. SDK packages and generated projects pin an exact SDK
+package version rather than a floating branch or unconstrained range, but that
+package version is not a protobuf API version.
 
-The current protocol deliberately requires coordinated exact-fingerprint
-upgrades. An SDK release therefore records its supported fingerprint in package
-metadata and tests. A generator built from a development tree may scaffold the
-source shape, but the generated dependency becomes installable only after the
-matching SDK release is available from its stated package source.
+SDKs MUST follow the repository-wide protobuf evolution policy: they never
+embed, publish, exchange, or compare a schema hash or fingerprint, and they
+MUST prefer wire-compatible additive evolution over API-version fields,
+versioned protobuf namespaces, or schema negotiation. Generated protocol code,
+handshake behavior, and conformance tests are updated from the canonical proto;
+semantic constraints remain explicit protocol checks.
 
 ## `oll plugin new`
 
@@ -170,7 +169,7 @@ source tree, not a fork of a language-template repository.
 
 The common conformance suite exercises at least:
 
-1. endpoint validation, connection, exact handshake, and readiness;
+1. endpoint validation, connection, handshake sequencing, and readiness;
 2. ordered concurrent send/receive and the encoded receive bound;
 3. echo job admission, progress, success, and structured result;
 4. multiple simultaneous jobs and cancellation of exactly one job;

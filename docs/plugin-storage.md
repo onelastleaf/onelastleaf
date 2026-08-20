@@ -121,7 +121,7 @@ One source build or release extraction follows this recovery boundary:
    directly in a candidate, or the repository directly in its final generation;
    release extraction always uses a candidate;
 2. fetch, build or extract, then validate the complete effective manifest,
-   protocol fingerprint, target, runtime entrypoint, and install-tree contents;
+   target, runtime entrypoint, and install-tree contents;
 3. synchronize the completed tree and persist a SQL publish intent containing
    the declaration digest, install generation, expected current generation, and
    effective manifest, and block new spawns for that PluginId while the

@@ -36,7 +36,6 @@ where
                             })
                         }
                     }),
-                    protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
                     max_chunk_bytes: MAX_CHUNK_BYTES,
                 }),
                 correlation_id,
@@ -68,17 +67,6 @@ where
             )
             .await;
         };
-        if hello.protocol_schema_sha256.as_slice() != PROTOCOL_SCHEMA_SHA256 {
-            return fail_handshake(
-                channel,
-                SyncCloseCode::SchemaMismatch,
-                "schema_mismatch",
-                "protocol schema fingerprint differs",
-                correlation_id,
-                deadline,
-            )
-            .await;
-        }
         if !(1..=MAX_CHUNK_BYTES).contains(&hello.max_chunk_bytes) {
             return fail_handshake(
                 channel,

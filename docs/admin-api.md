@@ -49,11 +49,11 @@ field-level validation and redaction, and preserve invalid combinations beyond
 the process boundary. Presentation-only options such as `status --json` remain
 in the client and are not sent to the daemon.
 
-This strong typing does not promise Admin API backward compatibility. The CLI
-and daemon normally come from the same binary. Every request carries the exact
-protocol descriptor fingerprint, and a client connecting to an older
-still-running daemon receives a protocol-mismatch error with an instruction to
-restart it. Schema changes are coordinated binary upgrades.
+The CLI and daemon normally come from the same binary, but the Admin protobuf
+still follows the repository-wide wire-compatibility policy. Requests carry no
+schema hash, fingerprint, or generic API version. Additive protocol evolution
+uses protobuf's unknown-field behavior and safe defaults; method-specific
+validation remains responsible for semantic correctness.
 
 Admin connection establishment has a 10-second timeout independent of request
 execution. Short local methods such as status, shutdown, log-filter changes,
@@ -187,9 +187,9 @@ does not keep this RPC open forever.
 `PingPeerRequest` carries `AdminCallContext` and one required `NodeName`. It
 resolves that learned identity, obtains or establishes an authenticated Noise
 session, and measures a `SyncPing`/`SyncPong` exchange. The response returns the
-confirmed `NodeIdentity` and round-trip milliseconds. It is not ICMP and success
-proves sync-protocol/key/schema reachability at that instant, not replica
-convergence.
+confirmed `NodeIdentity` and round-trip milliseconds. It is not ICMP and
+success proves sync transport, key, and application-handshake reachability at
+that instant, not replica convergence.
 
 `oll sync --log` remains a local file-view operation. `oll psk` remains a local
 CSPRNG operation. Neither creates another Admin method. Correlation from the
@@ -300,7 +300,6 @@ types. The request context is validated before method-specific work:
 
 | Condition | gRPC status | Client-facing meaning |
 | --- | --- | --- |
-| exact schema fingerprint differs | `FAILED_PRECONDITION` | Restart the still-running daemon so it matches the CLI binary. |
 | normalized request is malformed | `INVALID_ARGUMENT` | The client or caller constructed an invalid typed request. |
 | managed-document path lies outside `replica_root` | `INVALID_ARGUMENT` | Use a document path inside the configured working tree. |
 | replica operation requires an initialized replica | `FAILED_PRECONDITION` | Add a working-tree file and run oll, or import a snapshot first. |

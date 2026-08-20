@@ -354,13 +354,11 @@ async fn release_publication_ignores_source_dependencies_and_preserves_current_o
     fs::write(config_root.join("plugins.lua"), b"return {}\n").unwrap();
     let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
     let plugin_id: PluginId = "oll.release-test".parse().unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     let publisher = format!(
         r#"format_version = 1
 [plugin]
 id = "oll.release-test"
 name = "release-test"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "generation"
 [source.dependencies]
@@ -376,7 +374,6 @@ argv = ["{{generation}}/plugin"]
     let release_index = serde_json::json!({
         "format_version": 1,
         "plugin_id": plugin_id.as_str(),
-        "protocol_fingerprint": fingerprint,
         "releases": {
             "opaque-v1": {
                 "artifacts": [{
@@ -512,7 +509,6 @@ async fn source_installation_still_requires_its_declared_build_dependencies() {
     fs::write(config_root.join("plugins.lua"), b"return {}\n").unwrap();
     let (_store, _layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
     let plugin_id: PluginId = "oll.source-dependency-test".parse().unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     fs::write(
         checkout_root.join("oll.toml"),
         format!(
@@ -520,7 +516,6 @@ async fn source_installation_still_requires_its_declared_build_dependencies() {
 [plugin]
 id = "oll.source-dependency-test"
 name = "source-dependency-test"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 [source.dependencies]
@@ -572,7 +567,6 @@ async fn daemon_shutdown_cancels_an_active_release_download_without_publication(
     fs::write(config_root.join("plugins.lua"), b"return {}\n").unwrap();
     let (store, layout, manager, shutdown) = test_manager(directory.path(), &config_root).await;
     let plugin_id: PluginId = "oll.release-cancel-test".parse().unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     fs::write(
         checkout_root.join("oll.toml"),
         format!(
@@ -580,7 +574,6 @@ async fn daemon_shutdown_cancels_an_active_release_download_without_publication(
 [plugin]
 id = "oll.release-cancel-test"
 name = "release-cancel-test"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 [runtime]
@@ -598,7 +591,6 @@ argv = ["{{install}}/plugin"]
         serde_json::to_vec(&serde_json::json!({
             "format_version": 1,
             "plugin_id": plugin_id.as_str(),
-            "protocol_fingerprint": fingerprint,
             "releases": {
                 "cancel": {
                     "artifacts": [{

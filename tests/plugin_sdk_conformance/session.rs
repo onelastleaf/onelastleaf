@@ -7,7 +7,7 @@ use std::{
 };
 
 use futures_util::Stream;
-use onelastleaf::protocol::{PROTOCOL_SCHEMA_SHA256, oll, oll::plugin_envelope};
+use onelastleaf::protocol::{oll, oll::plugin_envelope};
 use sha2::{Digest, Sha256};
 use tokio::{
     net::TcpListener,
@@ -540,7 +540,6 @@ async fn handshake(driver: &mut Driver) -> Result<(), String> {
                         value: "conformance-host".to_owned(),
                     }),
                 }),
-                protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
                 maximum_call_depth: 8,
                 maximum_causal_depth: 8,
                 maximum_artifact_chunk_bytes: MAXIMUM_ARTIFACT_CHUNK_BYTES,
@@ -562,7 +561,6 @@ async fn handshake(driver: &mut Driver) -> Result<(), String> {
     };
     if hello.plugin_id.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_ID)
         || hello.plugin_name.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_NAME)
-        || hello.protocol_schema_sha256 != PROTOCOL_SCHEMA_SHA256
         || hello.plugin_version.is_empty()
     {
         return Err("PluginHello does not echo the negotiated identity".to_owned());

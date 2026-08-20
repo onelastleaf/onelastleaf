@@ -76,14 +76,14 @@ TCP
         └── prost-encoded SyncEnvelope
 ```
 
-`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s` is used exactly. Version 1 does not
-perform Noise rekeying. A connection closes before either transport cipher
+`Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s` is used exactly. `OLLSYNC\x01` does
+not perform Noise rekeying. A connection closes before either transport cipher
 nonce can be exhausted.
 
 ### Preface and Noise handshake
 
 The initiator first writes the exact cleartext preface `b"OLLSYNC\x01"`. The
-same bytes are the Noise prologue. Version 1 accepts only an exact match and
+same bytes are the Noise prologue. `OLLSYNC\x01` accepts only an exact match and
 does not negotiate or downgrade. The initiator SHOULD coalesce the preface and
 first Noise message into one TCP write, but the receiver parses them as
 distinct protocol elements.
@@ -124,12 +124,13 @@ length leaks frame size. It is validated before allocation and may not exceed
 tag, so its plaintext cannot exceed 65519 bytes.
 
 `SyncHello.max_chunk_bytes` applies to the `data` field of transfer chunks. The
-version-1 implementation advertises at most 61440 bytes and chooses the smaller
-valid peer value, leaving room for the protobuf envelope and Noise tag. Control
-and inventory messages are batched so their complete encrypted frame also fits
-the 65535-byte limit. An invalid zero length, oversized length, decode failure,
-or out-of-state message is a protocol violation and closes the authenticated
-session with `SyncClose` when a close frame can still be sent safely.
+`OLLSYNC\x01` implementation advertises at most 61440 bytes and chooses the
+smaller valid peer value, leaving room for the protobuf envelope and Noise tag.
+Control and inventory messages are batched so their complete encrypted frame
+also fits the 65535-byte limit. An invalid zero length, oversized length, decode
+failure, or out-of-state message is a protocol violation and closes the
+authenticated session with `SyncClose` when a close frame can still be sent
+safely.
 
 TCP provides wire flow control. There is no application credit or flow-control
 message. Implementations still stream received chunks directly into private
@@ -180,8 +181,8 @@ authoritative.
 ## Application handshake
 
 Immediately after Noise completes, both peers independently send one encrypted
-`SyncHello`. It carries the complete `NodeIdentity`, exact protobuf descriptor
-hash, maximum chunk-data size, and exactly one local replica state:
+`SyncHello`. It carries the complete `NodeIdentity`, maximum chunk-data size,
+and exactly one local replica state:
 
 - `replica_id` when a complete active replica exists;
 - `no_local_replica` when the local slot is uninitialized.
@@ -197,10 +198,10 @@ selected `ReplicaId` when one exists:
   waiting state described below;
 - two different IDs close with `REPLICA_MISMATCH`.
 
-Schema mismatch, invalid chunk limits, identity collision, and self-connection
-also close the session. Application close reasons are sent only after Noise has
-authenticated the shared network key. `SyncClose` includes at least normal,
-shutdown, protocol, schema, identity-collision, self-connection,
+Invalid chunk limits, identity collision, and self-connection also close the
+session. Application close reasons are sent only after Noise has authenticated
+the shared network key. `SyncClose` includes at least normal, shutdown,
+protocol, identity-collision, self-connection,
 duplicate-session, replica-mismatch, replica-available, bootstrap-in-progress,
 resource-exhausted, and internal-error codes. A received close reason is a
 diagnostic and never changes local authority rules.
@@ -244,8 +245,8 @@ When either endpoint first becomes initialized, it sends the authenticated
 configured outbound owner reconnects immediately without failure backoff, and
 the new `SyncHello` pair selects normal synchronization, bootstrap, or
 `REPLICA_MISMATCH` using the ordinary rules above. No session changes its
-selected `ReplicaId` in place and version 1 has no second mid-session replica
-negotiation protocol.
+selected `ReplicaId` in place, and `OLLSYNC\x01` has no second mid-session
+replica negotiation protocol.
 
 If both endpoints create different replicas concurrently, the next handshake
 rejects the mismatch and neither replica is overwritten. If a local
@@ -359,7 +360,7 @@ There is no snapshot fallback. Because the initial retention policy keeps all
 required Loro history, a sender exports an update batch from the requested
 version vector. A future history-compaction feature must define a new compatible
 recovery mechanism before discarding required updates; it may not silently turn
-an oll snapshot or Loro snapshot into version-1 sync traffic.
+an oll snapshot or Loro snapshot into `OLLSYNC\x01` traffic.
 
 ## Bootstrap of an uninitialized receiver
 
@@ -476,7 +477,7 @@ non-sensitive operating-system I/O error kind.
 
 Application-handshake validation uses specific codes rather than collapsing
 them into `protocol_violation`: `hello_reply_to_present`,
-`expected_sync_hello`, `schema_mismatch`, `invalid_max_chunk_bytes`,
+`expected_sync_hello`, `invalid_max_chunk_bytes`,
 `invalid_node_identity`, `self_connection`, `invalid_replica_id`,
 `missing_replica_state`, `replica_mismatch`,
 `ready_reply_to_present`, `bootstrap_correlation_mismatch`,
@@ -486,8 +487,8 @@ or `invalid_envelope_metadata`. A locally generated failure may add its static,
 host-authored `message` and the normalized `sync_close_code` sent to the peer.
 
 For an authenticated remote `SyncClose`, `error_code` and `sync_close_code`
-contain its normalized enum reason, such as `schema_mismatch`,
-`replica_mismatch`, or `bootstrap_in_progress`; `failure_source` makes clear
+contain its normalized enum reason, such as `replica_mismatch` or
+`bootstrap_in_progress`; `failure_source` makes clear
 that the reason came from the peer. The peer-controlled free-text close message
 is never copied into local logs. Before authentication, the local log may say
 that the Noise handshake failed, but it does not claim that the PSK differed:
@@ -501,10 +502,10 @@ Sync tests cover:
 
 - exact preface/prologue, one absolute handshake deadline, wrong-PSK silent
   close, and frame limits checked before allocation;
-- exact schema rejection, self/identity collision rejection, simultaneous
+- malformed hello rejection, self/identity collision rejection, simultaneous
   duplicate-session arbitration, suppression of the losing outbound owner
   while the winning session remains active, immediate recovery after that
-  session disappears, and no protocol downgrade;
+  session disappears, and no transport-protocol downgrade;
 - connect-only, listen-only, and mixed topologies using explicit `oll://` ports;
 - offline concurrent document edits and catalog move/rename/delete convergence;
 - coherent normal-round activation when catalog and content transfers arrive in

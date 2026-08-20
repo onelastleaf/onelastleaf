@@ -202,7 +202,7 @@ info = b"oll-sync-noise-psk\0v1\0" ||
 output length = 32 bytes
 ```
 
-`NodeId`, `ReplicaId`, addresses, and schema fingerprints do not participate.
+`NodeId`, `ReplicaId`, and addresses do not participate.
 Future uses of the configured key must define a different `info` label rather
 than reuse the Noise output. Network-key bytes and HKDF intermediates are never
 exposed through typed status or Admin APIs and are zeroized when their owning

@@ -81,7 +81,6 @@ format_version = 1
 [plugin]
 id = "oll.anki"
 name = "oll-anki"
-protocol_fingerprint = "hex-encoded-schema-fingerprint"
 
 [source]
 checkout = "source"
@@ -98,12 +97,10 @@ argv = ["{install}/bin/oll-anki"]
 
 The manifest has no language or compiled/interpreted enum. An interpreted
 plugin declares the interpreter in its dependency, source steps, and runtime
-argv. `plugin.id`, `plugin.name`, the exact protocol fingerprint,
-`source.checkout`, and a nonempty runtime argv are required. Fingerprints are
-lower-case 64-character SHA-256 hex and must match the running oll descriptor.
-Once installed, every later fetch for that declaration must present the same
-ID; an upstream ID change is a manifest failure and cannot silently install a
-second identity or move state.
+argv. `plugin.id`, `plugin.name`, `source.checkout`, and a nonempty runtime argv
+are required. Once installed, every later fetch for that declaration must
+present the same ID; an upstream ID change is a manifest failure and cannot
+silently install a second identity or move state.
 
 `source.checkout` controls the filesystem root used only by source-mode
 installation:
@@ -232,15 +229,14 @@ replaced when present rather than merged by executable. `steps = []` clears all
 steps, and a present empty `[source.dependencies]` clears all dependencies.
 Unknown fields are errors.
 
-A mask cannot contain or replace `plugin.id`, `protocol_fingerprint`, release
-IDs, artifact target, URL, archive kind, size, SHA-256, or other artifact
-integrity metadata. It may replace `plugin.name`, which is accepted only if the
-result remains unique. oll parses the publisher manifest and mask separately,
-rejecting syntax, type, unknown-field, and forbidden-field errors in their own
-schemas. Required immutable publisher identity/integrity fields cannot come
-from a mask. oll then builds one effective manifest and performs complete
-required-field, command, placeholder, uniqueness, and cross-field validation on
-that result.
+A mask cannot contain or replace `plugin.id`, release IDs, artifact target,
+URL, archive kind, size, SHA-256, or other artifact integrity metadata. It may
+replace `plugin.name`, which is accepted only if the result remains unique. oll
+parses the publisher manifest and mask separately, rejecting syntax, type,
+unknown-field, and forbidden-field errors in their own schemas. Required
+immutable publisher identity/integrity fields cannot come from a mask. oll then
+builds one effective manifest and performs complete required-field, command,
+placeholder, uniqueness, and cross-field validation on that result.
 
 Mask files are user-owned and are not rewritten or watched. Existing symlinked
 ancestors/final targets are resolved and must remain beneath the mask directory.
@@ -259,7 +255,6 @@ a filename or URL.
 {
   "format_version": 1,
   "plugin_id": "oll.anki",
-  "protocol_fingerprint": "hex-encoded-schema-fingerprint",
   "releases": {
     "v0.3.1": {
       "artifacts": [
@@ -279,10 +274,10 @@ a filename or URL.
 }
 ```
 
-Duplicate JSON object keys are invalid. The index PluginId and fingerprint must
-match the publisher manifest. `oll plugin releases <selector>` returns the
-opaque IDs in bytewise order and the canonical targets declared for each. It
-does not choose a newest release.
+Duplicate JSON object keys are invalid. The index PluginId must match the
+publisher manifest. `oll plugin releases <selector>` returns the opaque IDs in
+bytewise order and the canonical targets declared for each. It does not choose
+a newest release.
 
 A release-mode declaration names one exact release. Exactly one artifact in
 that release must match the local canonical target; zero and duplicate matches
@@ -322,9 +317,9 @@ exhaustion failure cannot publish a partial generation.
 
 The archive includes the publisher `oll.toml`. After strict parsing, its complete
 canonical publisher-manifest value must equal the repository `oll.toml`, and its
-ID/fingerprint must also match the release index, before the typed mask is
-applied. The effective runtime argv must pass the same executable resolution,
-path containment, and required-file checks as a source candidate.
+ID must also match the release index, before the typed mask is applied. The
+effective runtime argv must pass the same executable resolution, path
+containment, and required-file checks as a source candidate.
 
 ## Installation declarations
 
@@ -464,7 +459,7 @@ completion even if its waiting client disconnects.
 
 Package operations expose stable diagnostics with a code, phase, PluginId/name
 when known, sanitized remote, branch/revision, release, target, optional hint,
-and retained build-log path. The version-1 diagnostic codes are:
+and retained build-log path. The `format_version = 1` diagnostic codes are:
 
 | Code | Meaning |
 | --- | --- |
@@ -493,15 +488,14 @@ and retained build-log path. The version-1 diagnostic codes are:
 | `artifact_checksum_mismatch` | Declared size or SHA-256 verification failed. |
 | `archive_unsafe` | Archive structure violates extraction constraints. |
 | `entrypoint_invalid` | The effective runtime entrypoint is unusable. |
-| `protocol_incompatible` | The package targets another protocol fingerprint. |
 | `operation_cancelled` | Admitted package work was cancelled before completion by daemon shutdown. |
 | `install_publish_failed` | Atomic package publication failed. |
 
 Declaration overwrite is represented by the typed
 `confirmation_required` installation outcome and its digest-bound confirmation
 fields, not by a diagnostic code. An unsupported manifest format version is a
-`manifest_invalid` diagnostic because version 1 exposes no version-negotiation
-path.
+`manifest_invalid` diagnostic because `format_version = 1` exposes no
+file-format negotiation path.
 
 Human output may use terminal-aware color, tables, and an indeterminate spinner
 on stderr. `anstream` supplies terminal/`NO_COLOR` behavior; progress rendering

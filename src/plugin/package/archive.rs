@@ -445,19 +445,17 @@ mod tests {
     use std::cell::Cell;
 
     fn expected_publisher() -> PublisherManifest {
-        PublisherManifest::parse(&format!(
+        PublisherManifest::parse(
             r#"format_version = 1
 [plugin]
 id = "oll.archive-test"
 name = "archive-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
 [runtime]
 argv = ["/bin/true"]
 "#,
-            crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256),
-        ))
+        )
         .unwrap()
     }
 
@@ -683,20 +681,16 @@ argv = ["/bin/true"]
         let directory = tempfile::TempDir::new().unwrap();
         let archive_path = directory.path().join("release.tar.gz");
         let install_root = directory.path().join("install");
-        let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
-        let publisher_source = format!(
-            r#"format_version = 1
+        let publisher_source = r#"format_version = 1
 [plugin]
 id = "oll.archive-cancel"
 name = "archive-cancel"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 [runtime]
 argv = ["/bin/true"]
-"#
-        );
-        let publisher = PublisherManifest::parse(&publisher_source).unwrap();
+"#;
+        let publisher = PublisherManifest::parse(publisher_source).unwrap();
         let file = File::create(&archive_path).unwrap();
         let encoder = flate2::write::GzEncoder::new(file, flate2::Compression::fast());
         let mut archive = tar::Builder::new(encoder);

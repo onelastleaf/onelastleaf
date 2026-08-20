@@ -18,9 +18,8 @@ message SyncHello {
     NoLocalReplica no_local_replica = 6;
   }
 
-  bytes protocol_schema_sha256 = 3;
   // Maximum bytes accepted in ReplicaTransferChunk.data or
-  // BlobTransferChunk.data. Version 1 advertises at most 61440.
+  // BlobTransferChunk.data. OLLSYNC\x01 advertises at most 61440.
   uint32 max_chunk_bytes = 4;
 
   reserved 5, 7;
@@ -246,7 +245,6 @@ enum SyncCloseCode {
   SYNC_CLOSE_CODE_NORMAL = 1;
   SYNC_CLOSE_CODE_SHUTTING_DOWN = 2;
   SYNC_CLOSE_CODE_PROTOCOL_VIOLATION = 3;
-  SYNC_CLOSE_CODE_SCHEMA_MISMATCH = 4;
   SYNC_CLOSE_CODE_IDENTITY_COLLISION = 5;
   SYNC_CLOSE_CODE_SELF_CONNECTION = 6;
   SYNC_CLOSE_CODE_DUPLICATE_SESSION = 7;

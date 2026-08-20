@@ -19,13 +19,11 @@ async fn source_checkout_can_build_in_install_or_final_generation() {
         let mut declarations = PluginDeclarations::default();
         declarations.insert(plugin_id.clone(), declaration.clone());
         write_plugin_declarations(&config_root, &declarations).unwrap();
-        let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
         let publisher = format!(
             r#"format_version = 1
 [plugin]
 id = "{plugin_id}"
 name = "{plugin_name}"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "{checkout}"
 steps = [["{root_placeholder}/entry", "{root_placeholder}/built-at"]]
@@ -101,7 +99,6 @@ async fn failed_direct_generation_build_is_removed_immediately() {
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration.clone());
     write_plugin_declarations(&config_root, &declarations).unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     fs::write(
         checkout_root.join("oll.toml"),
         format!(
@@ -109,7 +106,6 @@ async fn failed_direct_generation_build_is_removed_immediately() {
 [plugin]
 id = "{plugin_id}"
 name = "{plugin_name}"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "generation"
 steps = [["/bin/false"]]
@@ -480,14 +476,12 @@ async fn source_publication_keeps_a_running_generation_and_failed_update_keeps_c
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration.clone());
     write_plugin_declarations(&config_root, &declarations).unwrap();
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     let manifest = |step: &str| {
         format!(
             r#"format_version = 1
 [plugin]
 id = "oll.package-test"
 name = "package-test"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "source"
 steps = [

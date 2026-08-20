@@ -11,13 +11,13 @@ use crate::{
     configuration::{ConfigRuntime, ReplicaStoreConfig, ResolvedNodeConfig},
     plugin::PluginRuntime,
     protocol::oll::{
-        AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, ExportReplicaRequest,
-        ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
-        ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
+        AdminShutdownRequest, AdminShutdownResponse, ExportReplicaRequest, ExportReplicaResponse,
+        GetStatusRequest, GetStatusResponse, ImportReplicaRequest, ImportReplicaResponse,
+        InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
         ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
         NativePath, PeerConnectionDirection, PingPeerRequest, PingPeerResponse,
         ReplicaOperationSource, ReplicaState as ProtoReplicaState, SetLogFilterRequest,
-        SetLogFilterResponse, SynchronizePeersRequest, SynchronizePeersResponse, TraceContext,
+        SetLogFilterResponse, SynchronizePeersRequest, SynchronizePeersResponse,
         admin_server::{Admin, AdminServer},
     },
 };
@@ -384,7 +384,7 @@ async fn short_admin_calls_have_deadlines_but_snapshot_calls_do_not() {
 }
 
 #[tokio::test]
-async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
+async fn uds_admin_reports_identity_validates_requests_and_shuts_down() {
     let directory = TempDir::new().unwrap();
     let identity = NodeIdentity::generate("home-node".parse().unwrap());
     let identities = IdentityCoordinator::new(identity.clone());
@@ -650,24 +650,6 @@ async fn uds_admin_validates_fingerprint_reports_identity_and_shuts_down() {
         .await
         .unwrap_err();
     assert_eq!(error.code(), tonic::Code::InvalidArgument);
-
-    let error = client
-        .get_status(GetStatusRequest {
-            context: Some(AdminCallContext {
-                protocol_schema_sha256: vec![0; 32],
-                trace: Some(TraceContext {
-                    correlation_id: "bad-fingerprint".to_owned(),
-                    parent_call_id: None,
-                    call_depth: 0,
-                    causal_depth: 0,
-                    task_id: None,
-                    task_group_id: None,
-                }),
-            }),
-        })
-        .await
-        .unwrap_err();
-    assert_eq!(error.code(), tonic::Code::FailedPrecondition);
 
     request_shutdown(&socket, "shutdown-correlation".to_owned())
         .await

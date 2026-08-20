@@ -6,14 +6,13 @@ use serde::{
 };
 use url::Url;
 
-use crate::{plugin::PluginId, protocol::PROTOCOL_SCHEMA_SHA256};
+use crate::plugin::PluginId;
 
 use super::{PackageError, PublisherManifest};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseIndex {
     pub plugin_id: String,
-    pub protocol_fingerprint: String,
     releases: BTreeMap<String, Release>,
 }
 
@@ -52,7 +51,6 @@ pub struct ReleaseListing {
 struct RawReleaseIndex {
     format_version: u32,
     plugin_id: String,
-    protocol_fingerprint: String,
     releases: UniqueMap<Release>,
 }
 
@@ -79,19 +77,6 @@ impl ReleaseIndex {
                 "release index PluginId differs from publisher manifest",
             ));
         }
-        if raw.protocol_fingerprint != publisher.plugin.protocol_fingerprint {
-            return Err(invalid(
-                "release index protocol fingerprint differs from publisher manifest",
-            ));
-        }
-        let expected = crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256);
-        if raw.protocol_fingerprint != expected {
-            return Err(PackageError::new(
-                "protocol_incompatible",
-                "release_index",
-                "release index protocol fingerprint differs from this oll binary",
-            ));
-        }
         for (release_id, release) in &raw.releases.0 {
             if release_id.is_empty() {
                 return Err(invalid("release IDs must not be empty"));
@@ -102,7 +87,6 @@ impl ReleaseIndex {
         }
         Ok(Self {
             plugin_id: raw.plugin_id,
-            protocol_fingerprint: raw.protocol_fingerprint,
             releases: raw.releases.0,
         })
     }
@@ -267,20 +251,18 @@ mod tests {
     use super::*;
 
     fn publisher() -> PublisherManifest {
-        PublisherManifest::parse(&format!(
+        PublisherManifest::parse(
             r#"
 format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
 [runtime]
-argv = ["{{install}}/bin/test"]
+argv = ["{install}/bin/test"]
 "#,
-            crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256)
-        ))
+        )
         .unwrap()
     }
 
@@ -290,7 +272,6 @@ argv = ["{{install}}/bin/test"]
             r#"{{
   "format_version": 1,
   "plugin_id": "oll.test",
-  "protocol_fingerprint": "{}",
   "releases": {{
     "z": {{"artifacts": []}},
     "v0.3.1": {{"artifacts": [{{
@@ -302,7 +283,6 @@ argv = ["{{install}}/bin/test"]
     }}]}}
   }}
 }}"#,
-            crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256),
             "0".repeat(64)
         );
         let index = ReleaseIndex::parse(&source, &publisher()).unwrap();
@@ -313,19 +293,15 @@ argv = ["{{install}}/bin/test"]
 
     #[test]
     fn duplicate_release_ids_are_rejected() {
-        let fingerprint = crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256);
-        let source = format!(
-            r#"{{"format_version":1,"plugin_id":"oll.test","protocol_fingerprint":"{fingerprint}","releases":{{"x":{{"artifacts":[]}},"x":{{"artifacts":[]}}}}}}"#
-        );
-        assert!(ReleaseIndex::parse(&source, &publisher()).is_err());
+        let source = r#"{"format_version":1,"plugin_id":"oll.test","releases":{"x":{"artifacts":[]},"x":{"artifacts":[]}}}"#;
+        assert!(ReleaseIndex::parse(source, &publisher()).is_err());
     }
 
     #[test]
     fn schema_diagnostics_do_not_echo_release_values() {
         let secret = "representative-release-secret";
         let source = format!(
-            r#"{{"format_version":1,"plugin_id":"oll.test","protocol_fingerprint":"{}","releases":{{}},"unexpected":"{secret}"}}"#,
-            crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256)
+            r#"{{"format_version":1,"plugin_id":"oll.test","releases":{{}},"unexpected":"{secret}"}}"#
         );
 
         let error = ReleaseIndex::parse(&source, &publisher()).unwrap_err();

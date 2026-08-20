@@ -8,12 +8,9 @@ use uuid::Uuid;
 
 use crate::{
     node::identity::NodeIdentity,
-    protocol::{
-        PROTOCOL_SCHEMA_SHA256,
-        oll::{
-            NoLocalReplica, ReplicaId, SyncClose, SyncCloseCode, SyncEnvelope, SyncHello, SyncPing,
-            SyncPong, SyncReady, sync_envelope, sync_hello,
-        },
+    protocol::oll::{
+        NoLocalReplica, ReplicaId, SyncClose, SyncCloseCode, SyncEnvelope, SyncHello, SyncPing,
+        SyncPong, SyncReady, sync_envelope, sync_hello,
     },
     replica::ReplicaStatus,
 };

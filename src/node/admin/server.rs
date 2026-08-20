@@ -13,20 +13,17 @@ use tonic::{Request, Response, Status, transport::Server};
 
 use crate::{
     cli::LogTarget,
-    protocol::{
-        PROTOCOL_SCHEMA_SHA256,
-        oll::{
-            self, AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, CatalogNodeId,
-            CatalogRevision, DocumentId, DocumentPath, DocumentRevision, ExportReplicaRequest,
-            ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
-            ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
-            ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
-            NativePath, PingPeerRequest, PingPeerResponse, ReplicaId, ReplicaOperation,
-            ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
-            SetLogFilterRequest, SetLogFilterResponse, SynchronizePeersRequest,
-            SynchronizePeersResponse,
-            admin_server::{Admin, AdminServer},
-        },
+    protocol::oll::{
+        self, AdminCallContext, AdminShutdownRequest, AdminShutdownResponse, CatalogNodeId,
+        CatalogRevision, DocumentId, DocumentPath, DocumentRevision, ExportReplicaRequest,
+        ExportReplicaResponse, GetStatusRequest, GetStatusResponse, ImportReplicaRequest,
+        ImportReplicaResponse, InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
+        ListReplicaOperationsRequest, ListReplicaOperationsResponse, LogLevel as ProtoLogLevel,
+        NativePath, PingPeerRequest, PingPeerResponse, ReplicaId, ReplicaOperation,
+        ReplicaOperationKind, ReplicaOperationSource, ReplicaState as ProtoReplicaState,
+        SetLogFilterRequest, SetLogFilterResponse, SynchronizePeersRequest,
+        SynchronizePeersResponse,
+        admin_server::{Admin, AdminServer},
     },
     replica::{OperationKind, OperationRecord, OperationSource, ReplicaError, ReplicaStatus},
     sync::SyncError,
@@ -45,11 +42,6 @@ impl AdminService {
     fn validate_context(&self, context: Option<AdminCallContext>) -> Result<String, Status> {
         let context =
             context.ok_or_else(|| Status::invalid_argument("missing Admin call context"))?;
-        if context.protocol_schema_sha256.as_slice() != PROTOCOL_SCHEMA_SHA256 {
-            return Err(Status::failed_precondition(
-                "protocol schema fingerprint differs; restart the running daemon",
-            ));
-        }
         let trace = context
             .trace
             .ok_or_else(|| Status::invalid_argument("missing Admin trace context"))?;

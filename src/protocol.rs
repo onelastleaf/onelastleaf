@@ -7,5 +7,3 @@ pub mod oll {
     pub const FILE_DESCRIPTOR_SET: &[u8] =
         include_bytes!(concat!(env!("OUT_DIR"), "/oll-protocol.pb"));
 }
-
-include!(concat!(env!("OUT_DIR"), "/protocol_schema.rs"));

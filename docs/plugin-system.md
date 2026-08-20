@@ -136,16 +136,16 @@ The application handshake is:
 1. oll sends a `HostHello` envelope. The envelope's nonempty session and
    instance IDs establish the authoritative identity pair for the stream;
    `HostHello` carries `NodeIdentity`, the expected PluginId and effective
-   PluginName, exact schema fingerprint, depth limits, and artifact chunk limit;
+   PluginName, depth limits, and artifact chunk limit;
 2. the plugin validates it and sends `PluginHello` repeating the expected
    identity and declaring actions;
 3. both endpoints send `SessionReady`;
 4. jobs and host calls are legal only after both ready messages were observed.
 
-The process becomes observed-ready only after step 3. Identity, fingerprint, or
-handshake mismatch, startup deadline expiry, unexpected stream closure, or a
-missed heartbeat changes the instance to failed and begins process teardown.
-The supervisor then reconciles against unchanged desired state.
+The process becomes observed-ready only after step 3. Identity or handshake
+mismatch, startup deadline expiry, unexpected stream closure, or a missed
+heartbeat changes the instance to failed and begins process teardown. The
+supervisor then reconciles against unchanged desired state.
 
 The instance-owned listener accepts exactly the expected process instance. Once
 that instance's session ends, its session ID and instance ID are stale: later

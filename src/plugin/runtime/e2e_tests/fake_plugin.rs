@@ -7,10 +7,7 @@ use tonic::{Request, Streaming, transport::Endpoint};
 
 use crate::{
     plugin::protocol,
-    protocol::{
-        PROTOCOL_SCHEMA_SHA256,
-        oll::{self, plugin_envelope, plugin_runtime_client::PluginRuntimeClient},
-    },
+    protocol::oll::{self, plugin_envelope, plugin_runtime_client::PluginRuntimeClient},
 };
 
 pub(super) const FAKE_PLUGIN_TEST: &str =
@@ -127,7 +124,6 @@ impl FakeSession {
             return Err("HostHello was not the first host message".to_owned());
         };
         if hello.node.is_none()
-            || hello.protocol_schema_sha256.as_slice() != PROTOCOL_SCHEMA_SHA256
             || hello.plugin_id.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_ID)
             || hello.plugin_name.as_ref().map(|value| value.value.as_str()) != Some(PLUGIN_NAME)
             || hello.maximum_call_depth != super::super::MAXIMUM_CALL_DEPTH
@@ -147,7 +143,6 @@ impl FakeSession {
                 plugin_name: Some(oll::PluginName {
                     value: PLUGIN_NAME.to_owned(),
                 }),
-                protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
                 actions: vec![oll::ActionDescriptor {
                     name: "hold".to_owned(),
                     description: "Hold a test job until cancellation or shutdown".to_owned(),

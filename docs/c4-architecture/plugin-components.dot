@@ -1,6 +1,6 @@
 // Focused C4 component view of deployment-local plugin responsibilities inside
 // the oll daemon. Scheduling, event subscriptions, remote invocation, and input
-// upload are deliberately absent from the version-1 runtime.
+// upload are deliberately absent from the initial runtime.
 
 digraph C4_Plugin_Components {
   graph [

@@ -247,7 +247,6 @@ fn plugin_info_json_contains_every_documented_section() {
             plugin_name: Some(oll::PluginName {
                 value: "example".to_owned(),
             }),
-            protocol_schema_sha256: vec![2; 32],
             source_dependencies: vec![],
             source_steps: vec![],
             runtime_argv: vec!["plugin".to_owned()],

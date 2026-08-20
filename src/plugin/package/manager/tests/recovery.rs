@@ -12,13 +12,11 @@ async fn recovery_publishes_a_direct_generation_and_prunes_later_orphans() {
     declarations.insert(plugin_id.clone(), declaration.clone());
     write_plugin_declarations(&config_root, &declarations).unwrap();
     let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
-    let fingerprint = crate::replica::lower_hex(&crate::protocol::PROTOCOL_SCHEMA_SHA256);
     let publisher = format!(
         r#"format_version = 1
 [plugin]
 id = "{plugin_id}"
 name = "{plugin_name}"
-protocol_fingerprint = "{fingerprint}"
 [source]
 checkout = "generation"
 [runtime]

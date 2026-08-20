@@ -123,66 +123,9 @@ async fn two_uninitialized_nodes_enter_waiting_and_keep_the_channel_usable() {
 }
 
 #[tokio::test]
-async fn schema_self_and_replica_mismatches_are_authenticated_close_reasons() {
+async fn self_and_replica_mismatches_are_authenticated_close_reasons() {
     let key = derive_noise_psk(&NetworkKey::new_for_test(vec![5; 32]));
-    let left_identity = NodeIdentity::generate("schema-left".parse().unwrap());
-    let right_identity = NodeIdentity::generate("schema-right".parse().unwrap());
     let replica_id = Uuid::new_v4();
-    let (left_stream, right_stream) = duplex(16 * 1024);
-    let deadline = Instant::now() + HANDSHAKE_DEADLINE;
-    let (left_transport, right_transport) = tokio::join!(
-        NoiseTransport::connect(left_stream, &key, deadline),
-        NoiseTransport::accept(right_stream, &key, deadline),
-    );
-    let local = PendingSession::begin(
-        left_transport.unwrap(),
-        &left_identity,
-        ReplicaStatus::InitializedEmpty { replica_id },
-        "schema-left-correlation",
-        deadline,
-    );
-    let remote = async {
-        let mut channel = SessionChannel::new(right_transport.unwrap());
-        let local_hello = channel.receive(Some(deadline)).await.unwrap();
-        assert!(matches!(
-            local_hello.payload,
-            Some(sync_envelope::Payload::Hello(_))
-        ));
-        channel
-            .send(
-                sync_envelope::Payload::Hello(SyncHello {
-                    node: Some(right_identity.to_proto()),
-                    replica_state: Some(sync_hello::ReplicaState::ReplicaId(ReplicaId {
-                        value: replica_id.to_string(),
-                    })),
-                    protocol_schema_sha256: vec![0; 32],
-                    max_chunk_bytes: MAX_CHUNK_BYTES,
-                }),
-                "schema-right-correlation",
-                None,
-                Some(deadline),
-            )
-            .await
-            .unwrap();
-        channel.receive(Some(deadline)).await.unwrap_err()
-    };
-    let (local, remote) = tokio::join!(local, remote);
-    assert!(matches!(
-        local,
-        Err(SessionError::LocalProtocol {
-            code: SyncCloseCode::SchemaMismatch,
-            error_code: "schema_mismatch",
-            ..
-        })
-    ));
-    assert!(matches!(
-        remote,
-        SessionError::RemoteClosed {
-            code: SyncCloseCode::SchemaMismatch,
-            ..
-        }
-    ));
-
     let same_identity = NodeIdentity::generate("same-node".parse().unwrap());
     let (left_stream, right_stream) = duplex(16 * 1024);
     let deadline = Instant::now() + HANDSHAKE_DEADLINE;

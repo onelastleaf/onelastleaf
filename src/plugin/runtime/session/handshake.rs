@@ -9,10 +9,7 @@ use tonic::Streaming;
 use crate::{
     node::logging::LogLevel,
     plugin::{InstalledPlugin, PluginInstanceId, protocol},
-    protocol::{
-        PROTOCOL_SCHEMA_SHA256,
-        oll::{self},
-    },
+    protocol::oll::{self},
 };
 
 use super::{
@@ -43,7 +40,6 @@ pub(super) async fn establish_session(
     let hello_trace = root_trace(lifecycle_correlation_id);
     let host_hello = oll::HostHello {
         node: Some(dependencies.identities.node().await.to_proto()),
-        protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
         maximum_call_depth: super::super::MAXIMUM_CALL_DEPTH,
         maximum_causal_depth: super::super::MAXIMUM_CAUSAL_DEPTH,
         maximum_artifact_chunk_bytes: u64::try_from(dependencies.artifacts.maximum_chunk_bytes())
@@ -250,9 +246,6 @@ pub(super) fn validate_plugin_hello(
             != plugin.plugin_name
     {
         return Err("PluginHello identity differs from the spawned package".to_owned());
-    }
-    if hello.protocol_schema_sha256.as_slice() != PROTOCOL_SCHEMA_SHA256 {
-        return Err("PluginHello protocol fingerprint differs".to_owned());
     }
     let mut names = HashSet::new();
     let mut actions = Vec::with_capacity(hello.actions.len());

@@ -84,7 +84,6 @@ pub(super) fn session_failure_fields(
         SyncCloseCode::Normal => "normal",
         SyncCloseCode::ShuttingDown => "shutting_down",
         SyncCloseCode::ProtocolViolation => "protocol_violation",
-        SyncCloseCode::SchemaMismatch => "schema_mismatch",
         SyncCloseCode::IdentityCollision => "identity_collision",
         SyncCloseCode::SelfConnection => "self_connection",
         SyncCloseCode::DuplicateSession => "duplicate_session",

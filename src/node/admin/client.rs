@@ -15,17 +15,13 @@ use tower::service_fn;
 
 use crate::{
     cli::{LogFilterLevel, LogTarget},
-    protocol::{
-        PROTOCOL_SCHEMA_SHA256,
-        oll::{
-            AdminCallContext, AdminShutdownRequest, ExportReplicaRequest, ExportReplicaResponse,
-            GetStatusRequest, GetStatusResponse, ImportReplicaRequest, ImportReplicaResponse,
-            InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
-            ListReplicaOperationsRequest, ListReplicaOperationsResponse, NativePath,
-            PingPeerRequest, PingPeerResponse, SetLogFilterRequest, SetLogFilterResponse,
-            SynchronizePeersRequest, SynchronizePeersResponse, TraceContext,
-            admin_client::AdminClient,
-        },
+    protocol::oll::{
+        AdminCallContext, AdminShutdownRequest, ExportReplicaRequest, ExportReplicaResponse,
+        GetStatusRequest, GetStatusResponse, ImportReplicaRequest, ImportReplicaResponse,
+        InspectReplicaDocumentRequest, InspectReplicaDocumentResponse,
+        ListReplicaOperationsRequest, ListReplicaOperationsResponse, NativePath, PingPeerRequest,
+        PingPeerResponse, SetLogFilterRequest, SetLogFilterResponse, SynchronizePeersRequest,
+        SynchronizePeersResponse, TraceContext, admin_client::AdminClient,
     },
 };
 
@@ -52,7 +48,6 @@ pub async fn connect(socket: &Path) -> Result<AdminClient<Channel>, NodeError> {
 
 pub fn call_context(correlation_id: String) -> AdminCallContext {
     AdminCallContext {
-        protocol_schema_sha256: PROTOCOL_SCHEMA_SHA256.to_vec(),
         trace: Some(TraceContext {
             correlation_id,
             parent_call_id: None,

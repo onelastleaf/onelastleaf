@@ -2,10 +2,7 @@ use std::{collections::BTreeMap, path::Path, str::FromStr};
 
 use serde::{Deserialize, Serialize};
 
-use crate::{
-    plugin::{PluginId, PluginName},
-    protocol::PROTOCOL_SCHEMA_SHA256,
-};
+use crate::plugin::{PluginId, PluginName};
 
 use super::PackageError;
 
@@ -34,7 +31,6 @@ pub struct PublisherManifest {
 pub struct PublisherPlugin {
     pub id: String,
     pub name: String,
-    pub protocol_fingerprint: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -96,7 +92,6 @@ pub struct RuntimeMask {
 pub struct EffectiveManifest {
     pub plugin_id: String,
     pub plugin_name: String,
-    pub protocol_fingerprint: String,
     pub source: SourceRecipe,
     pub runtime: RuntimeRecipe,
 }
@@ -122,7 +117,6 @@ impl PublisherManifest {
             .map_err(|error| PackageError::manifest(error.to_string()))?;
         PluginName::from_str(&self.plugin.name)
             .map_err(|error| PackageError::manifest(error.to_string()))?;
-        validate_fingerprint(&self.plugin.protocol_fingerprint)?;
         validate_dependencies(&self.source.dependencies)?;
         validate_steps(&self.source.steps)?;
         validate_argv(&self.runtime.argv, "runtime.argv")?;
@@ -196,7 +190,6 @@ impl EffectiveManifest {
         let effective = Self {
             plugin_id: publisher.plugin.id,
             plugin_name,
-            protocol_fingerprint: publisher.plugin.protocol_fingerprint,
             source,
             runtime,
         };
@@ -249,32 +242,12 @@ impl EffectiveManifest {
             .map_err(|error| PackageError::manifest(error.to_string()))?;
         PluginName::from_str(&self.plugin_name)
             .map_err(|error| PackageError::manifest(error.to_string()))?;
-        validate_fingerprint(&self.protocol_fingerprint)?;
         validate_dependencies(&self.source.dependencies)?;
         validate_steps(&self.source.steps)?;
         validate_argv(&self.runtime.argv, "runtime.argv")?;
         validate_step_placeholders(&self.source.steps, self.source.checkout)?;
         validate_runtime_placeholders(&self.runtime.argv, self.source.checkout)
     }
-}
-
-fn validate_fingerprint(value: &str) -> Result<(), PackageError> {
-    let expected = crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256);
-    if value.len() != 64
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return Err(PackageError::manifest(
-            "plugin.protocol_fingerprint must be 64 lower-case hexadecimal characters",
-        ));
-    }
-    if value != expected {
-        return Err(PackageError::protocol(
-            "plugin protocol fingerprint does not match this oll binary",
-        ));
-    }
-    Ok(())
 }
 
 fn validate_dependencies(dependencies: &BTreeMap<String, String>) -> Result<(), PackageError> {
@@ -319,29 +292,23 @@ fn validate_argv(argv: &[String], field: &'static str) -> Result<(), PackageErro
 mod tests {
     use super::*;
 
-    fn fingerprint() -> String {
-        crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256)
-    }
-
     #[test]
     fn typed_mask_replaces_dependency_table_and_preserves_omitted_steps() {
-        let publisher = PublisherManifest::parse(&format!(
+        let publisher = PublisherManifest::parse(
             r#"
 format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
-steps = [["cargo", "build", "--root", "{{install}}"]]
+steps = [["cargo", "build", "--root", "{install}"]]
 [source.dependencies]
 "cargo" = "install cargo"
 [runtime]
-argv = ["{{install}}/bin/oll-test"]
+argv = ["{install}/bin/oll-test"]
 "#,
-            fingerprint()
-        ))
+        )
         .unwrap();
         let mask = ManifestMask::parse(
             r#"
@@ -370,22 +337,20 @@ name = "personal-test"
 
     #[test]
     fn typed_mask_can_clear_steps_and_dependencies() {
-        let publisher = PublisherManifest::parse(&format!(
+        let publisher = PublisherManifest::parse(
             r#"format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
-steps = [["cargo", "build", "--root", "{{install}}"]]
+steps = [["cargo", "build", "--root", "{install}"]]
 [source.dependencies]
 "cargo" = "install cargo"
 [runtime]
-argv = ["{{install}}/bin/oll-test"]
+argv = ["{install}/bin/oll-test"]
 "#,
-            fingerprint()
-        ))
+        )
         .unwrap();
         let mask = ManifestMask::parse(
             r#"format_version = 1
@@ -434,20 +399,16 @@ id = "oll.other"
 
     #[test]
     fn runtime_rejects_source_only_placeholders() {
-        let source = format!(
-            r#"
+        let source = r#"
 format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
 [runtime]
-argv = ["{{source}}/plugin"]
-"#,
-            fingerprint()
-        );
+argv = ["{source}/plugin"]
+"#;
         assert!(PublisherManifest::parse(&source).is_err());
     }
 
@@ -463,14 +424,12 @@ argv = ["{{source}}/plugin"]
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "{checkout}"
 steps = [["/bin/true", "{step_path}"]]
 [runtime]
 argv = ["{runtime_path}"]
-"#,
-                fingerprint()
+"#
             );
             PublisherManifest::parse(&manifest).unwrap();
         }
@@ -486,14 +445,12 @@ argv = ["{runtime_path}"]
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "{checkout}"
 steps = [["/bin/true", "{unavailable}"]]
 [runtime]
 argv = ["/bin/true"]
-"#,
-                fingerprint()
+"#
             );
             assert!(PublisherManifest::parse(&manifest).is_err());
         }
@@ -501,18 +458,14 @@ argv = ["/bin/true"]
 
     #[test]
     fn checkout_is_required_and_cannot_be_masked() {
-        let missing = format!(
-            r#"format_version = 1
+        let missing = r#"format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 [runtime]
 argv = ["/bin/true"]
-"#,
-            fingerprint()
-        );
+"#;
         assert!(PublisherManifest::parse(&missing).is_err());
 
         let mask = r#"format_version = 1
@@ -524,12 +477,10 @@ checkout = "generation"
 
     #[test]
     fn old_array_of_tables_source_shape_is_rejected() {
-        let old_dependencies = format!(
-            r#"format_version = 1
+        let old_dependencies = r#"format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
 [[source.dependencies]]
@@ -537,26 +488,20 @@ executable = "cargo"
 hint = "install cargo"
 [runtime]
 argv = ["/bin/true"]
-"#,
-            fingerprint()
-        );
+"#;
         assert!(PublisherManifest::parse(&old_dependencies).is_err());
 
-        let old_steps = format!(
-            r#"format_version = 1
+        let old_steps = r#"format_version = 1
 [plugin]
 id = "oll.test"
 name = "oll-test"
-protocol_fingerprint = "{}"
 [source]
 checkout = "source"
 [[source.steps]]
 argv = ["/bin/true"]
 [runtime]
 argv = ["/bin/true"]
-"#,
-            fingerprint()
-        );
+"#;
         assert!(PublisherManifest::parse(&old_steps).is_err());
     }
 

@@ -19,7 +19,6 @@ message HostHello {
   reserved "session_id", "plugin_instance_id";
 
   NodeIdentity node = 1;
-  bytes protocol_schema_sha256 = 4;
   uint32 maximum_call_depth = 5;
   uint32 maximum_causal_depth = 6;
   uint64 maximum_artifact_chunk_bytes = 7;
@@ -35,7 +34,6 @@ message ActionDescriptor {
 message PluginHello {
   PluginId plugin_id = 1;
   PluginName plugin_name = 2;
-  bytes protocol_schema_sha256 = 3;
   repeated ActionDescriptor actions = 4;
   // Informational build string only; package/release selection never parses it.
   string plugin_version = 5;

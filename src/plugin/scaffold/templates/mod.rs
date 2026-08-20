@@ -2,7 +2,7 @@ mod jvm;
 mod native;
 mod scripting;
 
-use crate::{plugin::PluginLanguage, protocol::PROTOCOL_SCHEMA_SHA256, replica::lower_hex};
+use crate::plugin::PluginLanguage;
 
 pub(super) struct GeneratedFile {
     pub(super) path: String,
@@ -72,9 +72,8 @@ pub(super) fn file(path: &'static str, contents: impl Into<String>) -> Generated
 
 fn manifest(recipe: &Recipe, plugin_id: &str, plugin_name: &str) -> String {
     let mut output = format!(
-        "format_version = 1\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"{plugin_name}\"\nprotocol_fingerprint = \"{}\"\n\n[source]\ncheckout = \"{}\"\n",
-        lower_hex(&PROTOCOL_SCHEMA_SHA256),
-        recipe.checkout,
+        "format_version = 1\n\n[plugin]\nid = \"{plugin_id}\"\nname = \"{plugin_name}\"\n\n[source]\ncheckout = \"{}\"\n",
+        recipe.checkout
     );
     if !recipe.steps.is_empty() {
         output.push_str("steps = [\n");

@@ -52,7 +52,7 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
 
     let remote = session_failure_fields(
         &SessionError::RemoteClosed {
-            code: SyncCloseCode::SchemaMismatch,
+            code: SyncCloseCode::BootstrapInProgress,
             message: "attacker-controlled network key material".to_owned(),
         },
         "outbound",
@@ -60,8 +60,8 @@ fn session_failure_diagnostics_preserve_specific_causes_without_remote_text() {
         Some("oll://peer.example:17384"),
     );
     assert_eq!(remote["failure_source"], "remote_close");
-    assert_eq!(remote["error_code"], "schema_mismatch");
-    assert_eq!(remote["sync_close_code"], "schema_mismatch");
+    assert_eq!(remote["error_code"], "bootstrap_in_progress");
+    assert_eq!(remote["sync_close_code"], "bootstrap_in_progress");
     assert!(remote.get("message").is_none());
     assert!(!remote.to_string().contains("network key material"));
 }

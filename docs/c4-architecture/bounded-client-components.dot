@@ -90,7 +90,7 @@ digraph C4_Bounded_Client_Components {
     ];
 
     admin_adapter [
-      label="Admin Client Adapter\n[Component]\nTyped Admin client with schema fingerprint, trace context,\nUDS transport, and method-specific request deadlines.",
+      label="Admin Client Adapter\n[Component]\nTyped Admin client with trace context, UDS transport,\nand method-specific request deadlines.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"

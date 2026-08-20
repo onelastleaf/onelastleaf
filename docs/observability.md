@@ -68,7 +68,7 @@ stream:
 - listen/connect addresses, DNS, TCP, cleartext-preface, Noise handshake, and
   encrypted-frame failures without handshake bytes or key diagnostics;
 - local and peer `NodeName`, `NodeId`, `ReplicaId`, and connection identity;
-- `SyncHello`/`SyncReady` results and schema mismatches;
+- `SyncHello`/`SyncReady` results and application-handshake failures;
 - normal/bootstrap inventory rounds, object-update requests, and binary-blob
   requests;
 - bootstrap claim, staging, candidate validation, activation, and recovery;

@@ -177,8 +177,6 @@ message PluginEffectiveManifest {
   uint32 format_version = 1;
   PluginId plugin_id = 2;
   PluginName plugin_name = 3;
-  // Exactly the canonical protocol descriptor SHA-256.
-  bytes protocol_schema_sha256 = 4;
   repeated PluginDependency source_dependencies = 5;
   repeated PluginRecipeStep source_steps = 6;
   repeated string runtime_argv = 7;

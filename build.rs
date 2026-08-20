@@ -1,12 +1,4 @@
-use std::{
-    env,
-    error::Error,
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
-
-use sha2::{Digest, Sha256};
+use std::{env, error::Error, path::PathBuf, process::Command};
 
 const PROTO_FILES: &[&str] = &[
     "proto/oll/admin.proto",
@@ -51,20 +43,5 @@ fn main() -> Result<(), Box<dyn Error>> {
         return Err("protoc failed to create the canonical descriptor set".into());
     }
 
-    let hash = Sha256::digest(fs::read(&descriptor)?);
-    write_schema_hash(&out_dir.join("protocol_schema.rs"), &hash)?;
-    Ok(())
-}
-
-fn write_schema_hash(path: &Path, hash: &[u8]) -> Result<(), Box<dyn Error>> {
-    let values = hash
-        .iter()
-        .map(|byte| format!("0x{byte:02x}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    fs::write(
-        path,
-        format!("pub const PROTOCOL_SCHEMA_SHA256: [u8; 32] = [{values}];\n"),
-    )?;
     Ok(())
 }

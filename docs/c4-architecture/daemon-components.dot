@@ -119,7 +119,7 @@ digraph C4_Daemon_Components {
     ];
 
     admin_api [
-      label="Admin API Adapter\n[Component]\nTyped oll.protocol.Admin unary RPCs over UDS.\nValidates schema/trace context and adapts lifecycle, replica, sync,\nplugin package/process, release, and job operations.",
+      label="Admin API Adapter\n[Component]\nTyped oll.protocol.Admin unary RPCs over UDS.\nValidates trace context and adapts lifecycle, replica, sync,\nplugin package/process, release, and job operations.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"

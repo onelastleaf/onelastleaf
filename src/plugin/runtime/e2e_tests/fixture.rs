@@ -15,10 +15,12 @@ use crate::{
     plugin::{
         InstallMode, JobState, PackagePublishIntent, PluginId, PluginJobId, PluginRuntime,
         PluginSelector, PluginStore,
-        package::{DeclarationMode, GitSelection, PackageLayout, PluginDeclaration},
+        package::{
+            DeclarationMode, EffectiveManifest, GitSelection, PackageLayout, PluginDeclaration,
+        },
         runtime::PluginSessionSnapshot,
     },
-    protocol::{PROTOCOL_SCHEMA_SHA256, oll},
+    protocol::oll,
     replica::ReplicaRuntime,
 };
 
@@ -173,9 +175,9 @@ impl RuntimeFixture {
             .await
             .expect("plugin inspection blocked during startup")
             .unwrap();
-            if inspection.installed.last_lifecycle_failure.is_some() {
+            if let Some(failure) = &inspection.installed.last_lifecycle_failure {
                 panic!(
-                    "plugin startup failed; lifecycle log: {}; plugin log: {}",
+                    "plugin startup failed ({failure:?}); lifecycle log: {}; plugin log: {}",
                     fs::read_to_string(self.log_dir.join("oll.log")).unwrap_or_default(),
                     fs::read_to_string(self.log_dir.join("plugin.log")).unwrap_or_default(),
                 );
@@ -431,8 +433,7 @@ async fn publish_fake_plugin(
     let effective_manifest = serde_json::to_vec(&serde_json::json!({
         "plugin_id": plugin_id.as_str(),
         "plugin_name": "runtime-e2e",
-        "protocol_fingerprint": crate::replica::lower_hex(&PROTOCOL_SCHEMA_SHA256),
-        "source": { "checkout": "source", "dependencies": [], "steps": [] },
+        "source": { "checkout": "source", "dependencies": {}, "steps": [] },
         "runtime": {
             "argv": [
                 executable.to_str().expect("test executable path is UTF-8"),
@@ -445,6 +446,8 @@ async fn publish_fake_plugin(
         }
     }))
     .unwrap();
+    let parsed_manifest: EffectiveManifest = serde_json::from_slice(&effective_manifest).unwrap();
+    parsed_manifest.validate().unwrap();
     let intent = PackagePublishIntent {
         plugin_id: plugin_id.clone(),
         plugin_name: "runtime-e2e".parse().unwrap(),

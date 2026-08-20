@@ -82,7 +82,7 @@ digraph C4_Sync_Components {
     ];
 
     session [
-      label="Session Negotiator and Dispatcher\n[Component]\nSyncHello/SyncReady, schema fingerprint and identity validation,\nReplicaId/bootstrap mode negotiation, message/reply/correlation checks,\nping/pong, ready-session command loop, close and epoch invalidation.",
+      label="Session Negotiator and Dispatcher\n[Component]\nSyncHello/SyncReady identity and replica-state validation,\nReplicaId/bootstrap mode negotiation, message/reply/correlation checks,\nping/pong, ready-session command loop, close and epoch invalidation.",
       fillcolor="#85BBF0",
       fontcolor="#111111",
       color="#5B88B2"

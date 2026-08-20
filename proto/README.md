@@ -1,32 +1,46 @@
 # oll protocol
 
 This directory is the wire contract for oll. The package is intentionally named
-`oll.protocol`, without a version component. The first implementation requires
-an exact `protocol_schema_sha256` match during both replication and plugin
-handshakes. A schema change is a coordinated upgrade; this protocol does not
-promise backward compatibility.
+`oll.protocol`, without a version component.
 
-The schema hash is a build artifact computed from the canonical descriptor set.
-The descriptor is not a hand-maintained repository artifact. Builds generate it
-from every `proto/oll/*.proto` file in bytewise-sorted pathname order, include
-imports, and hash the resulting descriptor-set bytes with SHA-256:
+## Protobuf evolution policy
 
-```sh
-protoc --fatal_warnings -I proto \
-  --include_imports \
-  --descriptor_set_out="$OUT_DIR/oll-protocol.pb" \
-  $(find proto/oll -name '*.proto' -print | sort)
-# The build script computes SHA-256 over $OUT_DIR/oll-protocol.pb.
-```
+Every protobuf protocol in this repository and every related onelastleaf
+project MUST NOT compute, publish, exchange, or compare a schema hash or schema
+fingerprint. This includes protobuf fields, handshakes, package metadata,
+generated constants, and compatibility gates derived from a descriptor set.
 
-The build embeds that exact hash in the CLI and daemon. SDKs should receive the
-published build hash rather than guessing a source-file set or compiler flags.
-Changing a proto changes the descriptor and therefore requires coordinated
-binary replacement, as intended.
+Protobuf already defines wire behavior for additive fields and unknown data. A
+complete descriptor digest changes even when a new field is wire-compatible,
+and it also changes when an unrelated service changes. Digest equality would
+therefore reject compatible communication and couple independent APIs without
+checking the messages actually used by a session.
 
-Official SDK repositories embed that published value alongside code generated
-from `plugin.proto` and its imports. Their common state-machine and release
-contract is documented in [`docs/plugin-sdk.md`](../docs/plugin-sdk.md).
+These protocols MUST instead evolve wire-compatibly wherever possible:
+
+- existing field numbers and wire types remain stable;
+- additions use new fields whose absence has a safe meaning;
+- senders do not require receivers to understand a new field merely to execute
+  an unchanged operation;
+- decoders tolerate unknown protobuf fields and enum values, while application
+  code continues to reject invalid identity, state, size, ordering, security,
+  and operation semantics.
+
+Generic protobuf API-version fields, versioned protobuf package namespaces, and
+schema-version negotiation MUST NOT replace the removed fingerprints. The only
+protocol API-versioning mechanism in this repository is the major byte in the
+exact sync transport preface and Noise prologue `b"OLLSYNC\x01"`. It exists
+outside protobuf because it guards framing, the Noise handshake, and the
+pre-protobuf state machine. It MUST remain `\x01` unless an unavoidable
+incompatible transport change cannot be expressed through wire-compatible
+protobuf evolution; `\x02` is a last resort.
+
+Builds still generate a descriptor set for debug gRPC Server Reflection. The
+descriptor is not a compatibility token and is never hashed for protocol use.
+Official SDK repositories generate code from canonical `plugin.proto` and its
+imports and follow the same evolution policy. Their common state-machine and
+release contract is documented in
+[`docs/plugin-sdk.md`](../docs/plugin-sdk.md).
 
 ## Files
 
@@ -63,10 +77,8 @@ replication TCP listener. CLI syntax is parsed in the client process and reduced
 to typed requests; argv and serialized Clap values never cross the socket.
 Output selection such as `status --json` is also client-side presentation.
 
-Every Admin request carries `AdminCallContext`, including the canonical schema
-fingerprint and correlation context. The daemon requires an exact fingerprint
-match. This catches a newly installed CLI connecting to an older still-running
-daemon; it does not introduce version negotiation or compatibility promises.
+Every Admin request carries `AdminCallContext` correlation context. Admin uses
+the protobuf evolution policy above and has no schema or API-version gate.
 
 The node stage initially implemented `GetStatus`, `Shutdown`, and
 `SetLogFilter`. The replica stage added its four typed methods, and the sync
@@ -94,12 +106,10 @@ label or a value inferred from a connect target. Peer rows expose direction,
 connection state, optional `oll://` target, and the optional remote identity.
 An authenticated inbound-only row has no connect target.
 
-Admin failures are direct gRPC statuses. In particular, a request whose
-descriptor fingerprint differs returns `FAILED_PRECONDITION` with a message
-telling the user to restart the still-running daemon. It does not return a
-`ProtocolError` payload or negotiate a compatible schema. `SetLogFilter` takes
-a parsed target and `LogLevel`; `oll log set` is the only shell-style directive
-parser and the resulting filter resets at daemon restart.
+Admin failures are direct gRPC statuses; they are not wrapped in a
+`ProtocolError` payload. `SetLogFilter` takes a parsed target and `LogLevel`;
+`oll log set` is the only shell-style directive parser and the resulting filter
+resets at daemon restart.
 
 gRPC Server Reflection is a debug-build facility registered only on the Admin
 UDS. It is compiled out of release builds. Production `TRACE` logs include
@@ -161,8 +171,8 @@ plaintext is exactly one ordinary prost-encoded `SyncEnvelope`, not another
 length-delimited protobuf record.
 
 Both peers send `SyncHello` immediately after Noise. It carries `NodeIdentity`,
-the exact descriptor hash, maximum chunk-data bytes, and either one `ReplicaId`
-or `NoLocalReplica`. `SyncReady` confirms the selected chunk size and the common
+maximum chunk-data bytes, and either one `ReplicaId` or `NoLocalReplica`.
+`SyncReady` confirms the selected chunk size and the common
 session replica when one exists. Two uninitialized peers omit that ID and keep
 one authenticated waiting connection. After either replica atomically appears,
 `REPLICA_AVAILABLE` closes that waiting connection normally so the next
@@ -208,8 +218,8 @@ session starts as follows:
 
 1. oll sends a `HostHello` envelope. Its outer nonempty session and instance
    identifiers establish the authoritative identity pair for the stream;
-   `HostHello` carries the expected PluginId, effective PluginName, schema
-   fingerprint, and limits without duplicating those identifiers.
+   `HostHello` carries the expected PluginId, effective PluginName, and limits
+   without duplicating those identifiers.
 2. The plugin validates those values, then sends `PluginHello` repeating its
    identity and declaring actions.
 3. Both endpoints send `SessionReady`. No job or host call is valid before both
@@ -299,8 +309,8 @@ instance identifiers prevent accidental cross-wiring; they are not a sandbox or
 authentication mechanism.
 
 Remote plugin invocation, input-file upload, scheduling, document/catalog event
-subscriptions, and event-triggered jobs are deferred and have no version-1
-messages.
+subscriptions, and event-triggered jobs are deferred and have no placeholder
+messages in the initial runtime contract.
 
 ## Validation
 
