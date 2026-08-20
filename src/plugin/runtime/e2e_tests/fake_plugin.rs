@@ -49,8 +49,8 @@ async fn run_fake_plugin(endpoint: String) -> Result<(), String> {
         .map_err(|error| error.to_string())?;
     let (outgoing, receiver) = mpsc::channel(64);
     let mut client = PluginRuntimeClient::new(channel)
-        .max_decoding_message_size(super::super::MAX_PLUGIN_GRPC_MESSAGE_BYTES)
-        .max_encoding_message_size(super::super::MAX_PLUGIN_GRPC_MESSAGE_BYTES);
+        .max_decoding_message_size(usize::MAX)
+        .max_encoding_message_size(usize::MAX);
     let incoming = client
         .connect(Request::new(ReceiverStream::new(receiver)))
         .await

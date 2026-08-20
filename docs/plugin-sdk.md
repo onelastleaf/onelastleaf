@@ -68,8 +68,10 @@ Every SDK MUST:
   and exit without inventing a process-kill operation;
 - reject or terminate on malformed identity, ordering, depth, correlation,
   framing, or handshake state instead of silently repairing peer input;
-- enforce the 64 MiB encoded-envelope receive limit and the artifact chunk
-  limit advertised by `HostHello` before allocation or application dispatch;
+- configure gRPC send and receive message limits as unlimited or to the largest
+  value supported by the library, without silently retaining a smaller default
+  such as 4 MiB, while still enforcing the artifact chunk limit advertised by
+  `HostHello`;
 - expose host document/configuration calls, structured logs, job results, and
   verified artifact transfer through the SDK rather than requiring plugin
   authors to construct envelope routing manually.
@@ -177,7 +179,8 @@ source tree, not a fork of a language-template repository.
 The common conformance suite exercises at least:
 
 1. endpoint validation, connection, handshake sequencing, and readiness;
-2. ordered concurrent send/receive and the encoded receive bound;
+2. ordered concurrent send/receive, including a legal envelope larger than the
+   common 4 MiB gRPC default;
 3. echo job admission, progress, success, and structured result;
 4. multiple simultaneous jobs, cancellation of exactly one job, and completion
    crossing an idempotently acknowledged cancellation;

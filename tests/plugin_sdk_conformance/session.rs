@@ -24,7 +24,6 @@ const PLUGIN_ID: &str = "org.onelastleaf.conformance";
 const PLUGIN_NAME: &str = "conformance-fixture";
 const SESSION_ID: &str = "sdk-conformance-session";
 const INSTANCE_ID: &str = "sdk-conformance-instance";
-const MAXIMUM_ENVELOPE_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_ARTIFACT_CHUNK_BYTES: u64 = 64 * 1024;
 const DEFAULT_GRPC_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 const STEP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -146,9 +145,6 @@ impl Driver {
             trace: Some(trace),
             payload: Some(payload),
         };
-        if envelope.encoded_len() > MAXIMUM_ENVELOPE_BYTES {
-            return Err("host attempted to send an oversized envelope".to_owned());
-        }
         self.connection
             .outgoing
             .send(Ok(envelope))
@@ -174,9 +170,6 @@ impl Driver {
             .map_err(|_| "timed out waiting for a plugin envelope".to_owned())?
             .map_err(|error| format!("plugin stream failed: {error}"))?
             .ok_or_else(|| "plugin closed its request stream".to_owned())?;
-        if envelope.encoded_len() > MAXIMUM_ENVELOPE_BYTES {
-            return Err("plugin sent an oversized envelope".to_owned());
-        }
         if envelope.message_id == 0 || envelope.message_id <= self.last_plugin_message_id {
             return Err("plugin message IDs are not strictly increasing".to_owned());
         }
@@ -213,9 +206,6 @@ pub(super) async fn run_conformance(command: FixtureCommand) -> Result<(), Strin
     stale_session_is_rejected(command.clone())
         .await
         .map_err(|error| format!("stale session: {error}"))?;
-    oversized_envelope_is_rejected(command.clone())
-        .await
-        .map_err(|error| format!("receive limit: {error}"))?;
     response_stream_failure_stops_runtime(command.clone())
         .await
         .map_err(|error| format!("stream failure: {error}"))?;
@@ -298,8 +288,8 @@ async fn start_connected(command: FixtureCommand) -> Result<RunningFixture, Stri
     let (shutdown_tx, shutdown_rx) = oneshot::channel();
     let server = tokio::spawn(async move {
         let service = oll::plugin_runtime_server::PluginRuntimeServer::new(service)
-            .max_decoding_message_size(MAXIMUM_ENVELOPE_BYTES)
-            .max_encoding_message_size(MAXIMUM_ENVELOPE_BYTES);
+            .max_decoding_message_size(usize::MAX)
+            .max_encoding_message_size(usize::MAX);
         Server::builder()
             .add_service(service)
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async {
@@ -372,41 +362,6 @@ async fn stale_session_is_rejected(command: FixtureCommand) -> Result<(), String
         )
         .await?;
     expect_fixture_exit(fixture, "stale session envelope").await
-}
-
-async fn oversized_envelope_is_rejected(command: FixtureCommand) -> Result<(), String> {
-    let mut fixture = start_connected(command).await?;
-    handshake(&mut fixture.driver).await?;
-    let message_id = fixture.driver.next_message_id;
-    fixture.driver.next_message_id = message_id
-        .checked_add(1)
-        .ok_or_else(|| "host exhausted message IDs".to_owned())?;
-    let envelope = oll::PluginEnvelope {
-        message_id,
-        reply_to: None,
-        session_id: SESSION_ID.to_owned(),
-        plugin_instance_id: INSTANCE_ID.to_owned(),
-        trace: Some(trace("00000000-0000-4000-8000-000000000061")),
-        payload: Some(plugin_envelope::Payload::ProtocolError(
-            oll::ProtocolError {
-                code: oll::ErrorCode::Internal as i32,
-                message: "x".repeat(MAXIMUM_ENVELOPE_BYTES),
-                retryable: false,
-                ..Default::default()
-            },
-        )),
-    };
-    if envelope.encoded_len() <= MAXIMUM_ENVELOPE_BYTES {
-        return Err("oversized conformance envelope was not oversized".to_owned());
-    }
-    fixture
-        .driver
-        .connection
-        .outgoing
-        .send(Ok(envelope))
-        .await
-        .map_err(|_| "plugin closed before the oversized-envelope test".to_owned())?;
-    expect_fixture_exit(fixture, "oversized envelope").await
 }
 
 async fn response_stream_failure_stops_runtime(command: FixtureCommand) -> Result<(), String> {
@@ -1102,13 +1057,9 @@ fn validate_unscoped_receive(
     driver: &mut Driver,
     envelope: &oll::PluginEnvelope,
 ) -> Result<(), String> {
-    let encoded_len = envelope.encoded_len();
-    if encoded_len > MAXIMUM_ENVELOPE_BYTES
-        || envelope.message_id == 0
-        || envelope.message_id <= driver.last_plugin_message_id
-    {
+    if envelope.message_id == 0 || envelope.message_id <= driver.last_plugin_message_id {
         return Err(format!(
-            "invalid plugin envelope: message_id={}, previous={}, encoded_len={encoded_len}",
+            "invalid plugin envelope: message_id={}, previous={}",
             envelope.message_id, driver.last_plugin_message_id
         ));
     }

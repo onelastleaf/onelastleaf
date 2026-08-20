@@ -23,11 +23,8 @@ use super::{output::pipe_plugin_output, termination::process_group_exists};
 struct FailingOutput;
 
 #[tokio::test]
-async fn plugin_service_rejects_an_oversized_envelope_before_dispatch() {
-    const TEST_LIMIT: usize = 1024;
-    assert_eq!(MAX_PLUGIN_GRPC_MESSAGE_BYTES, 64 * 1024 * 1024);
-    const { assert!(MAX_PLUGIN_GRPC_MESSAGE_BYTES < usize::MAX) };
-
+async fn plugin_service_accepts_an_envelope_above_tonics_default_limit() {
+    const MESSAGE_BYTES: usize = 4 * 1024 * 1024;
     let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
         .await
         .unwrap();
@@ -36,7 +33,7 @@ async fn plugin_service_rejects_an_oversized_envelope_before_dispatch() {
     let (shutdown, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let server = tokio::spawn(
         Server::builder()
-            .add_service(plugin_runtime_service_with_limit(service, TEST_LIMIT))
+            .add_service(plugin_runtime_service(service))
             .serve_with_incoming_shutdown(TcpListenerStream::new(listener), async move {
                 let _ = shutdown_rx.await;
             }),
@@ -49,8 +46,8 @@ async fn plugin_service_rejects_an_oversized_envelope_before_dispatch() {
         .unwrap();
     let (outgoing, receiver) = tokio::sync::mpsc::channel(1);
     let mut client = PluginRuntimeClient::new(channel)
-        .max_encoding_message_size(TEST_LIMIT * 4)
-        .max_decoding_message_size(TEST_LIMIT * 4);
+        .max_encoding_message_size(usize::MAX)
+        .max_decoding_message_size(usize::MAX);
     let _host_messages = client
         .connect(Request::new(ReceiverStream::new(receiver)))
         .await
@@ -65,18 +62,18 @@ async fn plugin_service_rejects_an_oversized_envelope_before_dispatch() {
             plugin_instance_id: PluginInstanceId::new().to_string(),
             trace: None,
             payload: Some(oll::plugin_envelope::Payload::Log(oll::LogRecord {
-                message: "x".repeat(TEST_LIMIT * 2),
+                message: "x".repeat(MESSAGE_BYTES),
                 ..Default::default()
             })),
         })
         .await
         .unwrap();
 
-    let error = connected.incoming.message().await.unwrap_err();
-    assert!(matches!(
-        error.code(),
-        tonic::Code::OutOfRange | tonic::Code::ResourceExhausted
-    ));
+    let envelope = connected.incoming.message().await.unwrap().unwrap();
+    let Some(oll::plugin_envelope::Payload::Log(log)) = envelope.payload else {
+        panic!("large envelope changed payload type");
+    };
+    assert_eq!(log.message.len(), MESSAGE_BYTES);
     drop(connected);
     let _ = shutdown.send(());
     server.await.unwrap().unwrap();

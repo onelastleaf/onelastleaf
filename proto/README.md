@@ -227,8 +227,7 @@ session starts as follows:
 
 The plugin copies the first envelope's identity pair onto `PluginHello` and
 every later envelope. After that first bootstrap message, either side rejects
-any envelope whose outer pair differs. The removed `HostHello` field names and
-numbers remain reserved and cannot become a second identity authority later.
+any envelope whose outer pair differs.
 
 Each sender owns an independent `message_id` sequence for the session. Its first
 ID and every later ID are non-zero, and every later ID is strictly greater than
@@ -244,11 +243,14 @@ deadline to detect a process that still exists but no longer services its
 protocol. Normal process exit is observed from the host-owned child-process
 handle, not by heartbeat or process-table polling.
 
-Each encoded `PluginEnvelope` gRPC message is limited to 64 MiB in either
-direction before application dispatch. This finite transport bound also covers
-document-bearing host-call responses. Artifact transfer continues to use the
-smaller chunk limit advertised by `HostHello`; plugin trust does not disable
-protobuf transport bounds.
+The plugin protocol adds no size limit to an encoded `PluginEnvelope`. oll
+configures gRPC send and receive limits to the largest value supported by its
+library, and each SDK does the same or uses its library's unlimited setting.
+Actual limits therefore come from the gRPC implementation, platform address
+space, and available memory rather than the wire contract. Implementations MUST
+NOT silently retain a smaller library default such as 4 MiB. Artifact transfer
+continues to use the bounded chunk size advertised by `HostHello`; large binary
+results use that streaming protocol instead of one large envelope.
 
 The child's stdin is the parent-liveness pipe. oll keeps its write end open and
 the plugin contract requires exit after EOF. Runtime stdout/stderr go to plugin

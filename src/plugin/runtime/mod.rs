@@ -44,7 +44,6 @@ pub const MAXIMUM_CAUSAL_DEPTH: u32 = 10;
 
 const INSTANCE_COMMAND_CAPACITY: usize = 64;
 const OUTBOUND_ENVELOPE_CAPACITY: usize = 128;
-const MAX_PLUGIN_GRPC_MESSAGE_BYTES: usize = 64 * 1024 * 1024;
 pub(super) const JOB_RESPONSE_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]

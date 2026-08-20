@@ -26,8 +26,7 @@ use crate::{
 };
 
 use super::{
-    InstanceCommand, InstanceNotice, InstanceShutdown, MAX_PLUGIN_GRPC_MESSAGE_BYTES,
-    RuntimeDependencies,
+    InstanceCommand, InstanceNotice, InstanceShutdown, RuntimeDependencies,
     session::{InstanceService, SessionOutcome, run_session},
 };
 use output::{finish_output_tasks, pipe_plugin_output, stop_server};
@@ -412,16 +411,9 @@ async fn run_plugin_instance_inner(
 }
 
 fn plugin_runtime_service(service: InstanceService) -> PluginRuntimeServer<InstanceService> {
-    plugin_runtime_service_with_limit(service, MAX_PLUGIN_GRPC_MESSAGE_BYTES)
-}
-
-fn plugin_runtime_service_with_limit(
-    service: InstanceService,
-    limit: usize,
-) -> PluginRuntimeServer<InstanceService> {
     PluginRuntimeServer::new(service)
-        .max_decoding_message_size(limit)
-        .max_encoding_message_size(limit)
+        .max_decoding_message_size(usize::MAX)
+        .max_encoding_message_size(usize::MAX)
 }
 
 fn exit_label(status: ExitStatus) -> String {

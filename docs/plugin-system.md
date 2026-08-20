@@ -170,12 +170,13 @@ Configuration calls are ordinary plugin-originated host requests: oll resolves
 or executes the requested value in its Lua owner and sends one host response.
 Lua does not originate a `PluginEnvelope` or make an outward RPC to the plugin.
 
-The encoded protobuf message for one `PluginEnvelope` is limited to 64 MiB in
-both directions before application dispatch. This transport bound applies to
-ordinary host-call requests and responses as well as plugin messages; it is not
-waived by the trusted-plugin model. Artifact bytes remain subject to their
-smaller advertised chunk limit and must not be placed in one oversized
-envelope.
+The plugin protocol imposes no encoded-size limit on `PluginEnvelope`. oll
+configures both gRPC directions to the largest size supported by its library;
+SDKs use an unlimited setting or their library's largest supported value. The
+effective limit is therefore implementation and memory dependent. Neither side
+may silently retain a smaller gRPC default such as 4 MiB. Artifact bytes remain
+subject to the chunk limit advertised by `HostHello` and use the streaming
+artifact protocol instead of one large envelope.
 
 After readiness oll may send a `Heartbeat`. The plugin replies with the same
 nonce and sets `reply_to`. Heartbeat detects a live but protocol-unresponsive
