@@ -15,24 +15,20 @@ message SyncHello {
 
   oneof replica_state {
     ReplicaId replica_id = 2;
-    NoLocalReplica no_local_replica = 6;
+    NoLocalReplica no_local_replica = 3;
   }
 
   // Maximum bytes accepted in ReplicaTransferChunk.data or
   // BlobTransferChunk.data. OLLSYNC\x01 advertises at most 61440.
   uint32 max_chunk_bytes = 4;
-
-  reserved 5, 7;
 }
 
 message SyncReady {
-  reserved 1;
-
-  uint32 max_chunk_bytes = 2;
+  uint32 max_chunk_bytes = 1;
   // Present when both peers selected one session replica. Absent only when both
   // SyncHello messages declared NoLocalReplica and the connection is waiting
   // for the first authoritative replica activation.
-  ReplicaId session_replica_id = 3;
+  ReplicaId session_replica_id = 2;
 }
 
 message LoroId {
@@ -238,24 +234,21 @@ message SyncPing {
 message SyncPong { uint64 nonce = 1; }
 
 enum SyncCloseCode {
-  reserved 9;
-  reserved "SYNC_CLOSE_CODE_NO_REPLICA_AVAILABLE";
-
   SYNC_CLOSE_CODE_UNSPECIFIED = 0;
   SYNC_CLOSE_CODE_NORMAL = 1;
   SYNC_CLOSE_CODE_SHUTTING_DOWN = 2;
   SYNC_CLOSE_CODE_PROTOCOL_VIOLATION = 3;
-  SYNC_CLOSE_CODE_IDENTITY_COLLISION = 5;
-  SYNC_CLOSE_CODE_SELF_CONNECTION = 6;
-  SYNC_CLOSE_CODE_DUPLICATE_SESSION = 7;
-  SYNC_CLOSE_CODE_REPLICA_MISMATCH = 8;
-  SYNC_CLOSE_CODE_BOOTSTRAP_IN_PROGRESS = 10;
-  SYNC_CLOSE_CODE_NEGOTIATION_FAILED = 11;
-  SYNC_CLOSE_CODE_RESOURCE_EXHAUSTED = 12;
-  SYNC_CLOSE_CODE_INTERNAL_ERROR = 13;
+  SYNC_CLOSE_CODE_IDENTITY_COLLISION = 4;
+  SYNC_CLOSE_CODE_SELF_CONNECTION = 5;
+  SYNC_CLOSE_CODE_DUPLICATE_SESSION = 6;
+  SYNC_CLOSE_CODE_REPLICA_MISMATCH = 7;
+  SYNC_CLOSE_CODE_BOOTSTRAP_IN_PROGRESS = 8;
+  SYNC_CLOSE_CODE_NEGOTIATION_FAILED = 9;
+  SYNC_CLOSE_CODE_RESOURCE_EXHAUSTED = 10;
+  SYNC_CLOSE_CODE_INTERNAL_ERROR = 11;
   // A waiting peer atomically activated its first replica. Reconnect
   // immediately and select the immutable session ReplicaId through SyncHello.
-  SYNC_CLOSE_CODE_REPLICA_AVAILABLE = 14;
+  SYNC_CLOSE_CODE_REPLICA_AVAILABLE = 12;
 }
 
 message SyncClose {

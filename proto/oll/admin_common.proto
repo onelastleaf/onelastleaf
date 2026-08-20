@@ -5,4 +5,4 @@ package oll.protocol;
 import "oll/common.proto";
 
 // Every unary Admin request carries this context.
-message AdminCallContext { TraceContext trace = 2; }
+message AdminCallContext { TraceContext trace = 1; }

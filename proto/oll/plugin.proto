@@ -15,15 +15,12 @@ service PluginRuntime {
 }
 
 message HostHello {
-  reserved 2, 3;
-  reserved "session_id", "plugin_instance_id";
-
   NodeIdentity node = 1;
-  uint32 maximum_call_depth = 5;
-  uint32 maximum_causal_depth = 6;
-  uint64 maximum_artifact_chunk_bytes = 7;
-  PluginId plugin_id = 8;
-  PluginName plugin_name = 9;
+  uint32 maximum_call_depth = 2;
+  uint32 maximum_causal_depth = 3;
+  uint64 maximum_artifact_chunk_bytes = 4;
+  PluginId plugin_id = 5;
+  PluginName plugin_name = 6;
 }
 
 message ActionDescriptor {
@@ -34,9 +31,9 @@ message ActionDescriptor {
 message PluginHello {
   PluginId plugin_id = 1;
   PluginName plugin_name = 2;
-  repeated ActionDescriptor actions = 4;
+  repeated ActionDescriptor actions = 3;
   // Informational build string only; package/release selection never parses it.
-  string plugin_version = 5;
+  string plugin_version = 4;
 }
 
 message SessionReady {}

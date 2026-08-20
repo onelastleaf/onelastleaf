@@ -851,10 +851,14 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         || descriptor.media_type != "text/plain"
         || descriptor.size_bytes != 16
         || descriptor.sha256 != Sha256::digest(b"artifact payload").as_slice()
-        || transfer.chunk_count != 2
     {
         return Err("artifact descriptor does not match the fixture payload".to_owned());
     }
+    validate_artifact_partition(
+        descriptor.size_bytes,
+        transfer.chunk_count,
+        MAXIMUM_ARTIFACT_CHUNK_BYTES,
+    )?;
     driver
         .reply(
             &start,
@@ -864,7 +868,7 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         )
         .await?;
     let mut bytes = Vec::new();
-    for expected_index in 0..2 {
+    for expected_index in 0..transfer.chunk_count {
         let chunk = driver.receive_exact_trace(&job_trace).await?;
         let payload = required_payload(chunk)?;
         let plugin_envelope::Payload::ArtifactChunk(chunk) = payload else {
@@ -874,6 +878,12 @@ async fn artifact_transfer(driver: &mut Driver) -> Result<(), String> {
         };
         if chunk.chunk_index != expected_index || chunk.artifact_id.as_ref() != Some(artifact_id) {
             return Err("artifact chunk order or identity differs".to_owned());
+        }
+        if chunk.data.is_empty()
+            || u64::try_from(chunk.data.len()).map_err(|_| "artifact chunk length overflowed")?
+                > MAXIMUM_ARTIFACT_CHUNK_BYTES
+        {
+            return Err("artifact chunk is empty or exceeds the negotiated limit".to_owned());
         }
         bytes.extend_from_slice(&chunk.data);
     }
@@ -1074,6 +1084,20 @@ fn assert_nested_call(
     Ok(())
 }
 
+fn validate_artifact_partition(
+    size_bytes: u64,
+    chunk_count: u32,
+    maximum_chunk_bytes: u64,
+) -> Result<(), String> {
+    if chunk_count == 0
+        || u64::from(chunk_count) > size_bytes
+        || u128::from(size_bytes) > u128::from(chunk_count) * u128::from(maximum_chunk_bytes)
+    {
+        return Err("artifact chunk count cannot represent the fixture payload".to_owned());
+    }
+    Ok(())
+}
+
 fn validate_unscoped_receive(
     driver: &mut Driver,
     envelope: &oll::PluginEnvelope,
@@ -1164,5 +1188,14 @@ mod tests {
         assert!(require_job_accepted(&accepted, job_id).is_err());
         accepted.insert(job_id.to_owned());
         assert!(require_job_accepted(&accepted, job_id).is_ok());
+    }
+
+    #[test]
+    fn artifact_transfer_accepts_any_valid_declared_partition() {
+        assert!(validate_artifact_partition(16, 1, 64 * 1024).is_ok());
+        assert!(validate_artifact_partition(16, 2, 64 * 1024).is_ok());
+        assert!(validate_artifact_partition(16, 0, 64 * 1024).is_err());
+        assert!(validate_artifact_partition(16, 17, 64 * 1024).is_err());
+        assert!(validate_artifact_partition(16, 1, 8).is_err());
     }
 }
