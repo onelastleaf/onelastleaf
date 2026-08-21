@@ -326,4 +326,25 @@ mod tests {
         let manifest = fs::read_to_string(destination.join("oll.toml")).unwrap();
         assert!(manifest.contains(&format!("id = \"{}\"", generated.id)));
     }
+
+    #[test]
+    fn cpp_scaffold_keeps_tests_out_of_install_builds() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Cpp,
+            Some("org.example.cpp"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let manifest = fs::read_to_string(destination.join("oll.toml")).unwrap();
+        assert!(manifest.contains("\"-DBUILD_TESTING=OFF\""));
+
+        let cmake = fs::read_to_string(destination.join("CMakeLists.txt")).unwrap();
+        assert!(cmake.contains("option(BUILD_TESTING \"Build generated plugin tests\" OFF)"));
+        assert!(cmake.contains("if(BUILD_TESTING)\n  enable_testing()"));
+        assert!(!cmake.contains("include(CTest)"));
+    }
 }

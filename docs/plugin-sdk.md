@@ -163,11 +163,13 @@ idiomatic action entry point, one example `echo` action, tests, `.gitignore`,
 and a short README. The generated manifest explicitly selects `source` checkout
 for ordinary compiled projects, `install` checkout for Node.js and Haskell, and
 `generation` checkout for Python. These are generator choices, not runtime
-language detection. Registry-backed templates declare the matching published
-SDK dependency and do not copy SDK implementation source. The C++ template uses
-the pinned CMake `FetchContent` contract above. Templates do not create
-`plugins.lua`, per-plugin Lua configuration, masks, `oll-release.json`, a
-license chosen on the author's behalf, CI tied to one forge, or a Git history.
+language detection. Scaffold tests are opt-in development checks; installation
+recipes MUST NOT build or run them. Registry-backed templates declare the
+matching published SDK dependency and do not copy SDK implementation source.
+The C++ template uses the pinned CMake `FetchContent` contract above. Templates
+do not create `plugins.lua`, per-plugin Lua configuration, masks,
+`oll-release.json`, a license chosen on the author's behalf, CI tied to one
+forge, or a Git history.
 
 The generated `oll.toml` uses only the placeholders allowed by its declared
 checkout and launches only from the published generation. Recipe commands

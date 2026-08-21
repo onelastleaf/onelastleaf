@@ -183,6 +183,7 @@ pub(super) fn cpp() -> (Recipe, Vec<GeneratedFile>) {
                     "-B",
                     "{source}/build",
                     "-DCMAKE_BUILD_TYPE=Release",
+                    "-DBUILD_TESTING=OFF",
                     "-DCMAKE_INSTALL_PREFIX={install}",
                 ],
                 &[
@@ -217,8 +218,9 @@ target_compile_features(__OLL_PLUGIN_NAME__ PRIVATE cxx_std_20)
 target_link_libraries(__OLL_PLUGIN_NAME__ PRIVATE onelastleaf::plugin_sdk)
 install(TARGETS __OLL_PLUGIN_NAME__ RUNTIME DESTINATION bin)
 
-include(CTest)
+option(BUILD_TESTING "Build generated plugin tests" OFF)
 if(BUILD_TESTING)
+  enable_testing()
   add_executable(echo_test tests/echo_test.cpp src/echo.cpp)
   target_include_directories(echo_test PRIVATE src)
   add_test(NAME echo_test COMMAND echo_test)
