@@ -7,12 +7,11 @@ name = "__OLL_PLUGIN_NAME__"
 [source]
 checkout = "generation"
 steps = [
-  ["python3", "-m", "venv", "{generation}/.venv"],
-  ["{generation}/.venv/bin/pip", "install", "{generation}"],
+  ["uv", "sync", "--no-dev", "--project", "{generation}"],
 ]
 
 [source.dependencies]
-"python3" = "Install Python 3.11 or newer and ensure python3 is in PATH."
+"uv" = "Install uv and ensure uv is in PATH."
 
 [runtime]
 argv = ["{generation}/.venv/bin/__OLL_PLUGIN_NAME__"]

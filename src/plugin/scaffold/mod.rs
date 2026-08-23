@@ -251,17 +251,17 @@ mod tests {
             (
                 PluginLanguage::Javascript,
                 crate::plugin::package::SourceCheckout::Install,
-                "npm install",
+                "pnpm install",
             ),
             (
                 PluginLanguage::Typescript,
                 crate::plugin::package::SourceCheckout::Install,
-                "npm run build",
+                "pnpm run build",
             ),
             (
                 PluginLanguage::Python,
                 crate::plugin::package::SourceCheckout::Generation,
-                ".venv/bin/pip install",
+                "uv sync --extra dev",
             ),
             (
                 PluginLanguage::Rust,
@@ -304,10 +304,16 @@ mod tests {
             assert!(!manifest.contains("{staging}"));
             let readme = fs::read_to_string(destination.join("README.md")).unwrap();
             assert!(readme.contains("## Requirements"));
-            assert!(readme.contains("## Build"));
+            assert!(readme.contains("## Build and test"));
             assert!(readme.contains(build_command));
-            assert!(readme.contains("## Test"));
-            assert!(readme.contains("## Install with oll"));
+            assert!(readme.to_lowercase().contains("incremental"));
+            assert!(readme.contains("## Local source development"));
+            assert!(readme.contains("oll plugin install . --source"));
+            assert!(readme.contains("## Local release development"));
+            assert!(readme.contains("oll plugin install . --release dev"));
+            assert!(readme.contains("## Development loop"));
+            assert!(readme.contains("## Publish a release"));
+            assert!(readme.contains("oll plugin install <git-remote> --release <release-id>"));
             assert!(!readme.contains("__OLL_"));
             assert!(readmes.insert(readme), "language templates shared a README");
             for entry in walkdir::WalkDir::new(&destination) {
@@ -380,5 +386,143 @@ mod tests {
         assert!(cmake.contains("option(BUILD_TESTING \"Build generated plugin tests\" OFF)"));
         assert!(cmake.contains("if(BUILD_TESTING)\n  enable_testing()"));
         assert!(!cmake.contains("include(CTest)"));
+    }
+
+    #[test]
+    fn rust_scaffold_uses_the_public_action_result_constructor() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Rust,
+            Some("org.example.rust"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let main = fs::read_to_string(destination.join("src/main.rs")).unwrap();
+        assert!(main.contains("ActionResult::value(example::echo(arguments))"));
+        assert!(!main.contains("ActionResult {"));
+    }
+
+    #[test]
+    fn dotnet_scaffold_uses_the_published_action_result_constructor() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Dotnet,
+            Some("org.example.dotnet"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let program = fs::read_to_string(destination.join("src/Program.cs")).unwrap();
+        assert!(program.contains("ActionResult.FromString"));
+        assert!(!program.contains("ActionResult.String"));
+    }
+
+    #[test]
+    fn typescript_scaffold_accepts_readonly_action_arguments() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Typescript,
+            Some("org.example.typescript"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let echo = fs::read_to_string(destination.join("src/echo.ts")).unwrap();
+        assert!(echo.contains("arguments_: readonly string[]"));
+    }
+
+    #[test]
+    fn generated_node_and_python_projects_use_the_documented_package_managers() {
+        let root = tempfile::TempDir::new().unwrap();
+        for (directory, language) in [
+            ("javascript", PluginLanguage::Javascript),
+            ("typescript", PluginLanguage::Typescript),
+        ] {
+            let destination = root.path().join(directory);
+            scaffold_plugin_project(
+                &destination,
+                language,
+                Some(&format!("org.example.{directory}")),
+                Some(directory),
+            )
+            .unwrap();
+
+            let manifest = fs::read_to_string(destination.join("oll.toml")).unwrap();
+            assert!(manifest.contains("[\"pnpm\", \"install\", \"--frozen-lockfile\"]"));
+            assert!(destination.join("pnpm-lock.yaml").is_file());
+            let workspace = fs::read_to_string(destination.join("pnpm-workspace.yaml")).unwrap();
+            assert!(workspace.contains("packageImportMethod: copy"));
+            assert!(workspace.contains("enableGlobalVirtualStore: false"));
+            assert!(workspace.contains("protobufjs: false"));
+            let readme = fs::read_to_string(destination.join("README.md")).unwrap();
+            assert!(readme.contains("--config.package-import-method=copy"));
+            assert!(readme.contains("--config.enable-global-virtual-store=false"));
+            if language == PluginLanguage::Typescript {
+                assert!(workspace.contains("esbuild: true"));
+            }
+        }
+
+        let destination = root.path().join("python");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Python,
+            Some("org.example.python"),
+            Some("python"),
+        )
+        .unwrap();
+        let manifest = fs::read_to_string(destination.join("oll.toml")).unwrap();
+        assert!(manifest.contains("[\"uv\", \"sync\", \"--no-dev\""));
+        assert!(!manifest.contains("pip"));
+        let readme = fs::read_to_string(destination.join("README.md")).unwrap();
+        assert!(readme.contains("uv export --locked --no-dev --no-emit-project --no-hashes"));
+    }
+
+    #[test]
+    fn go_scaffold_includes_the_published_sdk_module_graph() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Go,
+            Some("org.example.go"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let module = fs::read_to_string(destination.join("go.mod")).unwrap();
+        let sums = fs::read_to_string(destination.join("go.sum")).unwrap();
+        assert!(module.contains("github.com/onelastleaf/go-plugin-sdk v0.1.0"));
+        assert!(module.contains("google.golang.org/grpc v1.75.1 // indirect"));
+        assert!(sums.contains("github.com/onelastleaf/go-plugin-sdk v0.1.0 h1:"));
+    }
+
+    #[test]
+    fn swift_scaffold_matches_the_published_sdk_toolchain() {
+        let root = tempfile::TempDir::new().unwrap();
+        let destination = root.path().join("example");
+        scaffold_plugin_project(
+            &destination,
+            PluginLanguage::Swift,
+            Some("org.example.swift"),
+            Some("example"),
+        )
+        .unwrap();
+
+        let package = fs::read_to_string(destination.join("Package.swift")).unwrap();
+        assert!(package.starts_with("// swift-tools-version: 6.2\n"));
+        assert!(package.contains(
+            ".package(url: \"https://github.com/onelastleaf/swift-plugin-sdk.git\", exact: \"0.1.0\")"
+        ));
+
+        let readme = fs::read_to_string(destination.join("README.md")).unwrap();
+        assert!(readme.contains("Swift 6.2 or newer"));
+        assert!(readme.contains("macOS 15 or newer when building for macOS"));
     }
 }

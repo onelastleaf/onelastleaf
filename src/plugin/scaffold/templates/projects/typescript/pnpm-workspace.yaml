@@ -1,0 +1,5 @@
+packageImportMethod: copy
+enableGlobalVirtualStore: false
+allowBuilds:
+  esbuild: true
+  protobufjs: false

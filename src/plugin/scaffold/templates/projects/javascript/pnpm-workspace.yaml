@@ -1,0 +1,4 @@
+packageImportMethod: copy
+enableGlobalVirtualStore: false
+allowBuilds:
+  protobufjs: false

@@ -350,13 +350,30 @@ Linux release archives use `tar.gz`; Darwin releases use `zip`. The declared
 kind and selected URL/path suffix must agree. For a URL, oll verifies the exact
 declared byte size and SHA-256 while streaming into private staging rather than
 buffering the archive in memory. Extraction rejects absolute and `..` paths,
-duplicate normalized entries, every symbolic-link or hard-link entry, and other
-unsupported entry types. This includes tar symlink/hardlink entries and zip
-symlink encodings even when their target would remain internal; the first
-version deliberately has no link ordering, chain, or ancestor-ownership
-semantics. There is deliberately no compressed or expanded archive-size limit;
-the user initiating installation is responsible for local resources. An
-exhaustion failure cannot publish a partial generation.
+duplicate normalized entries, hard links, and unsupported entry types. A
+symbolic link is accepted only when its source is a unique safe archive path
+and its relative target resolves to an entry inside the same archive. Absolute,
+escaping, empty, dangling, and cyclic targets are rejected. No regular file or
+directory entry may descend through a symbolic-link path, and a link chain must
+end at a regular file or directory. The root `oll.toml` must be a regular file;
+no symbolic link may directly or transitively resolve to it. oll validates the
+complete entry and link graph before writing file contents, extracts ordinary
+entries without following package-provided links, and creates validated links
+only after their targets exist. There is deliberately no compressed or
+expanded archive-size limit; the user initiating installation is responsible
+for local resources. An exhaustion failure cannot publish a partial
+generation.
+
+Package managers may use internal symbolic links, but a published archive must
+not depend on files outside its own root. In particular, pnpm packaging uses
+project-local `packageImportMethod: copy` and
+`enableGlobalVirtualStore: false` settings. A packaging recipe may enforce them
+for the install command with `--config.package-import-method=copy` and
+`--config.enable-global-virtual-store=false`. pnpm may link packages from
+`node_modules` into the archive-local `.pnpm` tree, but the `.pnpm` files
+themselves are copied rather than linked to the global content-addressed or
+virtual stores. A Darwin zip that must retain those internal links is created
+with symlink-preserving mode, such as Info-ZIP's `-y` option.
 
 The archive includes the publisher `oll.toml`. After strict parsing, its
 complete canonical publisher-manifest value must equal the selected location's
