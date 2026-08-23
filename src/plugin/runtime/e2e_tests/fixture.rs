@@ -421,12 +421,12 @@ async fn publish_fake_plugin(
         fs::write(candidate.join("no-read-flood"), b"do not read host output").unwrap();
     }
 
-    let declaration = PluginDeclaration {
-        remote: "https://example.invalid/oll-runtime-e2e.git".to_owned(),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Default,
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.invalid/oll-runtime-e2e.git",
+        GitSelection::Default,
+        DeclarationMode::Source,
+        None,
+    );
     declaration.validate().unwrap();
     let declaration_bytes = serde_json::to_vec(&declaration).unwrap();
     let executable = std::env::current_exe().unwrap();

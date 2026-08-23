@@ -343,12 +343,18 @@ pub enum PluginInstallIntent {
     Declared {
         json: bool,
     },
-    Remote {
-        remote: Box<GitRemote>,
+    Explicit {
+        location: PluginInstallLocation,
         selector: GitSelector,
         mode: PluginInstallMode,
         json: bool,
     },
+}
+
+#[derive(Debug, PartialEq)]
+pub enum PluginInstallLocation {
+    Remote(Box<GitRemote>),
+    Local(PathBuf),
 }
 
 #[derive(Debug, PartialEq)]
@@ -371,7 +377,7 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
             plugin_name: name,
         }),
         PluginCommand::Install {
-            repository,
+            location,
             rev,
             branch,
             release,
@@ -401,14 +407,14 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
                     ));
                 }
             };
-            let install = match repository {
+            let install = match location {
                 None if !matches!(&selector, GitSelector::Default)
                     || release.is_some()
                     || source =>
                 {
                     return Err(intent_error(
                         ErrorKind::MissingRequiredArgument,
-                        "installation options require a Git remote",
+                        "installation options require a Git remote or local path",
                     ));
                 }
                 None => PluginInstallIntent::Declared { json },
@@ -429,14 +435,25 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
                         "--release must not be empty",
                     ));
                 }
-                Some(remote) => PluginInstallIntent::Remote {
-                    remote: Box::new(remote),
-                    selector,
-                    mode: release.map_or(PluginInstallMode::Source, |release_id| {
-                        PluginInstallMode::Release { release_id }
-                    }),
-                    json,
-                },
+                Some(location) => {
+                    let location = classify_plugin_location(location)?;
+                    if matches!(location, PluginInstallLocation::Local(_))
+                        && !matches!(selector, GitSelector::Default)
+                    {
+                        return Err(intent_error(
+                            ErrorKind::ArgumentConflict,
+                            "--branch and --rev are forbidden for a local plugin path",
+                        ));
+                    }
+                    PluginInstallIntent::Explicit {
+                        location,
+                        selector,
+                        mode: release.map_or(PluginInstallMode::Source, |release_id| {
+                            PluginInstallMode::Release { release_id }
+                        }),
+                        json,
+                    }
+                }
             };
             Ok(PluginIntent::Install(install))
         }
@@ -486,6 +503,31 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
             })
         }
     }
+}
+
+fn classify_plugin_location(path: PathBuf) -> Result<PluginInstallLocation, clap::Error> {
+    if let Some(value) = path.to_str() {
+        if let Ok(remote) = value.parse::<GitRemote>() {
+            return Ok(PluginInstallLocation::Remote(Box::new(remote)));
+        }
+        if value.contains("://")
+            || value
+                .split_once(':')
+                .is_some_and(|(authority, _)| authority.contains('@'))
+        {
+            return Err(intent_error(
+                ErrorKind::InvalidValue,
+                "Git remote syntax is invalid",
+            ));
+        }
+    }
+    if path.as_os_str().is_empty() {
+        return Err(intent_error(
+            ErrorKind::InvalidValue,
+            "local plugin path must not be empty",
+        ));
+    }
+    Ok(PluginInstallLocation::Local(path))
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -622,6 +664,10 @@ impl CliIntent {
                 | ReplicaIntent::SnapshotVerify { snapshot },
             ) => snapshot,
             Self::Plugin(PluginIntent::New { path, .. }) => path,
+            Self::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit {
+                location: PluginInstallLocation::Local(path),
+                ..
+            })) => path,
             _ => return,
         };
         *path = resolve_client_path(path, cwd);

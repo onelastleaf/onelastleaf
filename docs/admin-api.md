@@ -226,7 +226,12 @@ selector may contain either PluginId or current unique PluginName; resolution
 occurs once at request admission and all subsequent work carries the ID.
 
 `ReconcilePluginInstallations` has a typed operation variant for no-argument
-install, remote install, selected-plugin update, and exact-set reconciliation.
+install, explicit-location install, selected-plugin update, and exact-set
+reconciliation. An explicit install location is a oneof containing either a
+Git remote string or native absolute local-path bytes. Git selection is
+forbidden for a local path. The CLI resolves relative paths before the UDS; the
+daemon validates and canonicalizes the directory before persisting it. Returned
+declarations sanitize Git credentials.
 All variants enter one package reconciliation owner; the daemon does not parse
 CLI argv or run separate installer/update implementations. A multi-plugin call
 returns one domain result and zero or more diagnostics per PluginId. An ordinary
@@ -234,12 +239,12 @@ fetch/build/download failure is an item failure and does not discard successful
 items. A global `plugins.lua` syntax/schema failure rejects the request because
 there is no coherent declaration set to admit.
 
-A release-mode remote install may omit `release_id` to request the publisher
+A release-mode explicit install may omit `release_id` to request the publisher
 default from `oll-release.json`; a present ID remains opaque and exact. The
 durable declaration preserves that omission, while installed package metadata
 records the concrete release ID selected for the published generation.
 
-When remote installation would replace a declaration, the first call returns
+When explicit installation would replace a declaration, the first call returns
 `confirmation_required`, the resolved PluginId, a redacted change summary, and
 the SHA-256 of the normalized current declaration. After the user confirms, the
 client calls the same method with overwrite authorization and that expected
@@ -251,18 +256,19 @@ daemon-side terminal interaction.
 instance, removes its declaration, package directory, SQL state, jobs, and
 identity binding, and reports completion. Client cancellation after the durable
 destructive intent begins cannot resurrect partial state.
-`ListPluginReleases` resolves the plugin's declaration, reads the selected
-repository's explicit `oll-release.json`, and returns opaque release IDs and
-declared targets without selecting or parsing a newest version. A PluginId may
-select an uninstalled declaration whose absent release field requests the
-publisher default; a name selector requires an existing SQL identity binding.
+`ListPluginReleases` resolves the plugin's declaration, reads the selected Git
+state or local workspace's explicit `oll-release.json`, and returns opaque
+release IDs and declared targets without selecting or parsing a newest version.
+A PluginId may select an uninstalled declaration whose absent release field
+requests the publisher default; a name selector requires an existing SQL
+identity binding.
 
 `ListPlugins` returns compact identity, desired/observed state, current/running
 generation, and last-failure summaries. `GetPlugin` returns the complete
-normalized declaration with its remote sanitized, effective manifest summary,
-package/recovery state, restart state, process instance, and job counters, but
-never credentials, inherited environment values, build output, or per-plugin
-Lua values.
+normalized declaration with its Git remote sanitized or its local path,
+effective manifest summary, package/recovery state, restart state, process
+instance, and job counters, but never credentials, inherited environment
+values, build output, or per-plugin Lua values.
 
 `SetPluginDesiredState` atomically stores `running` or `stopped` and queues
 reconciliation. It is short and idempotent; success does not claim the process

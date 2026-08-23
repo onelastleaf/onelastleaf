@@ -7,6 +7,7 @@ mod tests;
 
 use std::{
     io::{self, BufRead, Write},
+    os::unix::ffi::OsStrExt,
     path::Path,
 };
 
@@ -196,21 +197,21 @@ async fn install_plugins(
             );
             reconcile_and_render(config_root, request, json, "Installing plugins").await
         }
-        PluginInstallIntent::Remote {
-            remote,
+        PluginInstallIntent::Explicit {
+            location,
             selector,
             mode,
             json,
         } => {
-            let remote = remote_install_request(remote.as_str(), selector, mode);
-            install_remote_with_confirmation(config_root, remote, json).await
+            let install = install_request(location, selector, mode);
+            install_with_confirmation(config_root, install, json).await
         }
     }
 }
 
-async fn install_remote_with_confirmation(
+async fn install_with_confirmation(
     config_root: &Path,
-    remote: oll::InstallRemotePlugin,
+    install: oll::InstallPlugin,
     json: bool,
 ) -> Result<(), NodeError> {
     let correlation_id = new_correlation_id();
@@ -219,7 +220,7 @@ async fn install_remote_with_confirmation(
         let _progress = CommandProgress::start("Installing plugin", !json);
         admin::reconcile_plugin_installations(
             &socket,
-            remote_reconcile_request(remote.clone()),
+            install_reconcile_request(install.clone()),
             correlation_id.clone(),
         )
         .await?
@@ -247,7 +248,7 @@ async fn install_remote_with_confirmation(
         let _progress = CommandProgress::start("Installing plugin", true);
         admin::reconcile_plugin_installations(
             &socket,
-            remote_reconcile_request(authorize_remote(remote, authorization)),
+            install_reconcile_request(authorize_install(install, authorization)),
             correlation_id,
         )
         .await?
@@ -343,17 +344,19 @@ fn reconcile_request(
     }
 }
 
-fn remote_reconcile_request(
-    remote: oll::InstallRemotePlugin,
+fn install_reconcile_request(
+    install: oll::InstallPlugin,
 ) -> oll::ReconcilePluginInstallationsRequest {
-    reconcile_request(reconcile_plugin_installations_request::Operation::InstallRemote(remote))
+    reconcile_request(reconcile_plugin_installations_request::Operation::Install(
+        install,
+    ))
 }
 
-fn remote_install_request(
-    remote: &str,
+fn install_request(
+    location: crate::cli::PluginInstallLocation,
     selector: GitSelector,
     mode: PluginInstallMode,
-) -> oll::InstallRemotePlugin {
+) -> oll::InstallPlugin {
     let selection = match selector {
         GitSelector::Default => None,
         GitSelector::Revision(revision) => Some(oll::PluginGitSelection {
@@ -367,8 +370,18 @@ fn remote_install_request(
         PluginInstallMode::Source => (oll::PluginPackageMode::Source, None),
         PluginInstallMode::Release { release_id } => (oll::PluginPackageMode::Release, release_id),
     };
-    oll::InstallRemotePlugin {
-        remote: remote.to_owned(),
+    let location = Some(match location {
+        crate::cli::PluginInstallLocation::Remote(remote) => {
+            oll::install_plugin::Location::Remote(remote.as_str().to_owned())
+        }
+        crate::cli::PluginInstallLocation::Local(path) => {
+            oll::install_plugin::Location::LocalPath(oll::NativePath {
+                unix_path: path.as_os_str().as_bytes().to_vec(),
+            })
+        }
+    });
+    oll::InstallPlugin {
+        location,
         mode: mode as i32,
         selection,
         release_id,
@@ -394,7 +407,7 @@ fn overwrite_authorization(
     };
     if required.next().is_some() || response.results.len() != 1 {
         return Err(NodeError::Internal(
-            "remote installation returned an invalid confirmation result set".to_owned(),
+            "explicit installation returned an invalid confirmation result set".to_owned(),
         ));
     }
     let plugin_id = result.plugin_id.clone().ok_or_else(|| {
@@ -415,15 +428,15 @@ fn overwrite_authorization(
     }))
 }
 
-fn authorize_remote(
-    mut remote: oll::InstallRemotePlugin,
+fn authorize_install(
+    mut install: oll::InstallPlugin,
     authorization: OverwriteAuthorization,
-) -> oll::InstallRemotePlugin {
-    remote.overwrite = Some(oll::PluginOverwriteAuthorization {
+) -> oll::InstallPlugin {
+    install.overwrite = Some(oll::PluginOverwriteAuthorization {
         plugin_id: Some(authorization.plugin_id),
         expected_declaration_sha256: authorization.digest,
     });
-    remote
+    install
 }
 
 fn confirm_overwrite(summary: &str) -> Result<bool, NodeError> {

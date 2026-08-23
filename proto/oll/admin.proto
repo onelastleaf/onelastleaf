@@ -70,10 +70,6 @@ enum ReplicaState {
   REPLICA_STATE_INITIALIZED_POPULATED = 3;
 }
 
-// Native Unix pathname bytes used only by the local Admin UDS. Values must be
-// non-empty absolute paths with no NUL byte.
-message NativePath { bytes unix_path = 1; }
-
 message PeerStatus {
   // Absent for an authenticated inbound-only peer.
   optional string connect_target = 1;

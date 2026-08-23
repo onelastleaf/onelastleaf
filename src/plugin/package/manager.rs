@@ -19,9 +19,10 @@ use crate::plugin::{
 
 use super::build::ResolvedCandidate;
 use super::{
-    BuiltCandidate, CandidateBuilder, DeclarationMode, EffectiveManifest, GitCheckout,
-    GitSelection, PackageError, PackageLayout, PhaseCancellationGuard, PluginDeclaration,
-    PluginDeclarations, PublisherManifest, ReleaseIndex, ReleaseListing, read_plugin_declarations,
+    BuiltCandidate, CandidateBuilder, DeclarationLocation, DeclarationMode, EffectiveManifest,
+    GitCheckout, GitSelection, PackageError, PackageLayout, PhaseCancellationGuard,
+    PluginDeclaration, PluginDeclarations, PublisherManifest, ReleaseIndex, ReleaseListing,
+    canonicalize_local_workspace, read_plugin_declarations, validate_canonical_local_workspace,
     write_plugin_declarations,
 };
 
@@ -38,7 +39,7 @@ use owner::{DurablePublishContext, PackageTaskOwner};
 use owner::{PublishPause, PublishTestHook};
 
 #[derive(Clone, Debug)]
-pub struct InstallRemoteRequest {
+pub struct ExplicitInstallRequest {
     pub declaration: PluginDeclaration,
     pub overwrite: Option<OverwriteAuthorization>,
 }
@@ -103,11 +104,13 @@ impl PackageDiagnostic {
     }
 
     fn with_declaration(mut self, declaration: &PluginDeclaration) -> Self {
-        self.sanitized_remote = Some(declaration.sanitized_remote());
-        match &declaration.selection {
-            GitSelection::Default => {}
-            GitSelection::Branch(value) => self.branch = Some(value.clone()),
-            GitSelection::Revision(value) => self.revision = Some(value.clone()),
+        self.sanitized_remote = declaration.sanitized_remote();
+        if let Some((_, selection)) = declaration.git() {
+            match selection {
+                super::GitSelection::Default => {}
+                super::GitSelection::Branch(value) => self.branch = Some(value.clone()),
+                super::GitSelection::Revision(value) => self.revision = Some(value.clone()),
+            }
         }
         self.release_id = declaration.release.clone();
         if declaration.mode == DeclarationMode::Release {

@@ -8,8 +8,8 @@ use crate::{
     plugin::{
         PluginError, PluginId, PluginName, PluginSelector,
         package::{
-            InstallRemoteRequest, PackageManager, PackageOperationOutcome, PackageOperationResult,
-            ReleaseListing, RemovalPreparation,
+            ExplicitInstallRequest, PackageManager, PackageOperationOutcome,
+            PackageOperationResult, ReleaseListing, RemovalPreparation,
         },
         runtime::PluginSupervisor,
     },
@@ -31,15 +31,15 @@ impl PluginRuntime {
         result
     }
 
-    pub async fn install_remote(
+    pub async fn install(
         &self,
-        request: InstallRemoteRequest,
+        request: ExplicitInstallRequest,
         correlation_id: &str,
     ) -> Result<Vec<PackageOperationResult>, PluginError> {
         let started = Instant::now();
-        self.package_operation_started("install_remote", correlation_id, None);
-        let result = self.packages.install_remote(request, correlation_id).await;
-        self.package_operation_finished("install_remote", correlation_id, started, &result);
+        self.package_operation_started("install", correlation_id, None);
+        let result = self.packages.install(request, correlation_id).await;
+        self.package_operation_finished("install", correlation_id, started, &result);
         result
     }
 

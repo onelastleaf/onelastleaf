@@ -211,10 +211,12 @@ async fn publication_rejects_declaration_and_mask_changes_after_build() {
         } else {
             declarations.insert(
                 plugin_id.clone(),
-                PluginDeclaration {
-                    selection: GitSelection::Branch("changed".to_owned()),
-                    ..declaration
-                },
+                PluginDeclaration::from_git(
+                    declaration.git().unwrap().0,
+                    GitSelection::Branch("changed".to_owned()),
+                    declaration.mode,
+                    declaration.release.clone(),
+                ),
             );
             write_plugin_declarations(&config_root, &declarations).unwrap();
         }
@@ -467,12 +469,12 @@ async fn source_publication_keeps_a_running_generation_and_failed_update_keeps_c
     fs::write(config_root.join("plugins.lua"), b"return {}\n").unwrap();
     let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
     let plugin_id: PluginId = "oll.package-test".parse().unwrap();
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/oll-package-test.git".to_owned(),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Branch("main".to_owned()),
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/oll-package-test.git",
+        GitSelection::Branch("main".to_owned()),
+        DeclarationMode::Source,
+        None,
+    );
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration.clone());
     write_plugin_declarations(&config_root, &declarations).unwrap();

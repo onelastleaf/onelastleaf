@@ -1,13 +1,14 @@
+use std::{ffi::OsString, os::unix::ffi::OsStringExt, path::PathBuf};
+
 use time::OffsetDateTime;
 use tonic::Status;
 
 use crate::{
-    cli::GitRemote,
     plugin::{
         DesiredPluginState, PluginJobId, PluginOperationId, PluginSelector,
         package::{
-            DeclarationMode, GitSelection, InstallRemoteRequest, OverwriteAuthorization,
-            PluginDeclaration,
+            DeclarationLocation, DeclarationMode, ExplicitInstallRequest, GitSelection,
+            OverwriteAuthorization, PluginDeclaration,
         },
         protocol,
     },
@@ -19,7 +20,7 @@ use super::plugin_status;
 #[derive(Debug)]
 pub(in crate::node::admin) enum DecodedReconcileOperation {
     InstallDeclared,
-    InstallRemote(InstallRemoteRequest),
+    Install(ExplicitInstallRequest),
     Update(PluginSelector),
     Exact,
 }
@@ -40,8 +41,8 @@ pub(in crate::node::admin) fn decode_reconcile_operation(
 
     match operation {
         Some(Operation::InstallDeclared(_)) => Ok(DecodedReconcileOperation::InstallDeclared),
-        Some(Operation::InstallRemote(request)) => {
-            decode_install_remote(request).map(DecodedReconcileOperation::InstallRemote)
+        Some(Operation::Install(request)) => {
+            decode_install(request).map(DecodedReconcileOperation::Install)
         }
         Some(Operation::Update(request)) => {
             decode_selector(request.plugin.as_ref()).map(DecodedReconcileOperation::Update)
@@ -100,36 +101,9 @@ pub(in crate::node::admin) fn decode_start_plugin_job(
     })
 }
 
-fn decode_install_remote(
-    request: oll::InstallRemotePlugin,
-) -> Result<InstallRemoteRequest, Status> {
-    request
-        .remote
-        .parse::<GitRemote>()
-        .map_err(|_| Status::invalid_argument("install_remote.remote is invalid"))?;
-    let mode = protocol::decode_install_mode(request.mode, "install_remote.mode")
-        .map_err(plugin_status)?;
-    let selection = match request.selection {
-        None => GitSelection::Default,
-        Some(selection) => match selection.selection {
-            Some(oll::plugin_git_selection::Selection::Branch(value)) if !value.is_empty() => {
-                GitSelection::Branch(value)
-            }
-            Some(oll::plugin_git_selection::Selection::Revision(value)) if !value.is_empty() => {
-                GitSelection::Revision(value)
-            }
-            Some(_) => {
-                return Err(Status::invalid_argument(
-                    "install_remote branch or revision must not be empty",
-                ));
-            }
-            None => {
-                return Err(Status::invalid_argument(
-                    "install_remote.selection must select a branch or revision",
-                ));
-            }
-        },
-    };
+fn decode_install(request: oll::InstallPlugin) -> Result<ExplicitInstallRequest, Status> {
+    let mode =
+        protocol::decode_install_mode(request.mode, "install.mode").map_err(plugin_status)?;
     let declaration_mode = match mode {
         crate::plugin::InstallMode::Source => DeclarationMode::Source,
         crate::plugin::InstallMode::Release => DeclarationMode::Release,
@@ -137,31 +111,49 @@ fn decode_install_remote(
     match (&declaration_mode, request.release_id.as_deref()) {
         (DeclarationMode::Source, Some(_)) => {
             return Err(Status::invalid_argument(
-                "install_remote.release_id is forbidden in source mode",
+                "install.release_id is forbidden in source mode",
             ));
         }
         (DeclarationMode::Release, Some("")) => {
             return Err(Status::invalid_argument(
-                "install_remote.release_id must not be empty",
+                "install.release_id must not be empty",
             ));
         }
         _ => {}
     }
+    let location = match request.location {
+        Some(oll::install_plugin::Location::Remote(remote)) => {
+            let selection = decode_git_selection(request.selection)?;
+            DeclarationLocation::Git { remote, selection }
+        }
+        Some(oll::install_plugin::Location::LocalPath(path)) => {
+            if request.selection.is_some() {
+                return Err(Status::invalid_argument(
+                    "install.selection is forbidden for a local path",
+                ));
+            }
+            DeclarationLocation::Local {
+                path: decode_native_path(path, "install.local_path")?,
+            }
+        }
+        None => {
+            return Err(Status::invalid_argument("install.location is required"));
+        }
+    };
     let declaration = PluginDeclaration {
-        remote: request.remote,
+        location,
         mode: declaration_mode,
-        selection,
         release: request.release_id,
     };
     declaration
         .validate()
-        .map_err(|_| Status::invalid_argument("install_remote declaration is invalid"))?;
+        .map_err(|_| Status::invalid_argument("install declaration is invalid"))?;
     let overwrite = request
         .overwrite
         .map(|overwrite| {
             let plugin_id = protocol::decode_plugin_id(
                 overwrite.plugin_id.as_ref(),
-                "install_remote.overwrite.plugin_id",
+                "install.overwrite.plugin_id",
             )
             .map_err(plugin_status)?;
             let expected_declaration_sha256 = overwrite
@@ -170,7 +162,7 @@ fn decode_install_remote(
                 .try_into()
                 .map_err(|_| {
                     Status::invalid_argument(
-                        "install_remote.overwrite.expected_declaration_sha256 must be exactly 32 bytes",
+                        "install.overwrite.expected_declaration_sha256 must be exactly 32 bytes",
                     )
                 })?;
             Ok::<OverwriteAuthorization, Status>(OverwriteAuthorization {
@@ -179,8 +171,45 @@ fn decode_install_remote(
             })
         })
         .transpose()?;
-    Ok(InstallRemoteRequest {
+    Ok(ExplicitInstallRequest {
         declaration,
         overwrite,
     })
+}
+
+fn decode_git_selection(
+    selection: Option<oll::PluginGitSelection>,
+) -> Result<GitSelection, Status> {
+    match selection {
+        None => Ok(GitSelection::Default),
+        Some(selection) => match selection.selection {
+            Some(oll::plugin_git_selection::Selection::Branch(value)) if !value.is_empty() => {
+                Ok(GitSelection::Branch(value))
+            }
+            Some(oll::plugin_git_selection::Selection::Revision(value)) if !value.is_empty() => {
+                Ok(GitSelection::Revision(value))
+            }
+            Some(_) => Err(Status::invalid_argument(
+                "install branch or revision must not be empty",
+            )),
+            None => Err(Status::invalid_argument(
+                "install.selection must select a branch or revision",
+            )),
+        },
+    }
+}
+
+fn decode_native_path(value: oll::NativePath, field: &str) -> Result<PathBuf, Status> {
+    if value.unix_path.is_empty() || value.unix_path.contains(&0) {
+        return Err(Status::invalid_argument(format!(
+            "{field} must be a non-empty native path without NUL bytes"
+        )));
+    }
+    let path = PathBuf::from(OsString::from_vec(value.unix_path));
+    if !path.is_absolute() {
+        return Err(Status::invalid_argument(format!(
+            "{field} must be absolute"
+        )));
+    }
+    Ok(path)
 }

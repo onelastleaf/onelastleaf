@@ -26,12 +26,12 @@ async fn remote_install_preserves_one_operation_log_and_correlation_through_publ
     let repository = create_source_repository(directory.path());
     let (_daemon, remote) = start_git_daemon(directory.path(), &repository);
     let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
-    let declaration = PluginDeclaration {
+    let declaration = PluginDeclaration::from_git(
         remote,
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Branch("main".to_owned()),
-        release: None,
-    };
+        GitSelection::Branch("main".to_owned()),
+        DeclarationMode::Source,
+        None,
+    );
 
     let hook = PublishTestHook::new(PublishPause::AfterIntent);
     manager.set_publish_test_hook(Arc::clone(&hook)).await;
@@ -40,8 +40,8 @@ async fn remote_install_preserves_one_operation_log_and_correlation_through_publ
         let declaration = declaration.clone();
         async move {
             manager
-                .install_remote(
-                    InstallRemoteRequest {
+                .install(
+                    ExplicitInstallRequest {
                         declaration,
                         overwrite: None,
                     },
@@ -163,32 +163,32 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
     let (_daemon, remote) = start_git_daemon(directory.path(), &repository);
     let plugin_id: PluginId = "oll.remote-install-test".parse().unwrap();
     let original = test_declaration("original");
-    let concurrent = PluginDeclaration {
-        remote: "https://example.com/concurrent.git".to_owned(),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Branch("concurrent".to_owned()),
-        release: None,
-    };
-    let proposed = PluginDeclaration {
+    let concurrent = PluginDeclaration::from_git(
+        "https://example.com/concurrent.git",
+        GitSelection::Branch("concurrent".to_owned()),
+        DeclarationMode::Source,
+        None,
+    );
+    let proposed = PluginDeclaration::from_git(
         remote,
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Branch("main".to_owned()),
-        release: None,
-    };
+        GitSelection::Branch("main".to_owned()),
+        DeclarationMode::Source,
+        None,
+    );
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), original);
     write_plugin_declarations(&config_root, &declarations).unwrap();
     let (_store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
 
     let failed_discovery = manager
-        .install_remote(
-            InstallRemoteRequest {
-                declaration: PluginDeclaration {
-                    remote: proposed.remote.clone(),
-                    mode: DeclarationMode::Source,
-                    selection: GitSelection::Branch("missing".to_owned()),
-                    release: None,
-                },
+        .install(
+            ExplicitInstallRequest {
+                declaration: PluginDeclaration::from_git(
+                    proposed.git().unwrap().0,
+                    GitSelection::Branch("missing".to_owned()),
+                    DeclarationMode::Source,
+                    None,
+                ),
                 overwrite: None,
             },
             "failed-remote-discovery",
@@ -203,8 +203,8 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
     assert_eq!(failed_discovery[0].diagnostics[0].build_log_path, None);
 
     let confirmation = manager
-        .install_remote(
-            InstallRemoteRequest {
+        .install(
+            ExplicitInstallRequest {
                 declaration: proposed.clone(),
                 overwrite: None,
             },
@@ -222,8 +222,8 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
     write_plugin_declarations(&config_root, &declarations).unwrap();
     assert!(matches!(
         manager
-            .install_remote(
-                InstallRemoteRequest {
+            .install(
+                ExplicitInstallRequest {
                     declaration: proposed.clone(),
                     overwrite: Some(OverwriteAuthorization {
                         plugin_id: plugin_id.clone(),
@@ -243,8 +243,8 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
     );
 
     let refreshed = manager
-        .install_remote(
-            InstallRemoteRequest {
+        .install(
+            ExplicitInstallRequest {
                 declaration: proposed.clone(),
                 overwrite: None,
             },
@@ -254,8 +254,8 @@ async fn remote_install_overwrite_is_digest_bound_across_two_rpc_calls() {
         .unwrap();
     let current_digest = refreshed[0].confirmation_digest.unwrap();
     let installed = manager
-        .install_remote(
-            InstallRemoteRequest {
+        .install(
+            ExplicitInstallRequest {
                 declaration: proposed.clone(),
                 overwrite: Some(OverwriteAuthorization {
                     plugin_id: plugin_id.clone(),
@@ -308,17 +308,17 @@ async fn failed_git_phase_event_preserves_correlation_and_redacts_remote_credent
     });
     let (_store, _layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
     let secret = "remote-phase-super-secret";
-    let declaration = PluginDeclaration {
-        remote: format!("http://user:{secret}@{address}/plugin.git"),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Branch("main".to_owned()),
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        format!("http://user:{secret}@{address}/plugin.git"),
+        GitSelection::Branch("main".to_owned()),
+        DeclarationMode::Source,
+        None,
+    );
 
     let result = tokio::time::timeout(
         std::time::Duration::from_secs(10),
-        manager.install_remote(
-            InstallRemoteRequest {
+        manager.install(
+            ExplicitInstallRequest {
                 declaration,
                 overwrite: None,
             },
@@ -376,7 +376,7 @@ argv = ["{generation}/plugin"]
         "default_release": "opaque-v1",
         "releases": {
             "opaque-v1": {
-                "artifacts": [{
+                "packages": [{
                     "target": crate::plugin::package::local_target().unwrap(),
                     "url": Url::from_file_path(&archive).unwrap().to_string(),
                     "archive": "tar.gz",
@@ -391,12 +391,12 @@ argv = ["{generation}/plugin"]
         serde_json::to_vec(&release_index).unwrap(),
     )
     .unwrap();
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/oll-release-test.git".to_owned(),
-        mode: DeclarationMode::Release,
-        selection: GitSelection::Revision("1".repeat(40)),
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/oll-release-test.git",
+        GitSelection::Revision("1".repeat(40)),
+        DeclarationMode::Release,
+        None,
+    );
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration.clone());
     write_plugin_declarations(&config_root, &declarations).unwrap();
@@ -472,7 +472,7 @@ argv = ["{generation}/plugin"]
         failed
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.code == "artifact_checksum_mismatch")
+            .any(|diagnostic| diagnostic.code == "release_package_checksum_mismatch")
     );
     assert_eq!(
         store
@@ -493,7 +493,7 @@ argv = ["{generation}/plugin"]
     let lifecycle_log = fs::read_to_string(directory.path().join("logs/oll.log")).unwrap();
     assert!(lifecycle_log.contains("plugin_package_release_download_succeeded"));
     assert!(lifecycle_log.contains("plugin_package_release_download_failed"));
-    assert!(lifecycle_log.contains("artifact_checksum_mismatch"));
+    assert!(lifecycle_log.contains("release_package_checksum_mismatch"));
     assert!(
         lifecycle_log
             .lines()
@@ -527,12 +527,12 @@ argv = ["/bin/true"]
 "#,
     )
     .unwrap();
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/source-dependency-test.git".to_owned(),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Revision("1".repeat(40)),
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/source-dependency-test.git",
+        GitSelection::Revision("1".repeat(40)),
+        DeclarationMode::Source,
+        None,
+    );
 
     let prepared = manager
         .prepare_candidate(
@@ -592,7 +592,7 @@ argv = ["{install}/plugin"]
             "plugin_id": plugin_id.as_str(),
             "releases": {
                 "cancel": {
-                    "artifacts": [{
+                    "packages": [{
                         "target": crate::plugin::package::local_target().unwrap(),
                         "url": format!("http://{address}/release.tar.gz"),
                         "archive": "tar.gz",
@@ -605,12 +605,12 @@ argv = ["{install}/plugin"]
         .unwrap(),
     )
     .unwrap();
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/oll-release-cancel-test.git".to_owned(),
-        mode: DeclarationMode::Release,
-        selection: GitSelection::Revision("1".repeat(40)),
-        release: Some("cancel".to_owned()),
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/oll-release-cancel-test.git",
+        GitSelection::Revision("1".repeat(40)),
+        DeclarationMode::Release,
+        Some("cancel".to_owned()),
+    );
     let (accepted, accepted_rx) = tokio::sync::oneshot::channel();
     let server = tokio::spawn(async move {
         let (_stream, _) = listener.accept().await.unwrap();
@@ -653,7 +653,7 @@ argv = ["{install}/plugin"]
     server.abort();
     assert_eq!(result.outcome, PackageOperationOutcome::Failed);
     assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == "artifact_download_failed" && diagnostic.phase == "download"
+        diagnostic.code == "release_package_download_failed" && diagnostic.phase == "download"
     }));
     assert!(matches!(
         store

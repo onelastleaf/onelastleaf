@@ -226,6 +226,27 @@ fn preparation_resolves_only_each_intents_required_resources() {
 }
 
 #[test]
+fn local_plugin_install_path_is_resolved_in_the_client_working_directory() {
+    let environment = Environment {
+        config: Some(PathBuf::from("/deployment/config")),
+        ..Environment::default()
+    };
+    let prepared = intent(&["oll", "plugin", "install", "../plugin"])
+        .prepare(&environment, Path::new("/work/project"))
+        .unwrap();
+    let PreparedCliIntent::Client(prepared) = prepared else {
+        panic!()
+    };
+    assert!(matches!(
+        prepared.intent,
+        CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit {
+            location: PluginInstallLocation::Local(ref path),
+            ..
+        })) if path == Path::new("/work/project/../plugin")
+    ));
+}
+
+#[test]
 fn init_preparation_makes_persisted_roots_absolute_from_startup_cwd() {
     let cwd = Path::new("/startup/cwd");
     let prepared = intent(&[

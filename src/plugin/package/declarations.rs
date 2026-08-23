@@ -37,17 +37,82 @@ pub enum GitSelection {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case", tag = "kind")]
+pub enum DeclarationLocation {
+    Git {
+        remote: String,
+        selection: GitSelection,
+    },
+    Local {
+        path: PathBuf,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PluginDeclaration {
-    pub remote: String,
+    pub location: DeclarationLocation,
     pub mode: DeclarationMode,
-    pub selection: GitSelection,
     pub release: Option<String>,
 }
 
 impl PluginDeclaration {
+    pub fn from_git(
+        remote: impl Into<String>,
+        selection: GitSelection,
+        mode: DeclarationMode,
+        release: Option<String>,
+    ) -> Self {
+        Self {
+            location: DeclarationLocation::Git {
+                remote: remote.into(),
+                selection,
+            },
+            mode,
+            release,
+        }
+    }
+
+    pub fn from_local(path: PathBuf, mode: DeclarationMode, release: Option<String>) -> Self {
+        Self {
+            location: DeclarationLocation::Local { path },
+            mode,
+            release,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), PackageError> {
-        GitRemote::from_str(&self.remote)
-            .map_err(|message| PackageError::new("git_remote_invalid", "declaration", message))?;
+        match &self.location {
+            DeclarationLocation::Git { remote, selection } => {
+                GitRemote::from_str(remote).map_err(|message| {
+                    PackageError::new("git_remote_invalid", "declaration", message)
+                })?;
+                match selection {
+                    GitSelection::Default => {}
+                    GitSelection::Branch(value) | GitSelection::Revision(value)
+                        if value.is_empty() =>
+                    {
+                        return Err(schema_error("declaration branch and rev must not be empty"));
+                    }
+                    GitSelection::Branch(_) | GitSelection::Revision(_) => {}
+                }
+            }
+            DeclarationLocation::Local { path } => {
+                if !path.is_absolute() {
+                    return Err(PackageError::new(
+                        "local_path_invalid",
+                        "declaration",
+                        "local plugin path must be absolute",
+                    ));
+                }
+                if path.to_str().is_none() {
+                    return Err(PackageError::new(
+                        "local_path_invalid",
+                        "declaration",
+                        "local plugin path must be valid UTF-8",
+                    ));
+                }
+            }
+        }
         match (&self.mode, &self.release) {
             (DeclarationMode::Source, Some(_)) => Err(PackageError::new(
                 "plugin_config_schema",
@@ -71,11 +136,28 @@ impl PluginDeclaration {
         Sha256::digest(encoded).into()
     }
 
-    pub fn sanitized_remote(&self) -> String {
-        self.remote
-            .parse::<GitRemote>()
-            .map(|remote| remote.to_string())
-            .unwrap_or_else(|_| "<invalid-remote>".to_owned())
+    pub fn git(&self) -> Option<(&str, &GitSelection)> {
+        match &self.location {
+            DeclarationLocation::Git { remote, selection } => Some((remote, selection)),
+            DeclarationLocation::Local { .. } => None,
+        }
+    }
+
+    pub fn local_path(&self) -> Option<&Path> {
+        match &self.location {
+            DeclarationLocation::Git { .. } => None,
+            DeclarationLocation::Local { path } => Some(path),
+        }
+    }
+
+    pub fn sanitized_remote(&self) -> Option<String> {
+        let (remote, _) = self.git()?;
+        Some(
+            remote
+                .parse::<GitRemote>()
+                .map(|remote| remote.to_string())
+                .unwrap_or_else(|_| "<invalid-remote>".to_owned()),
+        )
     }
 }
 
@@ -151,25 +233,40 @@ impl PluginDeclarations {
         for (plugin_id, declaration) in &self.entries {
             output.push_str("    [");
             output.push_str(&lua_string(plugin_id.as_str()));
-            output.push_str("] = {\n        remote = ");
-            output.push_str(&lua_string(&declaration.remote));
-            output.push_str(",\n        mode = ");
+            output.push_str("] = {\n");
+            match &declaration.location {
+                DeclarationLocation::Git { remote, .. } => {
+                    output.push_str("        remote = ");
+                    output.push_str(&lua_string(remote));
+                    output.push_str(",\n");
+                }
+                DeclarationLocation::Local { path } => {
+                    output.push_str("        path = ");
+                    output.push_str(&lua_string(
+                        path.to_str().expect("a validated local path is UTF-8"),
+                    ));
+                    output.push_str(",\n");
+                }
+            }
+            output.push_str("        mode = ");
             output.push_str(&lua_string(match declaration.mode {
                 DeclarationMode::Source => "source",
                 DeclarationMode::Release => "release",
             }));
             output.push_str(",\n");
-            match &declaration.selection {
-                GitSelection::Default => {}
-                GitSelection::Branch(branch) => {
-                    output.push_str("        branch = ");
-                    output.push_str(&lua_string(branch));
-                    output.push_str(",\n");
-                }
-                GitSelection::Revision(revision) => {
-                    output.push_str("        rev = ");
-                    output.push_str(&lua_string(revision));
-                    output.push_str(",\n");
+            if let DeclarationLocation::Git { selection, .. } = &declaration.location {
+                match selection {
+                    GitSelection::Default => {}
+                    GitSelection::Branch(branch) => {
+                        output.push_str("        branch = ");
+                        output.push_str(&lua_string(branch));
+                        output.push_str(",\n");
+                    }
+                    GitSelection::Revision(revision) => {
+                        output.push_str("        rev = ");
+                        output.push_str(&lua_string(revision));
+                        output.push_str(",\n");
+                    }
                 }
             }
             if let Some(release) = &declaration.release {
@@ -202,6 +299,79 @@ pub fn read_plugin_declarations(config_root: &Path) -> Result<PluginDeclarations
         )
     })?;
     PluginDeclarations::parse(&source)
+}
+
+pub(crate) fn canonicalize_local_workspace(
+    path: &Path,
+    protected_roots: &[&Path],
+) -> Result<PathBuf, PackageError> {
+    let canonical = fs::canonicalize(path).map_err(|error| {
+        PackageError::io(
+            "local_path_invalid",
+            "declaration",
+            "cannot resolve local plugin workspace",
+            error,
+        )
+    })?;
+    if canonical.to_str().is_none() {
+        return Err(PackageError::new(
+            "local_path_invalid",
+            "declaration",
+            "local plugin workspace path must be valid UTF-8",
+        ));
+    }
+    let metadata = fs::metadata(&canonical).map_err(|error| {
+        PackageError::io(
+            "local_path_invalid",
+            "declaration",
+            "cannot inspect local plugin workspace",
+            error,
+        )
+    })?;
+    if !metadata.is_dir() {
+        return Err(PackageError::new(
+            "local_path_invalid",
+            "declaration",
+            "local plugin workspace must be a directory",
+        ));
+    }
+    for root in protected_roots {
+        let protected = fs::canonicalize(root).map_err(|error| {
+            PackageError::io(
+                "local_path_invalid",
+                "declaration",
+                "cannot resolve oll-owned state",
+                error,
+            )
+        })?;
+        if paths_overlap(&canonical, &protected) {
+            return Err(PackageError::new(
+                "local_path_invalid",
+                "declaration",
+                "local plugin workspace must not overlap oll-owned state",
+            ));
+        }
+    }
+    Ok(canonical)
+}
+
+pub(crate) fn validate_canonical_local_workspace(
+    path: &Path,
+    protected_roots: &[&Path],
+) -> Result<PathBuf, PackageError> {
+    let canonical = canonicalize_local_workspace(path, protected_roots)?;
+    if canonical.as_os_str() != path.as_os_str() {
+        return Err(PackageError::new(
+            "local_path_invalid",
+            "declaration",
+            "plugins.lua local path must be canonical",
+        ));
+    }
+    Ok(canonical)
+}
+
+fn paths_overlap(left: &Path, right: &Path) -> bool {
+    left.starts_with(right) || right.starts_with(left)
 }
 
 pub fn write_plugin_declarations(
@@ -381,14 +551,15 @@ fn decode_declaration(value: DecodedLiteral) -> Result<PluginDeclaration, Packag
     for field in fields.keys() {
         if !matches!(
             field.as_str(),
-            "remote" | "mode" | "branch" | "rev" | "release"
+            "remote" | "path" | "mode" | "branch" | "rev" | "release"
         ) {
             return Err(schema_error(format!(
                 "declaration contains unknown field {field}"
             )));
         }
     }
-    let remote = take_required_string(&mut fields, "remote")?;
+    let remote = take_optional_string(&mut fields, "remote")?;
+    let path = take_optional_string(&mut fields, "path")?;
     let mode = match take_optional_string(&mut fields, "mode")?.as_deref() {
         None | Some("source") => DeclarationMode::Source,
         Some("release") => DeclarationMode::Release,
@@ -398,35 +569,49 @@ fn decode_declaration(value: DecodedLiteral) -> Result<PluginDeclaration, Packag
     };
     let branch = take_optional_string(&mut fields, "branch")?;
     let revision = take_optional_string(&mut fields, "rev")?;
-    let selection = match (branch, revision) {
-        (None, None) => GitSelection::Default,
-        (Some(branch), None) if !branch.is_empty() => GitSelection::Branch(branch),
-        (None, Some(revision)) if !revision.is_empty() => GitSelection::Revision(revision),
-        (Some(_), Some(_)) => {
+    let location = match (remote, path) {
+        (Some(remote), None) => {
+            let selection = match (branch, revision) {
+                (None, None) => GitSelection::Default,
+                (Some(branch), None) if !branch.is_empty() => GitSelection::Branch(branch),
+                (None, Some(revision)) if !revision.is_empty() => GitSelection::Revision(revision),
+                (Some(_), Some(_)) => {
+                    return Err(schema_error(
+                        "declaration branch and rev are mutually exclusive",
+                    ));
+                }
+                _ => {
+                    return Err(schema_error("declaration branch and rev must not be empty"));
+                }
+            };
+            DeclarationLocation::Git { remote, selection }
+        }
+        (None, Some(path)) if branch.is_none() && revision.is_none() => {
+            DeclarationLocation::Local {
+                path: PathBuf::from(path),
+            }
+        }
+        (None, Some(_)) => {
             return Err(schema_error(
-                "declaration branch and rev are mutually exclusive",
+                "declaration branch and rev are forbidden with path",
             ));
         }
-        _ => {
-            return Err(schema_error("declaration branch and rev must not be empty"));
+        (Some(_), Some(_)) => {
+            return Err(schema_error(
+                "declaration remote and path are mutually exclusive",
+            ));
+        }
+        (None, None) => {
+            return Err(schema_error("declaration requires remote or path"));
         }
     };
     let declaration = PluginDeclaration {
-        remote,
+        location,
         mode,
-        selection,
         release: take_optional_string(&mut fields, "release")?,
     };
     declaration.validate()?;
     Ok(declaration)
-}
-
-fn take_required_string(
-    fields: &mut BTreeMap<String, DecodedLiteral>,
-    name: &str,
-) -> Result<String, PackageError> {
-    take_optional_string(fields, name)?
-        .ok_or_else(|| schema_error(format!("declaration requires {name}")))
 }
 
 fn take_optional_string(
@@ -493,8 +678,13 @@ return {
 "#;
         let parsed = PluginDeclarations::parse(input).unwrap();
         assert_eq!(
-            parsed.get(&"oll.anki".parse().unwrap()).unwrap().selection,
-            GitSelection::Branch("releases".to_owned())
+            parsed
+                .get(&"oll.anki".parse().unwrap())
+                .unwrap()
+                .git()
+                .unwrap()
+                .1,
+            &GitSelection::Branch("releases".to_owned())
         );
         let encoded = parsed.to_lua();
         assert_eq!(encoded.matches("branch =").count(), 1);
@@ -580,11 +770,9 @@ return {
         )
         .unwrap();
         let declaration = declarations.get(&"oll.test".parse().unwrap()).unwrap();
-        assert_eq!(declaration.remote, "https://example.test/repo.git");
-        assert_eq!(
-            declaration.selection,
-            GitSelection::Branch("release/v1".to_owned())
-        );
+        let (remote, selection) = declaration.git().unwrap();
+        assert_eq!(remote, "https://example.test/repo.git");
+        assert_eq!(selection, &GitSelection::Branch("release/v1".to_owned()));
         assert_eq!(
             PluginDeclarations::parse(&declarations.to_lua()).unwrap(),
             declarations
@@ -612,5 +800,38 @@ return {
             r#"return { ["oll.test"] = { remote = "https://e/x", desired_state = "running" } }"#,
         );
         assert_eq!(result.unwrap_err().code(), "plugin_config_schema");
+    }
+
+    #[test]
+    fn local_declarations_round_trip_without_git_selection() {
+        let parsed = PluginDeclarations::parse(
+            r#"return { ["oll.local"] = {
+                path = "/work/plugin",
+                mode = "release",
+                release = "dev",
+            } }"#,
+        )
+        .unwrap();
+        let declaration = parsed.get(&"oll.local".parse().unwrap()).unwrap();
+        assert_eq!(declaration.local_path(), Some(Path::new("/work/plugin")));
+        assert!(declaration.git().is_none());
+        assert_eq!(PluginDeclarations::parse(&parsed.to_lua()).unwrap(), parsed);
+
+        for (invalid, code) in [
+            (
+                r#"return { ["oll.local"] = { path = "relative" } }"#,
+                "local_path_invalid",
+            ),
+            (
+                r#"return { ["oll.local"] = { path = "/work/plugin", branch = "main" } }"#,
+                "plugin_config_schema",
+            ),
+            (
+                r#"return { ["oll.local"] = { path = "/work/plugin", remote = "https://example.test/p.git" } }"#,
+                "plugin_config_schema",
+            ),
+        ] {
+            assert_eq!(PluginDeclarations::parse(invalid).unwrap_err().code(), code);
+        }
     }
 }

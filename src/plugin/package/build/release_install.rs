@@ -11,7 +11,8 @@ use serde_json::json;
 
 use crate::node::logging::LogLevel;
 use crate::plugin::package::{
-    ArchiveKind, ReleaseIndex, extract_release_archive, local_target, stage_release_download,
+    ArchiveKind, DeclarationLocation, ReleaseIndex, extract_release_archive, local_target,
+    stage_local_release_package, stage_release_download,
 };
 
 use super::validation::validate_platform_archive;
@@ -31,58 +32,72 @@ impl CandidateBuilder {
             install,
             candidate_guard,
         } = request;
-        let release_source = fs::read_to_string(
-            resolved.checkout.source_root.join("oll-release.json"),
-        )
-        .map_err(|error| {
-            PackageError::io(
-                "release_index_missing",
-                "release_index",
-                "selected repository has no readable oll-release.json",
-                error,
-            )
-        })?;
+        let release_source = fs::read_to_string(resolved.source_root().join("oll-release.json"))
+            .map_err(|error| {
+                PackageError::io(
+                    "release_index_missing",
+                    "release_index",
+                    "selected package location has no readable oll-release.json",
+                    error,
+                )
+            })?;
         let index = ReleaseIndex::parse(&release_source, &resolved.publisher)?;
         let release_id = index
             .resolve_release_id(declaration.release.as_deref())?
             .to_owned();
-        let artifact = index.select(&release_id, local_target()?)?;
-        let archive_kind = artifact.archive;
+        let package = index.select(&release_id, local_target()?)?;
+        let archive_kind = package.archive;
         validate_platform_archive(archive_kind)?;
         let archive = resolved.staging.join(match archive_kind {
             ArchiveKind::TarGz => "release.tar.gz",
             ArchiveKind::Zip => "release.zip",
         });
-        let download_started = Instant::now();
+        let local_package = matches!(&declaration.location, DeclarationLocation::Local { .. });
+        let (phase, started_event, succeeded_event, failed_event) = if local_package {
+            (
+                "release_copy",
+                "plugin_package_release_copy_started",
+                "plugin_package_release_copy_succeeded",
+                "plugin_package_release_copy_failed",
+            )
+        } else {
+            (
+                "release_download",
+                "plugin_package_release_download_started",
+                "plugin_package_release_download_succeeded",
+                "plugin_package_release_download_failed",
+            )
+        };
+        let staging_started = Instant::now();
         self.logger.emit(
             LogLevel::Info,
             "oll::plugin::package",
-            "plugin_package_release_download_started",
+            started_event,
             correlation_id,
             json!({
-                "package_phase": "release_download",
+                "package_phase": phase,
                 "plugin_id": resolved.plugin_id.as_str(),
                 "plugin_name": resolved.plugin_name.as_str(),
                 "package_operation_id": operation_id,
                 "install_generation": generation.to_string(),
                 "build_log_path": resolved.build_log.display().to_string(),
                 "release_id": release_id,
-                "target": artifact.target,
-                "expected_bytes": artifact.size_bytes,
+                "target": package.target,
+                "expected_bytes": package.size_bytes,
             }),
         );
-        let mut download_cancellation = PhaseCancellationGuard::new(
+        let mut staging_cancellation = PhaseCancellationGuard::new(
             Arc::clone(&self.logger),
-            "plugin_package_release_download_failed",
+            failed_event,
             correlation_id,
             json!({
-                "package_phase": "release_download",
+                "package_phase": phase,
                 "plugin_id": resolved.plugin_id.as_str(),
                 "plugin_name": resolved.plugin_name.as_str(),
                 "package_operation_id": operation_id,
                 "install_generation": generation.to_string(),
                 "release_id": release_id,
-                "target": artifact.target,
+                "target": package.target,
             }),
         );
         let mut shutdown = self.shutdown.clone();
@@ -96,51 +111,67 @@ impl CandidateBuilder {
                 }
             }
         };
-        let download = tokio::select! {
-            result = stage_release_download(artifact, &archive) => result,
-            () = shutdown_requested => {
-                Err(PackageError::new(
-                    "artifact_download_failed",
-                    "download",
-                    "release download was cancelled by daemon shutdown",
-                ))
+        let staging = async {
+            match &declaration.location {
+                DeclarationLocation::Git { .. } => stage_release_download(package, &archive).await,
+                DeclarationLocation::Local { .. } => {
+                    stage_local_release_package(package, resolved.source_root(), &archive).await
+                }
             }
         };
-        download_cancellation.complete();
-        match download {
-            Ok(()) => self.logger.emit(
+        let staged = tokio::select! {
+            result = staging => result,
+            () = shutdown_requested => {
+                if local_package {
+                    Err(PackageError::new(
+                        "operation_cancelled",
+                        "release_copy",
+                        "local release package copy was cancelled by daemon shutdown",
+                    ))
+                } else {
+                    Err(PackageError::new(
+                        "release_package_download_failed",
+                        "download",
+                        "release download was cancelled by daemon shutdown",
+                    ))
+                }
+            }
+        };
+        staging_cancellation.complete();
+        match staged {
+            Ok(bytes) => self.logger.emit(
                 LogLevel::Info,
                 "oll::plugin::package",
-                "plugin_package_release_download_succeeded",
+                succeeded_event,
                 correlation_id,
                 json!({
-                    "package_phase": "release_download",
+                    "package_phase": phase,
                     "plugin_id": resolved.plugin_id.as_str(),
                     "plugin_name": resolved.plugin_name.as_str(),
                     "package_operation_id": operation_id,
                     "install_generation": generation.to_string(),
                     "release_id": release_id,
-                    "target": artifact.target,
-                    "bytes": artifact.size_bytes,
-                    "duration_ms": download_started.elapsed().as_millis(),
+                    "target": package.target,
+                    "bytes": bytes,
+                    "duration_ms": staging_started.elapsed().as_millis(),
                 }),
             ),
             Err(error) => {
                 self.logger.emit(
                     LogLevel::Error,
                     "oll::plugin::package",
-                    "plugin_package_release_download_failed",
+                    failed_event,
                     correlation_id,
                     json!({
-                        "package_phase": "release_download",
+                        "package_phase": phase,
                         "plugin_id": resolved.plugin_id.as_str(),
                         "plugin_name": resolved.plugin_name.as_str(),
                         "package_operation_id": operation_id,
                         "install_generation": generation.to_string(),
                         "release_id": release_id,
-                        "target": artifact.target,
+                        "target": package.target,
                         "error_code": error.code(),
-                        "duration_ms": download_started.elapsed().as_millis(),
+                        "duration_ms": staging_started.elapsed().as_millis(),
                     }),
                 );
                 return Err(error);

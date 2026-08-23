@@ -3,13 +3,13 @@ use std::io::Cursor;
 use serde_json::json;
 
 use crate::{
-    cli::{GitSelector, PluginInstallMode, PluginLogTarget},
+    cli::{GitSelector, PluginInstallLocation, PluginInstallMode, PluginLogTarget},
     protocol::oll::{self, plugin_git_selection, plugin_selector},
 };
 
 use super::{
-    OverwriteAuthorization, authorize_remote, confirm_overwrite_with, local, new_operation_id,
-    output, overwrite_authorization, parse_job_id, parse_plugin_selector, remote_install_request,
+    OverwriteAuthorization, authorize_install, confirm_overwrite_with, install_request, local,
+    new_operation_id, output, overwrite_authorization, parse_job_id, parse_plugin_selector,
 };
 
 #[test]
@@ -46,16 +46,20 @@ fn generated_operation_ids_are_random_uuid_v4_values() {
 }
 
 #[test]
-fn overwrite_authorization_preserves_the_original_remote_request() {
-    let remote = remote_install_request(
-        "ssh://git@example.test/publisher/plugin.git",
+fn overwrite_authorization_preserves_the_original_install_request() {
+    let install = install_request(
+        PluginInstallLocation::Remote(Box::new(
+            "ssh://git@example.test/publisher/plugin.git"
+                .parse()
+                .unwrap(),
+        )),
         GitSelector::Branch("stable".to_owned()),
         PluginInstallMode::Release {
             release_id: Some("release-7".to_owned()),
         },
     );
-    let authorized = authorize_remote(
-        remote.clone(),
+    let authorized = authorize_install(
+        install.clone(),
         OverwriteAuthorization {
             plugin_id: oll::PluginId {
                 value: "oll.example".to_owned(),
@@ -65,9 +69,9 @@ fn overwrite_authorization_preserves_the_original_remote_request() {
         },
     );
 
-    assert_eq!(authorized.remote, remote.remote);
-    assert_eq!(authorized.mode, remote.mode);
-    assert_eq!(authorized.release_id, remote.release_id);
+    assert_eq!(authorized.location, install.location);
+    assert_eq!(authorized.mode, install.mode);
+    assert_eq!(authorized.release_id, install.release_id);
     assert!(matches!(
         authorized.selection.and_then(|value| value.selection),
         Some(plugin_git_selection::Selection::Branch(value)) if value == "stable"
@@ -79,14 +83,33 @@ fn overwrite_authorization_preserves_the_original_remote_request() {
 
 #[test]
 fn default_release_install_omits_the_release_id() {
-    let remote = remote_install_request(
-        "https://example.test/publisher/plugin.git",
+    let install = install_request(
+        PluginInstallLocation::Remote(Box::new(
+            "https://example.test/publisher/plugin.git".parse().unwrap(),
+        )),
         GitSelector::Default,
         PluginInstallMode::Release { release_id: None },
     );
 
-    assert_eq!(remote.mode, oll::PluginPackageMode::Release as i32);
-    assert!(remote.release_id.is_none());
+    assert_eq!(install.mode, oll::PluginPackageMode::Release as i32);
+    assert!(install.release_id.is_none());
+}
+
+#[test]
+fn local_install_request_preserves_native_path_bytes() {
+    let install = install_request(
+        PluginInstallLocation::Local("/tmp/local-plugin".into()),
+        GitSelector::Default,
+        PluginInstallMode::Source,
+    );
+
+    assert!(matches!(
+        install.location,
+        Some(oll::install_plugin::Location::LocalPath(oll::NativePath {
+            unix_path
+        })) if unix_path == b"/tmp/local-plugin"
+    ));
+    assert!(install.selection.is_none());
 }
 
 #[test]
@@ -245,7 +268,9 @@ fn plugin_info_json_contains_every_documented_section() {
     let details = oll::PluginDetails {
         summary: Some(plugin_summary()),
         declaration: Some(oll::PluginDeclaration {
-            sanitized_remote: "https://example.test/plugin.git".to_owned(),
+            location: Some(oll::plugin_declaration::Location::SanitizedRemote(
+                "https://example.test/plugin.git".to_owned(),
+            )),
             mode: oll::PluginPackageMode::Source as i32,
             selection: None,
             release_id: None,

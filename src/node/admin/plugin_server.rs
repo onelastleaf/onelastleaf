@@ -23,8 +23,8 @@ pub(super) async fn reconcile_installations(
         DecodedReconcileOperation::InstallDeclared => {
             state.plugins.install_declared(correlation_id).await
         }
-        DecodedReconcileOperation::InstallRemote(request) => {
-            state.plugins.install_remote(request, correlation_id).await
+        DecodedReconcileOperation::Install(request) => {
+            state.plugins.install(request, correlation_id).await
         }
         DecodedReconcileOperation::Update(selector) => {
             state.plugins.update(&selector, correlation_id).await

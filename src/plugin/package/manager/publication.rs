@@ -33,7 +33,7 @@ impl PackageManager {
             normalized_declaration: candidate.built.declaration_bytes.clone(),
             declaration_sha256: candidate.built.declaration_sha256,
             effective_manifest: candidate.built.effective_manifest_bytes.clone(),
-            selected_commit: Some(candidate.built.selected_commit.clone()),
+            selected_commit: candidate.built.selected_commit.clone(),
             install_mode: candidate.built.install_mode,
             release_id: candidate.built.release_id.clone(),
             correlation_id: candidate.correlation_id.clone(),

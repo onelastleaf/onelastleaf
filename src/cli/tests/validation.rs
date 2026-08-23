@@ -14,7 +14,7 @@ fn intent_whitelist_rejects_invalid_programmatic_states() {
     let install = Cli {
         command: Command::Plugin(PluginArgs {
             command: PluginCommand::Install {
-                repository: Some("https://example.com/plugin.git".parse().unwrap()),
+                location: Some("https://example.com/plugin.git".into()),
                 rev: Some("v1".to_owned()),
                 branch: Some("main".to_owned()),
                 release: Some(Some("release-1".to_owned())),
@@ -28,7 +28,7 @@ fn intent_whitelist_rejects_invalid_programmatic_states() {
     let missing_remote = Cli {
         command: Command::Plugin(PluginArgs {
             command: PluginCommand::Install {
-                repository: None,
+                location: None,
                 rev: None,
                 branch: Some("main".to_owned()),
                 release: None,

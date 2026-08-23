@@ -45,51 +45,75 @@ impl PackageManager {
         Ok(vec![self.finish_single(prepared).await])
     }
 
-    pub async fn install_remote(
+    pub async fn install(
         &self,
-        request: InstallRemoteRequest,
+        mut request: ExplicitInstallRequest,
         correlation_id: &str,
     ) -> Result<Vec<PackageOperationResult>, PluginError> {
         require_correlation(correlation_id)?;
         self.require_package_admission().await?;
+        if let DeclarationLocation::Local { path } = &mut request.declaration.location {
+            match canonicalize_local_workspace(path, &[&self.config_root, self.layout.root()]) {
+                Ok(canonical) => *path = canonical,
+                Err(error) => {
+                    return Ok(vec![PackageOperationResult::failed(
+                        None,
+                        None,
+                        PackageDiagnostic::from_package(error)
+                            .with_declaration(&request.declaration),
+                    )]);
+                }
+            }
+        }
         request
             .declaration
             .validate()
             .map_err(package_configuration_error)?;
         let operation_id = Uuid::new_v4().to_string();
-        let staging = match self.layout.resolution_directory(&operation_id) {
-            Ok(staging) => staging,
-            Err(error) => {
-                return Ok(vec![PackageOperationResult::failed(
-                    None,
-                    None,
-                    PackageDiagnostic::from_package(error).with_declaration(&request.declaration),
-                )]);
+        let mut resolution_guard = None;
+        let mut discovery_log = None;
+        let (source_root, existing_checkout, force_update) = match &request.declaration.location {
+            DeclarationLocation::Git { .. } => {
+                let staging = match self.layout.resolution_directory(&operation_id) {
+                    Ok(staging) => staging,
+                    Err(error) => {
+                        return Ok(vec![PackageOperationResult::failed(
+                            None,
+                            None,
+                            PackageDiagnostic::from_package(error)
+                                .with_declaration(&request.declaration),
+                        )]);
+                    }
+                };
+                resolution_guard = Some(StagingGuard(staging.clone()));
+                let log = staging.join("build.log");
+                let checkout = match self
+                    .builder
+                    .checkout(
+                        &request.declaration,
+                        &staging,
+                        &log,
+                        None,
+                        &operation_id,
+                        correlation_id,
+                    )
+                    .await
+                {
+                    Ok(checkout) => checkout,
+                    Err(error) => {
+                        let mut diagnostic = PackageDiagnostic::from_package(error)
+                            .with_declaration(&request.declaration);
+                        diagnostic.build_log_path = None;
+                        return Ok(vec![PackageOperationResult::failed(None, None, diagnostic)]);
+                    }
+                };
+                let source_root = checkout.source_root.clone();
+                discovery_log = Some(log);
+                (source_root, Some((operation_id.clone(), checkout)), false)
             }
+            DeclarationLocation::Local { path } => (path.clone(), None, true),
         };
-        let staging_guard = StagingGuard(staging.clone());
-        let discovery_log = staging.join("build.log");
-        let checkout = match self
-            .builder
-            .checkout(
-                &request.declaration,
-                &staging,
-                &discovery_log,
-                None,
-                &operation_id,
-                correlation_id,
-            )
-            .await
-        {
-            Ok(checkout) => checkout,
-            Err(error) => {
-                let mut diagnostic =
-                    PackageDiagnostic::from_package(error).with_declaration(&request.declaration);
-                diagnostic.build_log_path = None;
-                return Ok(vec![PackageOperationResult::failed(None, None, diagnostic)]);
-            }
-        };
-        let publisher_source = match fs::read_to_string(checkout.source_root.join("oll.toml")) {
+        let publisher_source = match fs::read_to_string(source_root.join("oll.toml")) {
             Ok(source) => source,
             Err(error) => {
                 return Ok(vec![PackageOperationResult::failed(
@@ -98,7 +122,7 @@ impl PackageManager {
                     PackageDiagnostic::from_package(PackageError::io(
                         "manifest_missing",
                         "manifest",
-                        "selected repository has no readable oll.toml",
+                        "selected package location has no readable oll.toml",
                         error,
                     ))
                     .with_declaration(&request.declaration),
@@ -172,11 +196,11 @@ impl PackageManager {
             .map_err(package_configuration_error)?;
         drop(_declaration_guard);
 
-        let retained_log = self
-            .layout
-            .build_log(&plugin_id, &operation_id)
-            .map_err(package_configuration_error)?;
-        if discovery_log.exists() {
+        if let Some(discovery_log) = discovery_log.filter(|path| path.exists()) {
+            let retained_log = self
+                .layout
+                .build_log(&plugin_id, &operation_id)
+                .map_err(package_configuration_error)?;
             fs::rename(&discovery_log, &retained_log)
                 .map_err(|error| PluginError::io("retain plugin discovery build log", error))?;
         }
@@ -184,13 +208,13 @@ impl PackageManager {
             .prepare_candidate(
                 plugin_id,
                 request.declaration,
-                false,
-                Some((operation_id, checkout)),
+                force_update,
+                existing_checkout,
                 correlation_id,
             )
             .await;
         let result = self.finish_single(prepared).await;
-        drop(staging_guard);
+        drop(resolution_guard);
         Ok(vec![result])
     }
 
@@ -214,25 +238,34 @@ impl PackageManager {
                 "plugin {plugin_id} has no declaration in plugins.lua"
             ))
         })?;
-        let operation_id = Uuid::new_v4().to_string();
-        let staging = self
-            .layout
-            .resolution_directory(&operation_id)
-            .map_err(package_configuration_error)?;
-        let _guard = StagingGuard(staging.clone());
-        let checkout = self
-            .builder
-            .checkout(
-                declaration,
-                &staging,
-                &staging.join("build.log"),
-                Some(&plugin_id),
-                &operation_id,
-                correlation_id,
-            )
-            .await
-            .map_err(|error| PluginError::FailedPrecondition(error.to_string()))?;
-        let publisher_source = fs::read_to_string(checkout.source_root.join("oll.toml"))
+        let mut _resolution_guard = None;
+        let source_root = match &declaration.location {
+            DeclarationLocation::Git { .. } => {
+                let operation_id = Uuid::new_v4().to_string();
+                let staging = self
+                    .layout
+                    .resolution_directory(&operation_id)
+                    .map_err(package_configuration_error)?;
+                _resolution_guard = Some(StagingGuard(staging.clone()));
+                self.builder
+                    .checkout(
+                        declaration,
+                        &staging,
+                        &staging.join("build.log"),
+                        Some(&plugin_id),
+                        &operation_id,
+                        correlation_id,
+                    )
+                    .await
+                    .map_err(|error| PluginError::FailedPrecondition(error.to_string()))?
+                    .source_root
+            }
+            DeclarationLocation::Local { path } => {
+                validate_canonical_local_workspace(path, &[&self.config_root, self.layout.root()])
+                    .map_err(package_configuration_error)?
+            }
+        };
+        let publisher_source = fs::read_to_string(source_root.join("oll.toml"))
             .map_err(|error| PluginError::io("read plugin publisher manifest", error))?;
         let publisher =
             PublisherManifest::parse(&publisher_source).map_err(package_configuration_error)?;
@@ -241,7 +274,7 @@ impl PackageManager {
                 "publisher PluginId differs from the declaration".to_owned(),
             ));
         }
-        let source = fs::read_to_string(checkout.source_root.join("oll-release.json"))
+        let source = fs::read_to_string(source_root.join("oll-release.json"))
             .map_err(|error| PluginError::io("read plugin release index", error))?;
         let index =
             ReleaseIndex::parse(&source, &publisher).map_err(package_configuration_error)?;

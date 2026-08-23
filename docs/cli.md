@@ -328,7 +328,7 @@ daemon's persistent background peer connection.
 
 ```text
 oll plugin install [--json]
-oll plugin install <git-remote>
+oll plugin install <git-remote-or-path>
   [--rev <revision> | --branch <branch>]
   [--release [<release-id>] | --source] [--json]
 oll plugin new <path> --language <language>
@@ -353,37 +353,42 @@ deployment, runs Git, or accesses the network. Its language values, destination
 publication rules, generated files, and SDK dependencies are fixed in
 `plugin-sdk.md`. It is distinct from `plugin install`: generation creates a new
 publisher source tree, while installation reconciles a user's deployment from
-an existing Git remote or `plugins.lua` declaration. If `--id` is omitted, the
-generator creates one immutable `generated.<uuid-v4>` PluginId and reports it
-with the completed project.
+an existing Git remote, local workspace, or `plugins.lua` declaration. If
+`--id` is omitted, the generator creates one immutable
+`generated.<uuid-v4>` PluginId and reports it with the completed project.
 
-`git-remote` accepts standard Git URLs and SCP-style SSH syntax such as
-`git@github.com:example/oll-anki.git`. Source installation is the default.
-`--release [<release-id>]` and `--source` conflict; `--rev` and `--branch`
-conflict. Source mode reads `oll.toml`; release mode also reads the explicit
-opaque release map in `oll-release.json` from the same selected repository
-state. An omitted release ID selects `default_release`, or the first release in
-JSON source order when that field is absent. oll neither parses semantic
-versions nor infers releases from filenames, URLs, tags, or branches.
+The location accepts a standard Git URL, SCP-style SSH remote such as
+`git@github.com:example/oll-anki.git`, or a local filesystem path. A relative
+local path is resolved against the client's launch directory before the Admin
+request. Remote-shaped values are never reinterpreted as paths after a syntax
+error. Source installation is the default. `--release [<release-id>]` and
+`--source` conflict; `--rev` and `--branch` conflict and are forbidden for a
+local path. Source mode reads `oll.toml`; release mode also reads the explicit
+opaque release map in `oll-release.json` from the same selected Git state or
+local workspace. An omitted release ID selects `default_release`, or the first
+release in JSON source order when that field is absent. A local release package
+uses its workspace-relative `path`; a Git release package uses its verified
+`url`. oll neither parses semantic versions nor infers releases from filenames,
+URLs, tags, or branches.
 
-Without a remote, `plugin install` installs missing or changed declarations from
-`<config-root>/plugins.lua`; it neither removes undeclared installations nor
-advances an otherwise unchanged branch. With a remote, the daemon resolves
-`oll.toml`, atomically adds that immutable PluginId's declaration, and installs
-from the newly reread file. If that ID already has another declaration, the
-first reconciliation RPC returns a digest-bound confirmation requirement. The
-CLI prompts and, only after a positive answer, repeats the same RPC with the
+Without a location, `plugin install` installs missing or changed declarations
+from `<config-root>/plugins.lua`; it neither removes undeclared installations
+nor advances an otherwise unchanged branch. With a remote or path, the daemon
+resolves `oll.toml`, atomically adds that immutable PluginId's declaration, and
+installs from the newly reread file. If that ID already has another declaration,
+the first reconciliation RPC returns a digest-bound confirmation requirement.
+The CLI prompts and, only after a positive answer, repeats the same RPC with the
 authorization and expected digest. A negative answer, EOF, unavailable input,
 or concurrent declaration change leaves it untouched. There is no confirmation
 RPC.
 
-`plugin update` advances the selected named/default branch and rebuilds only
-when the remote commit or local declaration/mask input changed. An exact `rev`
-never advances remotely, but a changed mask may still publish a new local
-generation. Update failure keeps the old current generation; success does not
-restart a running process, and a later startup failure does not silently roll
-back. Both PluginId and the current unique PluginName are accepted as selectors,
-but all filesystem and SQL ownership remains keyed by PluginId.
+`plugin update` advances a selected named/default Git branch and rebuilds only
+when its commit or declaration/mask input changed. An exact `rev` never advances
+remotely. A local declaration always rebuilds from the current workspace. Update
+failure keeps the old current generation; success does not restart a running
+process, and a later startup failure does not silently roll back. Both PluginId
+and the current unique PluginName are accepted as selectors, but all filesystem
+and SQL ownership remains keyed by PluginId.
 
 `plugin reconcile` makes the installed set exactly match `plugins.lua`: it
 installs missing declarations, applies declaration changes, and removes
@@ -399,13 +404,14 @@ PluginId. One download/build failure does not erase another item's success, but
 the CLI exits nonzero if any requested item failed or remained unresolved.
 
 `plugin validate` is local and read-only. It validates the literal-only syntax
-and schema of `<config-root>/plugins.lua` and every present typed mask without
-opening Admin, accessing a remote, running a recipe, or rewriting a file.
-`plugin releases` reads the selected repository's explicit release index and
-lists opaque IDs. A release declaration may omit its release ID to track the
-publisher default. The command does not choose a newest release or change
-installation state. Publisher and user formats, system-Git behavior, and
-diagnostics are defined in `plugin-packaging.md`.
+and schema of `<config-root>/plugins.lua`, including canonical existing local
+workspace paths, and every present typed mask without opening Admin, accessing
+a remote, running a recipe, or rewriting a file.
+`plugin releases` reads the selected Git state or local workspace's explicit
+release index and lists opaque IDs. A release declaration may omit its release
+ID to track the publisher default. The command does not choose a newest release
+or change installation state. Publisher and user formats, system-Git behavior,
+and diagnostics are defined in `plugin-packaging.md`.
 
 A generic plugin call waits only until the host has durably admitted the job and
 the plugin has returned `JobAccepted`, then prints its JobId. Arguments after
@@ -480,9 +486,11 @@ Plugin outcomes are `installed`, `updated`, `removed`, `already_satisfied`,
 JSON is `{"plugin_id": ..., "releases": [{"release_id": ..., "targets": [...]}]}`.
 `plugin info --json` uses one `plugin` object containing the same summary fields
 plus `declaration`, `effective_manifest`, `package_state`, `restart_state`,
-`process_instance`, and `job_counts` objects. The declaration's remote is
-sanitized. The effective manifest reports `source_checkout` as `source`,
-`install`, or `generation`. A present `last_error` is a diagnostic object.
+`process_instance`, and `job_counts` objects. A declaration contains nullable
+`sanitized_remote` and `local_path` fields; exactly one is non-null. The remote
+is sanitized, while the local path is the canonical UTF-8 workspace path. The
+effective manifest reports `source_checkout` as `source`, `install`, or
+`generation`. A present `last_error` is a diagnostic object.
 Absent generations, instances, and errors are JSON `null`, not omitted fields.
 `plugin call --json` returns exactly
 `{"job_id": ..., "state": "running"}` after `JobAccepted`.

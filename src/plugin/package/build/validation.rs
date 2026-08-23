@@ -137,7 +137,7 @@ pub(super) fn validate_platform_archive(kind: ArchiveKind) -> Result<(), Package
     match (std::env::consts::OS, kind) {
         ("linux", ArchiveKind::TarGz) | ("macos", ArchiveKind::Zip) => Ok(()),
         _ => Err(PackageError::new(
-            "artifact_unavailable",
+            "release_package_unavailable",
             "release_index",
             "release archive kind is not supported on this node platform",
         )),

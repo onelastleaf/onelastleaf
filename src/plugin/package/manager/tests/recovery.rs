@@ -252,10 +252,12 @@ async fn recovery_discards_stale_declaration_before_current_switch() {
     store.prepare_package_publish(&intent).await.unwrap();
     declarations.insert(
         plugin_id.clone(),
-        PluginDeclaration {
-            selection: GitSelection::Revision("2".repeat(40)),
-            ..declaration
-        },
+        PluginDeclaration::from_git(
+            declaration.git().unwrap().0,
+            GitSelection::Revision("2".repeat(40)),
+            declaration.mode,
+            declaration.release.clone(),
+        ),
     );
     write_plugin_declarations(&config_root, &declarations).unwrap();
 

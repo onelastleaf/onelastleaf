@@ -342,8 +342,25 @@ fn declaration_json(value: &oll::PluginDeclaration) -> Result<Value, NodeError> 
         }
         None => Value::Null,
     };
+    let (sanitized_remote, local_path) = match value.location.as_ref() {
+        Some(oll::plugin_declaration::Location::SanitizedRemote(remote)) => {
+            (Some(remote.as_str()), None)
+        }
+        Some(oll::plugin_declaration::Location::LocalPath(path)) => {
+            let path = std::str::from_utf8(&path.unix_path).map_err(|_| {
+                NodeError::Internal("daemon returned a non-UTF-8 local plugin path".to_owned())
+            })?;
+            (None, Some(path))
+        }
+        None => {
+            return Err(NodeError::Internal(
+                "daemon omitted plugin declaration location".to_owned(),
+            ));
+        }
+    };
     Ok(json!({
-        "sanitized_remote": value.sanitized_remote,
+        "sanitized_remote": sanitized_remote,
+        "local_path": local_path,
         "mode": mode,
         "selection": selection,
         "release_id": value.release_id,

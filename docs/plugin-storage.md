@@ -88,7 +88,8 @@ The plugin tables durably represent at least:
 
 - the immutable PluginId and current effective PluginName binding;
 - the normalized installation declaration and its digest;
-- the effective manifest, selected Git commit, source/release mode, selected
+- the effective manifest, Git remote or canonical local workspace, optional
+  selected Git commit, source/release mode, selected
   opaque release ID, current install generation, and a running instance's
   generation;
 - package transition and removal recovery records;
@@ -114,12 +115,13 @@ Install and update serialize per PluginId. Work for different IDs may progress
 independently, while `plugins.lua` replacement remains serialized for the whole
 deployment.
 
-One source build or release extraction follows this recovery boundary:
+One source build or release extraction follows this recovery boundary. A local
+workspace is borrowed build input and is never owned by recovery or cleanup:
 
 1. create a per-install build log and materialize the install tree according to
-   `source.checkout`: a separate source workspace plus candidate, the repository
-   directly in a candidate, or the repository directly in its final generation;
-   release extraction always uses a candidate;
+   `source.checkout`: a selected Git checkout or borrowed local workspace plus
+   candidate, a Git checkout/local-workspace copy in a candidate, or that copy
+   in its final generation; release extraction always uses a candidate;
 2. fetch, build or extract, then validate the complete effective manifest,
    target, runtime entrypoint, and install-tree contents;
 3. synchronize the completed tree and persist a SQL publish intent containing

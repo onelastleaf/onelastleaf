@@ -49,7 +49,7 @@ digraph C4_Plugin_Components {
     color="#666666"
   ];
   package_sources [
-    label="Plugin Package Sources\n[External Systems / Local Files]\nGit remotes and direct HTTP(S)/file release artifacts",
+    label="Plugin Package Sources\n[External Systems / Local Files]\nGit remotes, borrowed local workspaces, and direct release packages",
     fillcolor="#999999",
     fontcolor="white",
     color="#666666"
@@ -181,7 +181,7 @@ digraph C4_Plugin_Components {
   package_owner -> deployment_config [dir=both, label="Reads and atomically rewrites declarations; reads typed masks"];
   package_owner -> system_git [label="Executes argv-only fetch/checkout process groups"];
   system_git -> package_sources [label="Fetches selected repository state"];
-  package_owner -> package_sources [label="Streams direct release artifact bytes"];
+  package_owner -> package_sources [label="Borrows local source trees; copies local packages; streams remote packages"];
   package_owner -> package_data [dir=both, label="Builds candidates and atomically switches current"];
   package_owner -> store_adapter [label="Persists and recovers publish/removal intents"];
 

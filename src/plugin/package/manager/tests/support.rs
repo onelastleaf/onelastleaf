@@ -114,12 +114,12 @@ pub(super) fn package_intent(
 }
 
 pub(super) fn test_declaration(remote_name: &str) -> PluginDeclaration {
-    PluginDeclaration {
-        remote: format!("https://example.com/{remote_name}.git"),
-        mode: DeclarationMode::Source,
-        selection: GitSelection::Default,
-        release: None,
-    }
+    PluginDeclaration::from_git(
+        format!("https://example.com/{remote_name}.git"),
+        GitSelection::Default,
+        DeclarationMode::Source,
+        None,
+    )
 }
 
 pub(super) fn test_publisher(plugin_id: &PluginId, plugin_name: &PluginName) -> String {

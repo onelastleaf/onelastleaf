@@ -123,6 +123,19 @@ impl PackageManager {
                 PackageDiagnostic::shutting_down(),
             ));
         }
+        if let Some(path) = declaration.local_path() {
+            match validate_canonical_local_workspace(path, &[&self.config_root, self.layout.root()])
+            {
+                Ok(_) => {}
+                Err(error) => {
+                    return Resolved::Result(PackageOperationResult::failed(
+                        Some(plugin_id),
+                        None,
+                        PackageDiagnostic::from_package(error).with_declaration(&declaration),
+                    ));
+                }
+            }
+        }
         let installed = match installed_resolution {
             InstalledResolution::Snapshot(installed) => *installed,
             InstalledResolution::Lookup => match self
@@ -160,10 +173,12 @@ impl PackageManager {
             None => (None, None),
         };
         let mut checkout_guard = None;
-        if checkout.is_none()
-            && force_update
-            && !matches!(declaration.selection, GitSelection::Revision(_))
-        {
+        let advancing_git = force_update
+            && declaration
+                .git()
+                .is_some_and(|(_, selection)| !matches!(selection, GitSelection::Revision(_)));
+        let forced_local = force_update && declaration.local_path().is_some();
+        if checkout.is_none() && advancing_git {
             let checkout_operation_id = Uuid::new_v4().to_string();
             let staging = match self.layout.resolution_directory(&checkout_operation_id) {
                 Ok(path) => path,
@@ -220,7 +235,7 @@ impl PackageManager {
                     ));
                 }
             }
-        } else if checkout.is_none() && installed.is_some() && !inputs_changed {
+        } else if checkout.is_none() && installed.is_some() && !inputs_changed && !forced_local {
             return Resolved::Result(PackageOperationResult::satisfied(
                 plugin_id,
                 installed.expect("checked installed plugin").plugin_name,

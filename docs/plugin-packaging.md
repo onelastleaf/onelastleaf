@@ -5,8 +5,8 @@
 Plugins may be implemented in any language that can use the protobuf gRPC
 client contract. oll does not infer a language or classify a plugin as compiled
 or interpreted. A source package declares commands that prepare an install
-tree; a release package declares downloadable ready-to-launch artifacts. Both
-publish the same effective runtime manifest.
+tree; a release package declares ready-to-launch archives. Both publish the
+same effective runtime manifest.
 
 The official SDK and generated-project contract is defined in
 [plugin-sdk.md](plugin-sdk.md). Project generation is local scaffolding; it is
@@ -17,7 +17,7 @@ The package contract has four files with separate owners:
 | File | Owner | Purpose |
 | --- | --- | --- |
 | repository-root `oll.toml` | publisher | immutable identity, display name, source recipe, and runtime entrypoint |
-| repository-root `oll-release.json` | publisher | opaque releases and direct artifact URLs, targets, sizes, and hashes |
+| repository-root `oll-release.json` | publisher | opaque releases and direct package URLs, targets, sizes, and hashes |
 | `<config-root>/plugins.lua` | user and oll CLI | desired installation declarations |
 | `<config-root>/plugin-masks/<plugin-id>.toml` | user | typed overrides for permitted publisher-manifest fields |
 
@@ -30,7 +30,12 @@ execution contract is defined in [plugin-system.md](plugin-system.md).
 removal. A mask may change its effective name, but names remain globally unique
 within the deployment.
 
-## System Git and source selection
+## Package locations and Git selection
+
+Package location and package mode are independent. A declaration selects
+exactly one Git remote or one local workspace path, then selects `source` or
+`release` mode. Both locations use the same publisher manifest, source recipe,
+opaque release IDs, and target-package selection.
 
 oll invokes the user's installed `git` executable as an argv program. It does
 not embed a Rust Git implementation and does not invoke a shell. This preserves
@@ -70,6 +75,21 @@ Cancellation uses the same `SIGTERM`, bounded grace, `SIGKILL`, and reap
 sequence as a source recipe process group. Git receives no plugin runtime
 endpoint or liveness stdin contract.
 
+A local declaration stores one canonical absolute UTF-8 workspace path. The
+CLI resolves a relative path against its own launch directory before crossing
+the Admin UDS; the daemon canonicalizes the existing directory before writing
+`plugins.lua`. A local path has no branch, revision, or selected Git commit. It
+must not overlap the deployment config root or oll's managed plugin data root.
+oll borrows this directory and never renames, deletes, or treats it as cleanup-
+owned staging.
+
+An explicit `oll plugin install <path>` and `plugin update` always rebuild from
+the current workspace. No-argument install and exact reconciliation rebuild a
+local declaration only when its declaration or mask changed, or when no valid
+installed generation exists; oll does not hash or watch an arbitrary working
+tree. Local installation itself neither watches files nor restarts a running
+plugin.
+
 ## Publisher manifest
 
 `oll.toml` is strict UTF-8 TOML with explicit format version `1`. Its initial
@@ -107,16 +127,16 @@ installation:
 
 | Value | Source recipe working directory | Publication |
 | --- | --- | --- |
-| `source` | a private temporary repository checkout | recipe output is written to a candidate through `{install}`, then renamed into `generations/` |
-| `install` | the candidate install tree containing the repository checkout | the complete tree is renamed into `generations/` |
-| `generation` | the final `generations/<install-generation>/` directory containing the repository checkout | the directory is built in place and publication only switches `current` |
+| `source` | selected Git checkout or borrowed local workspace | recipe output is written to a candidate through `{install}`, then renamed into `generations/` |
+| `install` | candidate containing a Git checkout or local-workspace copy | the complete tree is renamed into `generations/` |
+| `generation` | final generation containing a Git checkout or local-workspace copy | the directory is built in place and publication only switches `current` |
 
 The publisher selects this value explicitly. oll does not infer it from a
 language or runtime. Both `source` and `install` require all files retained in
 the install tree to remain valid after the candidate-to-generation rename.
 `generation` exists for tools such as Python virtual environments that record
 their absolute installation prefix. Release-mode installation ignores
-`source.checkout` and always extracts its relocatable artifact through a
+`source.checkout` and always extracts its relocatable package through a
 candidate generation.
 
 Commands are argv arrays, never shell programs. Placeholder replacement occurs
@@ -129,8 +149,9 @@ the declared checkout:
 | `install` | `{install}`, `{mask_dir}` |
 | `generation` | `{generation}`, `{mask_dir}` |
 
-`{source}` is the private selected repository checkout. `{install}` is the
-candidate install-generation root, not the public `current` symlink.
+For a Git declaration, `{source}` is the private selected repository checkout;
+for a local declaration it is the original borrowed workspace. `{install}` is
+the candidate install-generation root, not the public `current` symlink.
 `{generation}` is the final UUID-named generation being built. `{mask_dir}` is
 the directory containing the selected user mask. There is no public staging
 placeholder.
@@ -141,8 +162,14 @@ errors. There is no shell expansion, command substitution, glob expansion, or
 environment interpolation. Runtime argv for `source` and `install` checkout may
 use only `{install}` and `{mask_dir}`. Runtime argv for `generation` checkout
 may use only `{generation}` and `{mask_dir}`. A source tree does not survive
-`source` publication, while install and generation placeholders are expanded
+`source` publication for a Git declaration; a local declaration continues to
+borrow its original workspace. Install and generation placeholders are expanded
 to the selected published generation at process spawn.
+
+Local `source` checkout deliberately runs each recipe in the live workspace so
+language tooling can reuse its normal incremental-build and dependency caches.
+oll does not snapshot or watch that workspace. For a deterministic build, edit
+it between install/update commands rather than while one is running.
 
 `source.dependencies` is a table from executable to nonempty diagnostic hint.
 Dependencies declare executable capabilities only. A basename is resolved
@@ -229,8 +256,8 @@ replaced when present rather than merged by executable. `steps = []` clears all
 steps, and a present empty `[source.dependencies]` clears all dependencies.
 Unknown fields are errors.
 
-A mask cannot contain or replace `plugin.id`, release IDs, artifact target,
-URL, archive kind, size, SHA-256, or other artifact integrity metadata. It may
+A mask cannot contain or replace `plugin.id`, release IDs, package target, URL,
+archive kind, size, SHA-256, or other release-package integrity metadata. It may
 replace `plugin.name`, which is accepted only if the result remains unique. oll
 parses the publisher manifest and mask separately, rejecting syntax, type,
 unknown-field, and forbidden-field errors in their own schemas. Required
@@ -246,10 +273,10 @@ published generation in place.
 
 ## Release index
 
-`oll-release.json` is strict UTF-8 JSON read from the same selected Git state as
-`oll.toml`. Release IDs are publisher-defined nonempty opaque UTF-8 strings and
-are compared exactly; oll does not parse semantic versions or infer an ID from
-a filename or URL.
+`oll-release.json` is strict UTF-8 JSON read beside `oll.toml` in the selected
+Git state or current local workspace. Release IDs are publisher-defined
+nonempty opaque UTF-8 strings and are compared exactly; oll does not parse
+semantic versions or infer an ID from a filename or URL.
 
 ```json
 {
@@ -258,9 +285,10 @@ a filename or URL.
   "default_release": "v0.3.1",
   "releases": {
     "v0.3.1": {
-      "artifacts": [
+      "packages": [
         {
           "target": "x86_64-unknown-linux-gnu",
+          "path": "build/oll-anki-v0.3.1-x86_64-unknown-linux-gnu.tar.gz",
           "url": "https://downloads.example/oll-anki-v0.3.1-x86_64-unknown-linux-gnu.tar.gz",
           "archive": "tar.gz",
           "size_bytes": 123456,
@@ -269,7 +297,7 @@ a filename or URL.
       ]
     },
     "v0.4.0": {
-      "artifacts": []
+      "packages": []
     }
   }
 }
@@ -285,7 +313,7 @@ declared for each. oll never parses those IDs or chooses a newest release.
 
 A release-mode declaration either names one exact release or omits `release` to
 track the publisher-selected default. Each successful installation records the
-actual resolved release ID. Exactly one artifact in that release must match the
+actual resolved release ID. Exactly one package in that release must match the
 local canonical target; zero and duplicate matches are errors. Initial target
 names include:
 
@@ -301,16 +329,25 @@ Windows target strings may be introduced only when the node process platform is
 supported; the first implementation does not pretend that archive support alone
 implements Windows process lifecycle.
 
-Artifact URLs accept direct `https`, `http`, and `file` URLs. Redirects from an
-HTTP(S) URL are followed for at most ten hops and only while every resulting URL
-remains HTTP(S); a network response can never redirect the downloader to a
-local file. A direct `file` URL must name an absolute local regular file and
-have no remote authority. Authentication and transport confidentiality come
-from the selected URL and the user's normal environment; SHA-256 verifies bytes
-but is not a publisher signature.
+A target package may contain a remote `url`, a workspace-relative local `path`,
+or both. A Git release installation requires `url`, `size_bytes`, and `sha256`;
+the integrity fields are forbidden without `url`. A local release installation
+requires `path`; it resolves beneath the canonical workspace and rejects
+absolute paths, `..`, symlink escapes, and non-regular files. Local packages are
+copied into private staging and checked by the same archive validator, but do
+not require publisher-maintained size or hash values that would become stale
+on every development build.
+
+Release-package URLs accept direct `https`, `http`, and `file` URLs. Redirects
+from an HTTP(S) URL are followed for at most ten hops and only while every
+resulting URL remains HTTP(S); a network response can never redirect the
+downloader to a local file. A direct `file` URL must name an absolute local
+regular file and have no remote authority. Authentication and transport
+confidentiality come from the selected URL and the user's normal environment;
+SHA-256 verifies bytes but is not a publisher signature.
 
 Linux release archives use `tar.gz`; Darwin releases use `zip`. The declared
-kind and URL path suffix must agree. Before extraction oll verifies the exact
+kind and selected URL/path suffix must agree. For a URL, oll verifies the exact
 declared byte size and SHA-256 while streaming into private staging rather than
 buffering the archive in memory. Extraction rejects absolute and `..` paths,
 duplicate normalized entries, every symbolic-link or hard-link entry, and other
@@ -321,11 +358,11 @@ semantics. There is deliberately no compressed or expanded archive-size limit;
 the user initiating installation is responsible for local resources. An
 exhaustion failure cannot publish a partial generation.
 
-The archive includes the publisher `oll.toml`. After strict parsing, its complete
-canonical publisher-manifest value must equal the repository `oll.toml`, and its
-ID must also match the release index, before the typed mask is applied. The
-effective runtime argv must pass the same executable resolution, path
-containment, and required-file checks as a source candidate.
+The archive includes the publisher `oll.toml`. After strict parsing, its
+complete canonical publisher-manifest value must equal the selected location's
+`oll.toml`, and its ID must also match the release index, before the typed mask
+is applied. The effective runtime argv must pass the same executable resolution,
+path containment, and required-file checks as a source candidate.
 
 ## Installation declarations
 
@@ -345,11 +382,17 @@ return {
         mode = "source",
         rev = "0123456789abcdef",
     },
+    ["oll.local"] = {
+        path = "/home/user/src/oll-local",
+        mode = "source",
+    },
 }
 ```
 
-`mode` is `source` or `release` and defaults to `source`. `branch` and `rev` are
-optional and mutually exclusive. `release` is forbidden in source mode. When
+Exactly one of `remote` and `path` is required. A persisted `path` is canonical,
+absolute, and UTF-8. `branch` and `rev` are permitted only with `remote` and are
+mutually exclusive. `mode` is `source` or `release` and defaults to `source`.
+`release` is forbidden in source mode. When
 `release` is omitted in release mode, installation resolves the index default:
 `default_release` when present, otherwise the first `releases` object member in
 source order. The omission remains in the durable declaration so a later
@@ -377,7 +420,7 @@ typed operation modes rather than forwarding generic command strings:
 
 ```text
 oll plugin install
-oll plugin install <git-remote> [--branch <branch> | --rev <revision>]
+oll plugin install <git-remote-or-path> [--branch <branch> | --rev <revision>]
   [--source | --release [<release-id>]]
 oll plugin update <plugin-id-or-name>
 oll plugin reconcile
@@ -386,39 +429,40 @@ oll plugin releases <plugin-id-or-name>
 oll plugin validate
 ```
 
-- `install` without a remote installs missing declarations and rebuilds a
+- `install` without a location installs missing declarations and rebuilds a
   declaration whose normalized declaration or mask input changed. It does not
   remove undeclared installations or advance an unchanged branch merely because
   its head moved.
-- `install <remote>` resolves `oll.toml`, adds or replaces that PluginId's
-  declaration, then installs only from the newly reread persisted declaration.
+- `install <remote-or-path>` resolves `oll.toml`, adds or replaces that
+  PluginId's declaration, then installs only from the newly reread persisted
+  declaration.
   A later package failure does not roll back the successful declaration write;
   a future install or reconcile retries it. Because `plugins.lua` is optional
   before the first installation, this form alone treats an absent file as an
-  empty declaration set and atomically creates it after resolving the remote
+  empty declaration set and atomically creates it after resolving the location's
   PluginId. Other commands continue to report `plugin_config_missing` rather
   than silently inventing an installation set.
-- `update` fetches the selected default branch or named branch and publishes a
-  candidate only when the selected commit or local declaration/mask input
-  changed. An exact `rev` never advances remotely, but a changed local mask can
-  still produce a new generation. It never rewrites `plugins.lua` or restarts a
-  process.
+- `update` fetches a selected default or named Git branch and publishes a
+  candidate only when its commit or declaration/mask input changed. An exact
+  `rev` never advances remotely. A local declaration always rebuilds its current
+  workspace. Update never rewrites `plugins.lua` or restarts a process.
 - `reconcile` makes the installed set exactly match `plugins.lua`: it installs
   missing declarations, applies declaration changes, and removes IDs absent
   from the file. It preserves every existing SQL desired process state and does
   not advance an otherwise unchanged branch.
 - `remove` uses the durable removal owner in `plugin-storage.md` and removes the
   declaration as well as local state.
-- `releases` reads the selected repository state and lists opaque release IDs;
-  for a branch it fetches the current remote head in a private resolution
-  checkout, while a `rev` remains exact. It changes no declaration,
-  recorded/current generation, or installation.
-- `validate` is a bounded local command. It validates `plugins.lua` and every
-  present typed mask without opening Admin, accessing a remote, or changing a
-  file.
+- `releases` reads the selected Git state or current local workspace and lists
+  opaque release IDs; for a branch it fetches the current remote head in a
+  private resolution checkout, while a `rev` remains exact. It changes no
+  declaration, recorded/current generation, or installation.
+- `validate` is a bounded local command. It validates `plugins.lua`, including
+  the existence and canonical form of local workspace paths, and every present
+  typed mask without opening Admin, accessing a remote, or changing a file.
 
-When a remote install finds another declaration for the same ID, the first
-`ReconcilePluginInstallations` call returns `confirmation_required` together
+When an explicit remote/path install finds another declaration for the same
+ID, the first `ReconcilePluginInstallations` call returns
+`confirmation_required` together
 with the current normalized declaration SHA-256. The CLI asks interactively.
 A negative answer, EOF, or unavailable input changes nothing. A positive answer
 calls the same RPC with the ID, expected digest, and overwrite authorization;
@@ -458,9 +502,9 @@ implementation does not invent a multi-ID atomic binding exchange.
 fixed client request deadline. Git, a source recipe, download, archive work, or
 process cleanup may legitimately exceed ten seconds. Cancelling reconciliation
 terminates an active system-Git or recipe process group, cancels an active
-download, and discards unpublished work; items already atomically published
-remain successful. A durable removal intent continues to recovery-safe
-completion even if its waiting client disconnects.
+download or local package copy, and discards unpublished work; items already
+atomically published remain successful. A durable removal intent continues to
+recovery-safe completion even if its waiting client disconnects.
 
 ## Diagnostics and output
 
@@ -472,6 +516,7 @@ and retained build-log path. The `format_version = 1` diagnostic codes are:
 | --- | --- |
 | `git_missing` | The system `git` executable is unavailable. |
 | `git_remote_invalid` | The remote syntax is not accepted by `GitRemote`. |
+| `local_path_invalid` | The local workspace is missing, unsafe, non-UTF-8, or overlaps oll-owned state. |
 | `git_fetch_failed` | Git could not fetch the selected state. |
 | `git_selection_not_found` | Git status definitively proves that the requested default or named branch does not exist. Exact-revision fetch failures remain `git_fetch_failed` because exit status alone cannot distinguish absence from transport, authentication, or server-policy failure. |
 | `plugin_config_missing` | `plugins.lua` does not exist where required. |
@@ -488,10 +533,11 @@ and retained build-log path. The `format_version = 1` diagnostic codes are:
 | `release_index_missing` | `oll-release.json` is absent in release mode. |
 | `release_index_invalid` | The release index is malformed or inconsistent. |
 | `release_not_found` | The selected opaque release ID is absent, or default selection was requested from an empty index. |
-| `artifact_unavailable` | No artifact matches the canonical local target. |
-| `artifact_ambiguous` | Multiple artifacts match the target. |
-| `artifact_download_failed` | An HTTP, HTTPS, or file download failed. |
-| `artifact_checksum_mismatch` | Declared size or SHA-256 verification failed. |
+| `release_package_unavailable` | No release package matches the canonical local target. |
+| `release_package_ambiguous` | Multiple release packages match the target. |
+| `release_package_download_failed` | An HTTP, HTTPS, or file package download failed. |
+| `release_package_checksum_mismatch` | Declared package size or SHA-256 verification failed. |
+| `release_package_path_invalid` | A local release package path is absent, unsafe, or not a regular file. |
 | `archive_unsafe` | Archive structure violates extraction constraints. |
 | `entrypoint_invalid` | The effective runtime entrypoint is unusable. |
 | `operation_cancelled` | Admitted package work was cancelled before completion by daemon shutdown. |

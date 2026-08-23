@@ -40,9 +40,15 @@ message PluginOverwriteAuthorization {
   bytes expected_declaration_sha256 = 2;
 }
 
-message InstallRemotePlugin {
-  string remote = 1;
+message InstallPlugin {
+  oneof location {
+    string remote = 1;
+    NativePath local_path = 6;
+  }
+
   PluginPackageMode mode = 2;
+  // Forbidden for a local path. For a Git remote, omission selects its default
+  // branch; otherwise exactly one branch or revision may be supplied.
   PluginGitSelection selection = 3;
   // Forbidden in source mode. In release mode, omission selects the publisher
   // default from oll-release.json; a present ID is opaque and exact.
@@ -59,7 +65,7 @@ message ReconcilePluginInstallationsRequest {
 
   oneof operation {
     InstallDeclaredPlugins install_declared = 2;
-    InstallRemotePlugin install_remote = 3;
+    InstallPlugin install = 3;
     UpdatePluginInstallation update = 4;
     ExactPluginReconciliation exact_reconciliation = 5;
   }
@@ -99,7 +105,7 @@ message PluginOverwriteConfirmation {
 }
 
 message PluginInstallationResult {
-  // Identity can be absent when a remote fails before its manifest is read.
+  // Identity can be absent when a location fails before its manifest is read.
   PluginId plugin_id = 1;
   PluginName plugin_name = 2;
   PluginInstallationOutcome outcome = 3;
@@ -152,8 +158,13 @@ message ListPluginsRequest { AdminCallContext context = 1; }
 message ListPluginsResponse { repeated PluginSummary plugins = 1; }
 
 message PluginDeclaration {
-  string sanitized_remote = 1;
+  oneof location {
+    string sanitized_remote = 1;
+    NativePath local_path = 6;
+  }
+
   PluginPackageMode mode = 2;
+  // Present only for a Git declaration.
   PluginGitSelection selection = 3;
   // Omission in release mode means that this declaration tracks the publisher
   // default rather than pinning the currently installed release ID.

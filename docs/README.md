@@ -36,7 +36,7 @@ documents describe the larger runtime and storage model around those messages.
 - [Plugin storage](plugin-storage.md): deployment-local package generations,
   SQL authority, recovery, desired state, jobs, and removal.
 - [Plugin packaging](plugin-packaging.md): system Git, `oll.toml`, typed masks,
-  `oll-release.json`, `plugins.lua`, source recipes, and release artifacts.
+  `oll-release.json`, `plugins.lua`, source recipes, and release packages.
 
 ## Normative language
 

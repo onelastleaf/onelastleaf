@@ -13,15 +13,16 @@ use sha2::{Digest, Sha256};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use url::Url;
 
-use super::{ArchiveKind, PackageError, PublisherManifest, ReleaseArtifact};
+use super::{ArchiveKind, PackageError, PublisherManifest, ReleasePackage};
 
 const MAX_HTTP_REDIRECTS: usize = 10;
 
 pub async fn stage_release_download(
-    artifact: &ReleaseArtifact,
+    package: &ReleasePackage,
     destination: &Path,
-) -> Result<(), PackageError> {
-    let url = artifact.parsed_url()?;
+) -> Result<u64, PackageError> {
+    let url = package.parsed_url()?;
+    let (expected_size, expected_sha256) = package.remote_integrity()?;
     let mut file = tokio::fs::OpenOptions::new()
         .write(true)
         .create_new(true)
@@ -30,10 +31,10 @@ pub async fn stage_release_download(
         .await
         .map_err(|error| download_io("cannot create release staging file", error))?;
     let result = match url.scheme() {
-        "file" => stage_file_url(&url, artifact.size_bytes, &mut file).await,
-        "http" | "https" => stage_http_url(url, artifact.size_bytes, &mut file).await,
+        "file" => stage_file_url(&url, expected_size, &mut file).await,
+        "http" | "https" => stage_http_url(url, expected_size, &mut file).await,
         _ => Err(PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "release URL scheme is not allowed",
         )),
@@ -59,16 +60,64 @@ pub async fn stage_release_download(
             error,
         ));
     }
-    if size != artifact.size_bytes || crate::replica::lower_hex(&digest) != artifact.sha256 {
+    if size != expected_size || crate::replica::lower_hex(&digest) != expected_sha256 {
         drop(file);
         let _ = tokio::fs::remove_file(destination).await;
         return Err(PackageError::new(
-            "artifact_checksum_mismatch",
+            "release_package_checksum_mismatch",
             "download",
-            "release artifact size or SHA-256 differs from oll-release.json",
+            "release package size or SHA-256 differs from oll-release.json",
         ));
     }
-    Ok(())
+    Ok(size)
+}
+
+pub(crate) async fn stage_local_release_package(
+    package: &ReleasePackage,
+    workspace: &Path,
+    destination: &Path,
+) -> Result<u64, PackageError> {
+    let source = package.local_package_path(workspace)?;
+    let mut source = tokio::fs::File::open(source).await.map_err(|error| {
+        PackageError::io(
+            "release_package_path_invalid",
+            "release_index",
+            "cannot open local release package",
+            error,
+        )
+    })?;
+    let mut destination_file = tokio::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(destination)
+        .await
+        .map_err(|error| local_package_io("cannot create release staging file", error))?;
+    let result = tokio::io::copy(&mut source, &mut destination_file)
+        .await
+        .map_err(|error| local_package_io("cannot stage local release package", error));
+    let size = match result {
+        Ok(size) => size,
+        Err(error) => {
+            drop(destination_file);
+            let _ = tokio::fs::remove_file(destination).await;
+            return Err(error);
+        }
+    };
+    if let Err(error) = destination_file.flush().await {
+        drop(destination_file);
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(local_package_io("cannot flush release staging file", error));
+    }
+    if let Err(error) = destination_file.sync_all().await {
+        drop(destination_file);
+        let _ = tokio::fs::remove_file(destination).await;
+        return Err(local_package_io(
+            "cannot synchronize release staging file",
+            error,
+        ));
+    }
+    Ok(size)
 }
 
 async fn stage_file_url(
@@ -78,31 +127,31 @@ async fn stage_file_url(
 ) -> Result<(u64, [u8; 32]), PackageError> {
     let path = url.to_file_path().map_err(|()| {
         PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "file release URL is not an absolute local path",
         )
     })?;
     let metadata = tokio::fs::metadata(&path)
         .await
-        .map_err(|error| download_io("cannot inspect file release artifact", error))?;
+        .map_err(|error| download_io("cannot inspect file release package", error))?;
     if !metadata.is_file() {
         return Err(PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "file release URL does not name a regular file",
         ));
     }
     if metadata.len() != expected_size {
         return Err(PackageError::new(
-            "artifact_checksum_mismatch",
+            "release_package_checksum_mismatch",
             "download",
-            "release artifact size or SHA-256 differs from oll-release.json",
+            "release package size or SHA-256 differs from oll-release.json",
         ));
     }
     let mut source = tokio::fs::File::open(path)
         .await
-        .map_err(|error| download_io("cannot open file release artifact", error))?;
+        .map_err(|error| download_io("cannot open file release package", error))?;
     let mut hash = Sha256::new();
     let mut size = 0_u64;
     let mut buffer = vec![0_u8; 64 * 1024];
@@ -110,22 +159,22 @@ async fn stage_file_url(
         let read = source
             .read(&mut buffer)
             .await
-            .map_err(|error| download_io("cannot read file release artifact", error))?;
+            .map_err(|error| download_io("cannot read file release package", error))?;
         if read == 0 {
             break;
         }
         let next_size = size.checked_add(read as u64).ok_or_else(|| {
             PackageError::new(
-                "artifact_download_failed",
+                "release_package_download_failed",
                 "download",
-                "release artifact size overflowed u64",
+                "release package size overflowed u64",
             )
         })?;
         if next_size > expected_size {
             return Err(PackageError::new(
-                "artifact_checksum_mismatch",
+                "release_package_checksum_mismatch",
                 "download",
-                "release artifact size or SHA-256 differs from oll-release.json",
+                "release package size or SHA-256 differs from oll-release.json",
             ));
         }
         destination
@@ -155,35 +204,35 @@ async fn stage_http_url(
         .build()
         .map_err(|_| {
             PackageError::new(
-                "artifact_download_failed",
+                "release_package_download_failed",
                 "download",
                 "cannot initialize release HTTP client",
             )
         })?;
     let response = client.get(url).send().await.map_err(|_| {
         PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "release HTTP request failed",
         )
     })?;
     if response.status().is_redirection() {
         return Err(PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "release HTTP redirect changed to an unsupported transport",
         ));
     }
     let response = response.error_for_status().map_err(|_| {
         PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "release HTTP request failed",
         )
     })?;
     if !matches!(response.url().scheme(), "http" | "https") {
         return Err(PackageError::new(
-            "artifact_download_failed",
+            "release_package_download_failed",
             "download",
             "HTTP redirect changed to an unsupported transport",
         ));
@@ -194,23 +243,23 @@ async fn stage_http_url(
     while let Some(chunk) = stream.next().await {
         let chunk = chunk.map_err(|_| {
             PackageError::new(
-                "artifact_download_failed",
+                "release_package_download_failed",
                 "download",
                 "release HTTP response body failed",
             )
         })?;
         let next_size = size.checked_add(chunk.len() as u64).ok_or_else(|| {
             PackageError::new(
-                "artifact_download_failed",
+                "release_package_download_failed",
                 "download",
-                "release artifact size overflowed u64",
+                "release package size overflowed u64",
             )
         })?;
         if next_size > expected_size {
             return Err(PackageError::new(
-                "artifact_checksum_mismatch",
+                "release_package_checksum_mismatch",
                 "download",
-                "release artifact size or SHA-256 differs from oll-release.json",
+                "release package size or SHA-256 differs from oll-release.json",
             ));
         }
         destination
@@ -428,7 +477,21 @@ fn safe_relative_path(path: &Path) -> Result<PathBuf, PackageError> {
 }
 
 fn download_io(message: &'static str, error: io::Error) -> PackageError {
-    PackageError::io("artifact_download_failed", "download", message, error)
+    PackageError::io(
+        "release_package_download_failed",
+        "download",
+        message,
+        error,
+    )
+}
+
+fn local_package_io(message: &'static str, error: io::Error) -> PackageError {
+    PackageError::io(
+        "release_package_path_invalid",
+        "release_copy",
+        message,
+        error,
+    )
 }
 
 fn archive_io(message: &'static str, error: io::Error) -> PackageError {
@@ -476,7 +539,7 @@ argv = ["/bin/true"]
 
         let error = stage_file_url(&url, 1, &mut staged).await.unwrap_err();
 
-        assert_eq!(error.code(), "artifact_checksum_mismatch");
+        assert_eq!(error.code(), "release_package_checksum_mismatch");
         assert_eq!(tokio::fs::metadata(destination).await.unwrap().len(), 0);
     }
 
@@ -498,35 +561,36 @@ argv = ["/bin/true"]
                 .unwrap();
             std::future::pending::<()>().await;
         });
-        let artifact = ReleaseArtifact {
+        let package = ReleasePackage {
             target: "test-target".to_owned(),
-            url: format!("http://{address}/release.tar.gz"),
+            url: Some(format!("http://{address}/release.tar.gz")),
+            path: None,
             archive: ArchiveKind::TarGz,
-            size_bytes: 1,
-            sha256: "00".repeat(32),
+            size_bytes: Some(1),
+            sha256: Some("00".repeat(32)),
         };
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            stage_release_download(&artifact, &destination),
+            stage_release_download(&package, &destination),
         )
         .await
         .expect("oversized HTTP body was read to completion")
         .unwrap_err();
         server.abort();
 
-        assert_eq!(error.code(), "artifact_checksum_mismatch");
+        assert_eq!(error.code(), "release_package_checksum_mismatch");
         assert!(!destination.exists());
     }
 
     #[tokio::test]
     async fn http_release_never_redirects_to_a_local_file() {
         let directory = tempfile::TempDir::new().unwrap();
-        let local_artifact = directory.path().join("local-release.tar.gz");
+        let local_package = directory.path().join("local-release.tar.gz");
         let destination = directory.path().join("staged.tar.gz");
-        let bytes = b"local artifact must not be read through a redirect";
-        fs::write(&local_artifact, bytes).unwrap();
-        let file_url = Url::from_file_path(&local_artifact).unwrap();
+        let bytes = b"local package must not be read through a redirect";
+        fs::write(&local_package, bytes).unwrap();
+        let file_url = Url::from_file_path(&local_package).unwrap();
         let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
             .await
             .unwrap();
@@ -538,20 +602,21 @@ argv = ["/bin/true"]
             );
             stream.write_all(response.as_bytes()).await.unwrap();
         });
-        let artifact = ReleaseArtifact {
+        let package = ReleasePackage {
             target: "test-target".to_owned(),
-            url: format!("http://{address}/release.tar.gz"),
+            url: Some(format!("http://{address}/release.tar.gz")),
+            path: None,
             archive: ArchiveKind::TarGz,
-            size_bytes: bytes.len() as u64,
-            sha256: crate::replica::lower_hex(&Sha256::digest(bytes)),
+            size_bytes: Some(bytes.len() as u64),
+            sha256: Some(crate::replica::lower_hex(&Sha256::digest(bytes))),
         };
 
-        let error = stage_release_download(&artifact, &destination)
+        let error = stage_release_download(&package, &destination)
             .await
             .unwrap_err();
         server.await.unwrap();
 
-        assert_eq!(error.code(), "artifact_download_failed");
+        assert_eq!(error.code(), "release_package_download_failed");
         assert!(!destination.exists());
     }
 
@@ -576,17 +641,18 @@ argv = ["/bin/true"]
                 stream.write_all(response.as_bytes()).await.unwrap();
             }
         });
-        let artifact = ReleaseArtifact {
+        let package = ReleasePackage {
             target: "test-target".to_owned(),
-            url: redirect_url,
+            url: Some(redirect_url),
+            path: None,
             archive: ArchiveKind::TarGz,
-            size_bytes: 0,
-            sha256: crate::replica::lower_hex(&Sha256::digest([])),
+            size_bytes: Some(0),
+            sha256: Some(crate::replica::lower_hex(&Sha256::digest([]))),
         };
 
         let error = tokio::time::timeout(
             std::time::Duration::from_secs(2),
-            stage_release_download(&artifact, &destination),
+            stage_release_download(&package, &destination),
         )
         .await
         .expect("redirect chain did not stop at its finite limit")
@@ -596,7 +662,7 @@ argv = ["/bin/true"]
             .expect("redirect fixture did not observe the bounded chain")
             .unwrap();
 
-        assert_eq!(error.code(), "artifact_download_failed");
+        assert_eq!(error.code(), "release_package_download_failed");
         assert!(!destination.exists());
     }
 

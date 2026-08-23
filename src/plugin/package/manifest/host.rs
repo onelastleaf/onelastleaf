@@ -100,7 +100,13 @@ pub(crate) fn ensure_contained_path(
 }
 
 pub fn validate_local_package_config(config_root: &Path) -> Result<(), PackageError> {
-    super::super::read_plugin_declarations(config_root)?;
+    let declarations = super::super::read_plugin_declarations(config_root)?;
+    for (_, declaration) in declarations.iter() {
+        let Some(path) = declaration.local_path() else {
+            continue;
+        };
+        super::super::validate_canonical_local_workspace(path, &[config_root])?;
+    }
     let mask_root = config_root.join("plugin-masks");
     let entries = match std::fs::read_dir(&mask_root) {
         Ok(entries) => entries,
@@ -160,6 +166,10 @@ fn lexical_normalize(path: &Path) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::plugin::package::{
+        DeclarationMode, PluginDeclaration, PluginDeclarations, write_plugin_declarations,
+    };
+    use std::fs;
 
     #[cfg(unix)]
     #[test]
@@ -195,5 +205,50 @@ mod tests {
             &child_cwd,
             Some(&absolute_path),
         ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn local_validation_rejects_a_noncanonical_workspace_path() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempfile::TempDir::new().unwrap();
+        let config_root = directory.path().join("config");
+        let workspace = directory.path().join("workspace");
+        let alias = directory.path().join("workspace-alias");
+        fs::create_dir(&config_root).unwrap();
+        fs::create_dir(&workspace).unwrap();
+        symlink(&workspace, &alias).unwrap();
+
+        let mut declarations = PluginDeclarations::default();
+        declarations.insert(
+            "oll.local-validation".parse().unwrap(),
+            PluginDeclaration::from_local(alias, DeclarationMode::Source, None),
+        );
+        write_plugin_declarations(&config_root, &declarations).unwrap();
+
+        let error = validate_local_package_config(&config_root).unwrap_err();
+        assert_eq!(error.code(), "local_path_invalid");
+        assert!(error.to_string().contains("must be canonical"));
+    }
+
+    #[test]
+    fn local_validation_rejects_noncanonical_path_spelling() {
+        let directory = tempfile::TempDir::new().unwrap();
+        let config_root = directory.path().join("config");
+        let workspace = directory.path().join("workspace");
+        fs::create_dir(&config_root).unwrap();
+        fs::create_dir(&workspace).unwrap();
+
+        let mut declarations = PluginDeclarations::default();
+        declarations.insert(
+            "oll.local-spelling".parse().unwrap(),
+            PluginDeclaration::from_local(workspace.join("."), DeclarationMode::Source, None),
+        );
+        write_plugin_declarations(&config_root, &declarations).unwrap();
+
+        let error = validate_local_package_config(&config_root).unwrap_err();
+        assert_eq!(error.code(), "local_path_invalid");
+        assert!(error.to_string().contains("must be canonical"));
     }
 }

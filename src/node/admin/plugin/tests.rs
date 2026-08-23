@@ -9,8 +9,8 @@ use crate::{
         PluginArtifact, PluginArtifactId, PluginError, PluginInstanceId, PluginJob,
         PluginJobInspection, PluginOperationId,
         package::{
-            DeclarationMode, GitSelection, InstallRemoteRequest, PackageDiagnostic,
-            PackageOperationOutcome, PackageOperationResult, PluginDeclaration,
+            DeclarationLocation, DeclarationMode, ExplicitInstallRequest, GitSelection,
+            PackageDiagnostic, PackageOperationOutcome, PackageOperationResult, PluginDeclaration,
         },
         runtime::PluginSessionSnapshot,
     },
@@ -38,7 +38,7 @@ fn request_decoding_rejects_invalid_selectors_modes_digests_and_timestamps() {
     );
 
     let unknown_mode =
-        reconcile_plugin_installations_request::Operation::InstallRemote(install_remote(17, None));
+        reconcile_plugin_installations_request::Operation::Install(install_request(17, None));
     assert_eq!(
         decode_reconcile_operation(Some(unknown_mode))
             .unwrap_err()
@@ -47,14 +47,13 @@ fn request_decoding_rejects_invalid_selectors_modes_digests_and_timestamps() {
     );
 
     for invalid_release in [
-        install_remote(
+        install_request(
             oll::PluginPackageMode::Source as i32,
             Some("release-opaque"),
         ),
-        install_remote(oll::PluginPackageMode::Release as i32, Some("")),
+        install_request(oll::PluginPackageMode::Release as i32, Some("")),
     ] {
-        let operation =
-            reconcile_plugin_installations_request::Operation::InstallRemote(invalid_release);
+        let operation = reconcile_plugin_installations_request::Operation::Install(invalid_release);
         assert_eq!(
             decode_reconcile_operation(Some(operation))
                 .unwrap_err()
@@ -63,7 +62,7 @@ fn request_decoding_rejects_invalid_selectors_modes_digests_and_timestamps() {
         );
     }
 
-    let mut bad_digest = install_remote(oll::PluginPackageMode::Source as i32, None);
+    let mut bad_digest = install_request(oll::PluginPackageMode::Source as i32, None);
     bad_digest.overwrite = Some(oll::PluginOverwriteAuthorization {
         plugin_id: Some(oll::PluginId {
             value: "oll.test".to_owned(),
@@ -72,7 +71,44 @@ fn request_decoding_rejects_invalid_selectors_modes_digests_and_timestamps() {
     });
     assert_eq!(
         decode_reconcile_operation(Some(
-            reconcile_plugin_installations_request::Operation::InstallRemote(bad_digest),
+            reconcile_plugin_installations_request::Operation::Install(bad_digest),
+        ))
+        .unwrap_err()
+        .code(),
+        Code::InvalidArgument
+    );
+
+    let mut local_with_selection = oll::InstallPlugin {
+        location: Some(oll::install_plugin::Location::LocalPath(oll::NativePath {
+            unix_path: b"/tmp/local-plugin".to_vec(),
+        })),
+        mode: oll::PluginPackageMode::Source as i32,
+        selection: Some(oll::PluginGitSelection {
+            selection: Some(oll::plugin_git_selection::Selection::Branch(
+                "main".to_owned(),
+            )),
+        }),
+        release_id: None,
+        overwrite: None,
+    };
+    assert_eq!(
+        decode_reconcile_operation(Some(
+            reconcile_plugin_installations_request::Operation::Install(
+                local_with_selection.clone()
+            ),
+        ))
+        .unwrap_err()
+        .code(),
+        Code::InvalidArgument
+    );
+    local_with_selection.selection = None;
+    local_with_selection.location =
+        Some(oll::install_plugin::Location::LocalPath(oll::NativePath {
+            unix_path: b"relative-plugin".to_vec(),
+        }));
+    assert_eq!(
+        decode_reconcile_operation(Some(
+            reconcile_plugin_installations_request::Operation::Install(local_with_selection),
         ))
         .unwrap_err()
         .code(),
@@ -112,65 +148,99 @@ fn request_decoding_maps_every_desired_state_and_package_mode() {
     );
 
     let source = decode_reconcile_operation(Some(
-        reconcile_plugin_installations_request::Operation::InstallRemote(install_remote(
+        reconcile_plugin_installations_request::Operation::Install(install_request(
             oll::PluginPackageMode::Source as i32,
             None,
         )),
     ));
-    assert!(matches!(
-        source,
-        Ok(DecodedReconcileOperation::InstallRemote(_))
-    ));
+    assert!(matches!(source, Ok(DecodedReconcileOperation::Install(_))));
 
     let release = decode_reconcile_operation(Some(
-        reconcile_plugin_installations_request::Operation::InstallRemote(install_remote(
+        reconcile_plugin_installations_request::Operation::Install(install_request(
             oll::PluginPackageMode::Release as i32,
             Some("release-opaque"),
         )),
     ));
-    assert!(matches!(
-        release,
-        Ok(DecodedReconcileOperation::InstallRemote(_))
-    ));
+    assert!(matches!(release, Ok(DecodedReconcileOperation::Install(_))));
 
     let default_release = decode_reconcile_operation(Some(
-        reconcile_plugin_installations_request::Operation::InstallRemote(install_remote(
+        reconcile_plugin_installations_request::Operation::Install(install_request(
             oll::PluginPackageMode::Release as i32,
             None,
         )),
     ));
     assert!(matches!(
         default_release,
-        Ok(DecodedReconcileOperation::InstallRemote(
-            InstallRemoteRequest {
-                declaration: PluginDeclaration {
-                    mode: DeclarationMode::Release,
-                    release: None,
-                    ..
-                },
+        Ok(DecodedReconcileOperation::Install(ExplicitInstallRequest {
+            declaration: PluginDeclaration {
+                mode: DeclarationMode::Release,
+                release: None,
                 ..
-            }
-        ))
+            },
+            ..
+        }))
+    ));
+
+    let local = decode_reconcile_operation(Some(
+        reconcile_plugin_installations_request::Operation::Install(oll::InstallPlugin {
+            location: Some(oll::install_plugin::Location::LocalPath(oll::NativePath {
+                unix_path: b"/tmp/local-plugin".to_vec(),
+            })),
+            mode: oll::PluginPackageMode::Source as i32,
+            selection: None,
+            release_id: None,
+            overwrite: None,
+        }),
+    ));
+    assert!(matches!(
+        local,
+        Ok(DecodedReconcileOperation::Install(ExplicitInstallRequest {
+            declaration: PluginDeclaration {
+                location: DeclarationLocation::Local { ref path },
+                ..
+            },
+            ..
+        })) if path == std::path::Path::new("/tmp/local-plugin")
     ));
 }
 
 #[test]
 fn stored_default_release_declaration_keeps_the_resolved_release_as_package_metadata() {
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/plugin.git".to_owned(),
-        mode: DeclarationMode::Release,
-        selection: GitSelection::Default,
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/plugin.git",
+        GitSelection::Default,
+        DeclarationMode::Release,
+        None,
+    );
     let mut installed = installed_plugin();
     installed.normalized_declaration = serde_json::to_vec(&declaration).unwrap();
     installed.declaration_sha256 = declaration.normalized_sha256();
     installed.install_mode = crate::plugin::InstallMode::Release;
     installed.release_id = Some("publisher-default".to_owned());
+    installed.selected_commit = Some("1".repeat(40));
 
     let encoded = super::package::decode_stored_declaration(&installed).unwrap();
     assert_eq!(encoded.mode, oll::PluginPackageMode::Release as i32);
     assert!(encoded.release_id.is_none());
+}
+
+#[test]
+fn stored_local_declaration_keeps_native_path_bytes_and_no_git_commit() {
+    let declaration =
+        PluginDeclaration::from_local("/tmp/local-plugin".into(), DeclarationMode::Source, None);
+    let mut installed = installed_plugin();
+    installed.normalized_declaration = serde_json::to_vec(&declaration).unwrap();
+    installed.declaration_sha256 = declaration.normalized_sha256();
+
+    let encoded = super::package::decode_stored_declaration(&installed).unwrap();
+
+    assert!(matches!(
+        encoded.location,
+        Some(oll::plugin_declaration::Location::LocalPath(oll::NativePath {
+            unix_path
+        })) if unix_path == b"/tmp/local-plugin"
+    ));
+    assert!(encoded.selection.is_none());
 }
 
 #[test]
@@ -389,9 +459,11 @@ fn corrupt_store_status_never_exposes_internal_details() {
     assert_eq!(status.code(), Code::Aborted);
 }
 
-fn install_remote(mode: i32, release_id: Option<&str>) -> oll::InstallRemotePlugin {
-    oll::InstallRemotePlugin {
-        remote: "https://example.com/plugin.git".to_owned(),
+fn install_request(mode: i32, release_id: Option<&str>) -> oll::InstallPlugin {
+    oll::InstallPlugin {
+        location: Some(oll::install_plugin::Location::Remote(
+            "https://example.com/plugin.git".to_owned(),
+        )),
         mode,
         selection: None,
         release_id: release_id.map(str::to_owned),

@@ -8,15 +8,17 @@ mod process;
 mod release;
 mod storage;
 
+pub(crate) use archive::stage_local_release_package;
 pub use archive::{extract_release_archive, stage_release_download};
 pub use build::{BuiltCandidate, CandidateBuilder};
 pub use declarations::{
-    DeclarationMode, GitSelection, PluginDeclaration, PluginDeclarations, mask_path,
-    plugins_file_sha256, read_plugin_declarations, write_plugin_declarations,
+    DeclarationLocation, DeclarationMode, GitSelection, PluginDeclaration, PluginDeclarations,
+    mask_path, plugins_file_sha256, read_plugin_declarations, write_plugin_declarations,
 };
+pub(crate) use declarations::{canonicalize_local_workspace, validate_canonical_local_workspace};
 pub use git::{GitCheckout, checkout_git_remote};
 pub use manager::{
-    InstallRemoteRequest, OverwriteAuthorization, PackageDiagnostic, PackageManager,
+    ExplicitInstallRequest, OverwriteAuthorization, PackageDiagnostic, PackageManager,
     PackageOperationOutcome, PackageOperationResult, PluginPackageGates, RemovalPreparation,
 };
 pub use manifest::{
@@ -24,7 +26,7 @@ pub use manifest::{
     executable_exists, validate_local_package_config,
 };
 pub(super) use process::{ProcessCancellation, ProcessOutcome, run_process_group};
-pub use release::{ArchiveKind, ReleaseArtifact, ReleaseIndex, ReleaseListing, local_target};
+pub use release::{ArchiveKind, ReleaseIndex, ReleaseListing, ReleasePackage, local_target};
 pub use storage::PackageLayout;
 
 use std::{fmt, io, path::PathBuf, sync::Arc, time::Instant};

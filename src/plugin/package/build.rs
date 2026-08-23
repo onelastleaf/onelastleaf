@@ -16,11 +16,12 @@ use serde_json::json;
 
 use super::manager::owner::PackageTaskOwner;
 use super::{
-    EffectiveManifest, ExpansionPaths, GitCheckout, PackageError, PackageLayout,
-    PhaseCancellationGuard, PluginDeclaration, ProcessCancellation, ProcessOutcome,
+    DeclarationLocation, EffectiveManifest, ExpansionPaths, GitCheckout, PackageError,
+    PackageLayout, PhaseCancellationGuard, PluginDeclaration, ProcessCancellation, ProcessOutcome,
     PublisherManifest, SourceCheckout, checkout_git_remote, run_process_group,
 };
 
+mod local;
 mod release_install;
 mod validation;
 
@@ -35,7 +36,7 @@ pub struct BuiltCandidate {
     pub declaration_bytes: Vec<u8>,
     pub declaration_sha256: [u8; 32],
     pub effective_manifest_bytes: Vec<u8>,
-    pub selected_commit: String,
+    pub selected_commit: Option<String>,
     pub install_mode: InstallMode,
     pub release_id: Option<String>,
     pub build_log_path: PathBuf,
@@ -44,14 +45,41 @@ pub struct BuiltCandidate {
 pub(super) struct ResolvedCandidate {
     pub plugin_id: PluginId,
     pub plugin_name: PluginName,
-    pub selected_commit: String,
+    pub selected_commit: Option<String>,
     publisher_source: String,
     publisher: PublisherManifest,
     effective: EffectiveManifest,
-    checkout: GitCheckout,
+    source: SelectedSource,
     staging: PathBuf,
     staging_guard: DirectoryGuard,
     pub(super) build_log: PathBuf,
+}
+
+enum SelectedSource {
+    Git(GitCheckout),
+    Local(PathBuf),
+}
+
+impl SelectedSource {
+    fn root(&self) -> &Path {
+        match self {
+            Self::Git(checkout) => &checkout.source_root,
+            Self::Local(path) => path,
+        }
+    }
+
+    fn selected_commit(&self) -> Option<String> {
+        match self {
+            Self::Git(checkout) => Some(checkout.commit.clone()),
+            Self::Local(_) => None,
+        }
+    }
+}
+
+impl ResolvedCandidate {
+    fn source_root(&self) -> &Path {
+        self.source.root()
+    }
 }
 
 struct ReleaseMaterialization<'a> {
@@ -100,7 +128,14 @@ impl CandidateBuilder {
         correlation_id: &str,
     ) -> Result<GitCheckout, PackageError> {
         let started = Instant::now();
-        let (branch, revision) = match &declaration.selection {
+        let Some((remote, selection)) = declaration.git() else {
+            return Err(PackageError::new(
+                "local_path_invalid",
+                "declaration",
+                "Git checkout was requested for a local declaration",
+            ));
+        };
+        let (branch, revision) = match selection {
             super::GitSelection::Default => (None, None),
             super::GitSelection::Branch(branch) => (Some(branch.as_str()), None),
             super::GitSelection::Revision(revision) => (None, Some(revision.as_str())),
@@ -132,8 +167,8 @@ impl CandidateBuilder {
             }),
         );
         let result = checkout_git_remote(
-            &declaration.remote,
-            &declaration.selection,
+            remote,
+            selection,
             &staging.join("repository"),
             build_log,
             ProcessCancellation::from_receiver(self.shutdown.clone())
@@ -188,9 +223,9 @@ impl CandidateBuilder {
             .operation_staging(expected_plugin_id, operation_id)?;
         let staging_guard = DirectoryGuard::new(staging.clone());
         let build_log = self.layout.build_log(expected_plugin_id, operation_id)?;
-        let checkout = match existing_checkout {
-            Some(checkout) => checkout,
-            None => {
+        let source = match (existing_checkout, &declaration.location) {
+            (Some(checkout), DeclarationLocation::Git { .. }) => SelectedSource::Git(checkout),
+            (None, DeclarationLocation::Git { .. }) => SelectedSource::Git(
                 self.checkout(
                     declaration,
                     &staging,
@@ -199,15 +234,23 @@ impl CandidateBuilder {
                     operation_id,
                     correlation_id,
                 )
-                .await?
+                .await?,
+            ),
+            (None, DeclarationLocation::Local { path }) => SelectedSource::Local(path.clone()),
+            (Some(_), DeclarationLocation::Local { .. }) => {
+                return Err(PackageError::new(
+                    "local_path_invalid",
+                    "declaration",
+                    "a Git checkout cannot resolve a local declaration",
+                ));
             }
         };
         let publisher_source =
-            fs::read_to_string(checkout.source_root.join("oll.toml")).map_err(|error| {
+            fs::read_to_string(source.root().join("oll.toml")).map_err(|error| {
                 PackageError::io(
                     "manifest_missing",
                     "manifest",
-                    "selected repository has no readable oll.toml",
+                    "selected package location has no readable oll.toml",
                     error,
                 )
                 .with_build_log(build_log.clone())
@@ -227,11 +270,11 @@ impl CandidateBuilder {
         Ok(ResolvedCandidate {
             plugin_id: actual_id,
             plugin_name,
-            selected_commit: checkout.commit.clone(),
+            selected_commit: source.selected_commit(),
             publisher_source,
             publisher,
             effective,
-            checkout,
+            source,
             staging,
             staging_guard,
             build_log,
@@ -258,14 +301,21 @@ impl CandidateBuilder {
         let mut candidate_guard = DirectoryGuard::new(install.clone());
         let recipe_root = if declaration.mode == super::DeclarationMode::Source {
             match checkout {
-                SourceCheckout::Source => resolved.checkout.source_root.clone(),
+                SourceCheckout::Source => resolved.source_root().to_owned(),
                 SourceCheckout::Install | SourceCheckout::Generation => {
-                    move_checkout(&resolved.checkout.source_root, &install)?;
+                    match &resolved.source {
+                        SelectedSource::Git(checkout) => {
+                            move_checkout(&checkout.source_root, &install)?;
+                        }
+                        SelectedSource::Local(source) => {
+                            local::copy_workspace(source, &install, self.shutdown.clone()).await?;
+                        }
+                    }
                     install.clone()
                 }
             }
         } else {
-            resolved.checkout.source_root.clone()
+            resolved.source_root().to_owned()
         };
         let mask_dir = self.config_root.join("plugin-masks");
         let paths = ExpansionPaths {

@@ -299,7 +299,6 @@ fn clap_errors_use_exit_code_two() {
         vec!["log", "set", "oll::sync=Trace"],
         vec!["plugin"],
         vec!["plugin", "install", "--release"],
-        vec!["plugin", "install", "../local-plugin"],
     ] {
         let output = oll().args(arguments).output().unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -779,8 +778,8 @@ fn plugin_install_help_and_validation_expose_file_driven_workflow() {
     assert!(install_help.status.success());
     let stdout = String::from_utf8(install_help.stdout).unwrap();
     assert!(
-        stdout.contains("[GIT_REMOTE]"),
-        "missing optional remote:\n{stdout}"
+        stdout.contains("[GIT_REMOTE_OR_PATH]"),
+        "missing optional install location:\n{stdout}"
     );
     assert!(
         stdout.contains("plugins.lua"),

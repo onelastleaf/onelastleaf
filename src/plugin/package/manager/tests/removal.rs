@@ -24,12 +24,12 @@ async fn removal_recovery_recognizes_an_already_published_declaration_file() {
     let config_root = directory.path().join("config");
     fs::create_dir(&config_root).unwrap();
     let plugin_id: PluginId = "oll.remove".parse().unwrap();
-    let declaration = PluginDeclaration {
-        remote: "https://example.com/oll-remove.git".to_owned(),
-        mode: super::super::DeclarationMode::Source,
-        selection: GitSelection::Default,
-        release: None,
-    };
+    let declaration = PluginDeclaration::from_git(
+        "https://example.com/oll-remove.git",
+        GitSelection::Default,
+        super::super::DeclarationMode::Source,
+        None,
+    );
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration);
     write_plugin_declarations(&config_root, &declarations).unwrap();

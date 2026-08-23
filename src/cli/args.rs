@@ -8,8 +8,8 @@ use clap::{Args, Parser, Subcommand};
 use url::Url;
 
 use super::{
-    ColorMode, ConnectUrl, GitRemote, InitStore, LogFilterDirective, LoopbackAddr, NodeName,
-    OutputFormat, PluginLanguageArg,
+    ColorMode, ConnectUrl, InitStore, LogFilterDirective, LoopbackAddr, NodeName, OutputFormat,
+    PluginLanguageArg,
 };
 
 const DEFAULT_SYNC_PORT: u16 = 17_384;
@@ -244,16 +244,16 @@ pub enum PluginCommand {
         #[arg(long, value_name = "PLUGIN_NAME")]
         name: Option<String>,
     },
-    /// Install a plugin from a Git repository.
+    /// Install a plugin from a Git repository or local workspace.
     Install {
-        /// Git remote. Omit it to install declarations from plugins.lua.
-        #[arg(value_name = "GIT_REMOTE")]
-        repository: Option<GitRemote>,
+        /// Git remote or local path. Omit it to install declarations from plugins.lua.
+        #[arg(value_name = "GIT_REMOTE_OR_PATH")]
+        location: Option<PathBuf>,
         /// Checkout this exact Git revision.
-        #[arg(long, conflicts_with = "branch", requires = "repository")]
+        #[arg(long, conflicts_with = "branch", requires = "location")]
         rev: Option<String>,
         /// Checkout the head of this branch.
-        #[arg(long, conflicts_with = "rev", requires = "repository")]
+        #[arg(long, conflicts_with = "rev", requires = "location")]
         branch: Option<String>,
         /// Install an exact release ID, or the publisher default when omitted.
         #[arg(
@@ -261,11 +261,11 @@ pub enum PluginCommand {
             value_name = "RELEASE_ID",
             num_args = 0..=1,
             conflicts_with = "source",
-            requires = "repository"
+            requires = "location"
         )]
         release: Option<Option<String>>,
         /// Build from source. This is the default installation mode.
-        #[arg(long, conflicts_with = "release", requires = "repository")]
+        #[arg(long, conflicts_with = "release", requires = "location")]
         source: bool,
         /// Emit one stable machine-readable JSON document.
         #[arg(long)]

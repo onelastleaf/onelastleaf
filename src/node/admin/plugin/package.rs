@@ -1,4 +1,4 @@
-use std::str::FromStr as _;
+use std::{os::unix::ffi::OsStrExt as _, str::FromStr as _};
 
 use sha2::{Digest as _, Sha256};
 use tonic::Status;
@@ -9,8 +9,9 @@ use crate::{
         InstallMode, InstalledPlugin, ObservedPluginState, PluginId, PluginInspection,
         PluginJobCounts, PluginListEntry,
         package::{
-            DeclarationMode, EffectiveManifest, GitSelection, PackageDiagnostic,
-            PackageOperationOutcome, PackageOperationResult, PluginDeclaration, ReleaseListing,
+            DeclarationLocation, DeclarationMode, EffectiveManifest, GitSelection,
+            PackageDiagnostic, PackageOperationOutcome, PackageOperationResult, PluginDeclaration,
+            ReleaseListing,
         },
         protocol,
     },
@@ -270,19 +271,52 @@ pub(super) fn decode_stored_declaration(
             "stored declaration differs from installed package metadata",
         ));
     }
-    let selection = match &declaration.selection {
-        GitSelection::Default => None,
-        GitSelection::Branch(branch) => Some(oll::PluginGitSelection {
-            selection: Some(oll::plugin_git_selection::Selection::Branch(branch.clone())),
-        }),
-        GitSelection::Revision(revision) => Some(oll::PluginGitSelection {
-            selection: Some(oll::plugin_git_selection::Selection::Revision(
-                revision.clone(),
-            )),
-        }),
+    let (location, selection) = match &declaration.location {
+        DeclarationLocation::Git {
+            remote: _,
+            selection,
+        } => {
+            if installed.selected_commit.is_none() {
+                return Err(corrupt_plugin_state(
+                    "Git declaration has no selected commit",
+                ));
+            }
+            let selection = match selection {
+                GitSelection::Default => None,
+                GitSelection::Branch(branch) => Some(oll::PluginGitSelection {
+                    selection: Some(oll::plugin_git_selection::Selection::Branch(branch.clone())),
+                }),
+                GitSelection::Revision(revision) => Some(oll::PluginGitSelection {
+                    selection: Some(oll::plugin_git_selection::Selection::Revision(
+                        revision.clone(),
+                    )),
+                }),
+            };
+            (
+                oll::plugin_declaration::Location::SanitizedRemote(
+                    declaration
+                        .sanitized_remote()
+                        .expect("Git declaration has a sanitized remote"),
+                ),
+                selection,
+            )
+        }
+        DeclarationLocation::Local { path } => {
+            if installed.selected_commit.is_some() {
+                return Err(corrupt_plugin_state(
+                    "local declaration unexpectedly has a selected commit",
+                ));
+            }
+            (
+                oll::plugin_declaration::Location::LocalPath(oll::NativePath {
+                    unix_path: path.as_os_str().as_bytes().to_vec(),
+                }),
+                None,
+            )
+        }
     };
     Ok(oll::PluginDeclaration {
-        sanitized_remote: declaration.sanitized_remote(),
+        location: Some(location),
         mode: protocol::encode_install_mode(mode),
         selection,
         release_id: declaration.release,

@@ -175,8 +175,8 @@ fn converts_plugin_modes_and_local_log_intents() {
         }))
     );
 
-    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Remote {
-        remote,
+    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit {
+        location: PluginInstallLocation::Remote(remote),
         selector,
         mode,
         json,
@@ -204,7 +204,7 @@ fn converts_plugin_modes_and_local_log_intents() {
     );
     assert!(json);
 
-    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Remote { mode, .. })) =
+    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit { mode, .. })) =
         intent(&[
             "oll",
             "plugin",
@@ -217,7 +217,8 @@ fn converts_plugin_modes_and_local_log_intents() {
     };
     assert_eq!(mode, PluginInstallMode::Release { release_id: None });
 
-    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Remote {
+    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit {
+        location: PluginInstallLocation::Remote(_),
         selector,
         mode,
         ..
@@ -227,6 +228,41 @@ fn converts_plugin_modes_and_local_log_intents() {
     };
     assert_eq!(selector, GitSelector::Default);
     assert_eq!(mode, PluginInstallMode::Source);
+
+    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Explicit {
+        location: PluginInstallLocation::Local(path),
+        selector,
+        mode,
+        ..
+    })) = intent(&["oll", "plugin", "install", "../local-plugin"])
+    else {
+        panic!()
+    };
+    assert_eq!(path, Path::new("../local-plugin"));
+    assert_eq!(selector, GitSelector::Default);
+    assert_eq!(mode, PluginInstallMode::Source);
+    assert!(
+        parse(&[
+            "oll",
+            "plugin",
+            "install",
+            "../local-plugin",
+            "--branch",
+            "main",
+        ])
+        .into_intent()
+        .is_err()
+    );
+    assert!(
+        parse(&["oll", "plugin", "install", "https://[invalid/plugin.git"])
+            .into_intent()
+            .is_err()
+    );
+    assert!(
+        parse(&["oll", "plugin", "install", "git@example.com:"])
+            .into_intent()
+            .is_err()
+    );
 }
 
 #[test]

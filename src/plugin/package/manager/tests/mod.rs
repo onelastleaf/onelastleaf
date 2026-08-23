@@ -1,6 +1,7 @@
 use super::*;
 
 mod concurrency;
+mod local;
 mod publication;
 mod reconcile;
 mod recovery;
