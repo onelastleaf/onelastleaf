@@ -330,10 +330,11 @@ not yet been implemented.
 ## TODO
 
 - [x] Build plugin SDK for C#/.NET, C++, Go, Java, Kotlin, Scala, Clojure,
-      Node.js/JS/TS, Python, Rust, Swift, Elixir, and Haskell.
+Node.js/JS/TS, Python, Rust, Swift, Elixir, and Haskell.
 - [ ] Build a reusable library version of oll for mobile clients.
 - [ ] Develop an Android oll client.
 - [ ] Add the protocol and runtime support required to execute plugins remotely.
+- [ ] Remove `plugin.id` and use `plugin.name` as the only plugin identity.
 - [ ] Add Windows support.
 
 ## Project layout
