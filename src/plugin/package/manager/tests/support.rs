@@ -194,8 +194,7 @@ pub(super) fn create_source_repository(root: &Path) -> PathBuf {
     fs::create_dir(&source).unwrap();
     fs::write(
         source.join("oll.toml"),
-        format!(
-            r#"format_version = 1
+        r#"format_version = 1
 [plugin]
 id = "oll.remote-install-test"
 name = "remote-install-test"
@@ -203,12 +202,11 @@ name = "remote-install-test"
 checkout = "source"
 steps = [
   ["/bin/echo", "recipe-log-marker"],
-  ["/bin/cp", "{{source}}/entry", "{{install}}/plugin"],
+  ["/bin/cp", "{source}/entry", "{install}/plugin"],
 ]
 [runtime]
-argv = ["{{install}}/plugin"]
-"#
-        ),
+argv = ["{install}/plugin"]
+"#,
     )
     .unwrap();
     fs::write(source.join("entry"), b"#!/bin/sh\nexit 0\n").unwrap();

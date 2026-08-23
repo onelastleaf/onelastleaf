@@ -409,7 +409,7 @@ checkout = "source"
 [runtime]
 argv = ["{source}/plugin"]
 "#;
-        assert!(PublisherManifest::parse(&source).is_err());
+        assert!(PublisherManifest::parse(source).is_err());
     }
 
     #[test]
@@ -466,7 +466,7 @@ name = "oll-test"
 [runtime]
 argv = ["/bin/true"]
 "#;
-        assert!(PublisherManifest::parse(&missing).is_err());
+        assert!(PublisherManifest::parse(missing).is_err());
 
         let mask = r#"format_version = 1
 [source]
@@ -489,7 +489,7 @@ hint = "install cargo"
 [runtime]
 argv = ["/bin/true"]
 "#;
-        assert!(PublisherManifest::parse(&old_dependencies).is_err());
+        assert!(PublisherManifest::parse(old_dependencies).is_err());
 
         let old_steps = r#"format_version = 1
 [plugin]
@@ -502,7 +502,7 @@ argv = ["/bin/true"]
 [runtime]
 argv = ["/bin/true"]
 "#;
-        assert!(PublisherManifest::parse(&old_steps).is_err());
+        assert!(PublisherManifest::parse(old_steps).is_err());
     }
 
     #[cfg(unix)]

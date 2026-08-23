@@ -354,8 +354,7 @@ async fn release_publication_ignores_source_dependencies_and_preserves_current_o
     fs::write(config_root.join("plugins.lua"), b"return {}\n").unwrap();
     let (store, layout, manager, _shutdown) = test_manager(directory.path(), &config_root).await;
     let plugin_id: PluginId = "oll.release-test".parse().unwrap();
-    let publisher = format!(
-        r#"format_version = 1
+    let publisher = r#"format_version = 1
 [plugin]
 id = "oll.release-test"
 name = "release-test"
@@ -364,9 +363,9 @@ checkout = "generation"
 [source.dependencies]
 "/definitely/missing/release-build-tool" = "Only source installations require this tool."
 [runtime]
-argv = ["{{generation}}/plugin"]
+argv = ["{generation}/plugin"]
 "#
-    );
+    .to_owned();
     fs::write(checkout_root.join("oll.toml"), &publisher).unwrap();
     let archive = directory.path().join("release.tar.gz");
     create_release_archive(&archive, &publisher);
@@ -511,8 +510,7 @@ async fn source_installation_still_requires_its_declared_build_dependencies() {
     let plugin_id: PluginId = "oll.source-dependency-test".parse().unwrap();
     fs::write(
         checkout_root.join("oll.toml"),
-        format!(
-            r#"format_version = 1
+        r#"format_version = 1
 [plugin]
 id = "oll.source-dependency-test"
 name = "source-dependency-test"
@@ -522,8 +520,7 @@ checkout = "source"
 "/definitely/missing/source-build-tool" = "Install the source build tool."
 [runtime]
 argv = ["/bin/true"]
-"#
-        ),
+"#,
     )
     .unwrap();
     let declaration = PluginDeclaration {
@@ -569,17 +566,15 @@ async fn daemon_shutdown_cancels_an_active_release_download_without_publication(
     let plugin_id: PluginId = "oll.release-cancel-test".parse().unwrap();
     fs::write(
         checkout_root.join("oll.toml"),
-        format!(
-            r#"format_version = 1
+        r#"format_version = 1
 [plugin]
 id = "oll.release-cancel-test"
 name = "release-cancel-test"
 [source]
 checkout = "source"
 [runtime]
-argv = ["{{install}}/plugin"]
-"#
-        ),
+argv = ["{install}/plugin"]
+"#,
     )
     .unwrap();
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))

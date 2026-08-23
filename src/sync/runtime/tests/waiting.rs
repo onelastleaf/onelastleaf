@@ -116,17 +116,16 @@ async fn uninitialized_peers_wait_on_one_session_then_bootstrap_without_backoff(
     fs::write(source.root.join("created.md"), "created locally").unwrap();
     let ready_deadline = Instant::now() + Duration::from_secs(10);
     let source_replica_id = loop {
-        if let ReplicaStatus::InitializedPopulated { replica_id } = source_replica.status().await {
-            if receiver_replica.status().await
+        if let ReplicaStatus::InitializedPopulated { replica_id } = source_replica.status().await
+            && receiver_replica.status().await
                 == (ReplicaStatus::InitializedPopulated { replica_id })
-                && receiver_sync
-                    .status()
-                    .await
-                    .iter()
-                    .any(|peer| peer.connection_state == PeerConnectionState::Ready as i32)
-            {
-                break replica_id;
-            }
+            && receiver_sync
+                .status()
+                .await
+                .iter()
+                .any(|peer| peer.connection_state == PeerConnectionState::Ready as i32)
+        {
+            break replica_id;
         }
         assert!(
             Instant::now() < ready_deadline,
