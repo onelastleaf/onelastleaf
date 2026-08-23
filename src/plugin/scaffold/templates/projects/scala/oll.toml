@@ -1,0 +1,17 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "source"
+steps = [
+  ["gradle", "--project-dir", "{source}", "--no-daemon", "-PinstallDir={install}", "installDist"],
+]
+
+[source.dependencies]
+"gradle" = "Install Gradle and a Java 21 JDK and ensure gradle is in PATH."
+
+[runtime]
+argv = ["{install}/bin/__OLL_PLUGIN_NAME__"]

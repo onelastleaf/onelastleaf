@@ -216,67 +216,82 @@ mod tests {
             (
                 PluginLanguage::Dotnet,
                 crate::plugin::package::SourceCheckout::Source,
+                "dotnet build",
             ),
             (
                 PluginLanguage::Cpp,
                 crate::plugin::package::SourceCheckout::Source,
+                "cmake -S",
             ),
             (
                 PluginLanguage::Go,
                 crate::plugin::package::SourceCheckout::Source,
+                "go build",
             ),
             (
                 PluginLanguage::Java,
                 crate::plugin::package::SourceCheckout::Source,
+                "gradle --no-daemon classes",
             ),
             (
                 PluginLanguage::Kotlin,
                 crate::plugin::package::SourceCheckout::Source,
+                "gradle --no-daemon classes",
             ),
             (
                 PluginLanguage::Scala,
                 crate::plugin::package::SourceCheckout::Source,
+                "gradle --no-daemon classes",
             ),
             (
                 PluginLanguage::Clojure,
                 crate::plugin::package::SourceCheckout::Source,
+                "gradle --no-daemon classes",
             ),
             (
                 PluginLanguage::Javascript,
                 crate::plugin::package::SourceCheckout::Install,
+                "npm install",
             ),
             (
                 PluginLanguage::Typescript,
                 crate::plugin::package::SourceCheckout::Install,
+                "npm run build",
             ),
             (
                 PluginLanguage::Python,
                 crate::plugin::package::SourceCheckout::Generation,
+                ".venv/bin/pip install",
             ),
             (
                 PluginLanguage::Rust,
                 crate::plugin::package::SourceCheckout::Source,
+                "cargo build --release",
             ),
             (
                 PluginLanguage::Swift,
                 crate::plugin::package::SourceCheckout::Source,
+                "swift build --configuration release",
             ),
             (
                 PluginLanguage::Elixir,
                 crate::plugin::package::SourceCheckout::Source,
+                "mix compile",
             ),
             (
                 PluginLanguage::Haskell,
                 crate::plugin::package::SourceCheckout::Install,
+                "cabal build",
             ),
         ];
-        for (index, (language, checkout)) in languages.into_iter().enumerate() {
+        let mut readmes = std::collections::HashSet::new();
+        for (index, (language, checkout, build_command)) in languages.into_iter().enumerate() {
             let destination = root.path().join(format!("plugin-{index}"));
             scaffold_plugin_project(
                 &destination,
                 language,
                 Some(&format!("org.example.plugin-{index}")),
-                Some(&format!("plugin-{index}")),
+                Some("example"),
             )
             .unwrap();
             for required in ["oll.toml", "README.md", ".gitignore"] {
@@ -287,12 +302,31 @@ mod tests {
             assert_eq!(parsed.source.checkout, checkout);
             assert!(!manifest.contains("[[source."));
             assert!(!manifest.contains("{staging}"));
+            let readme = fs::read_to_string(destination.join("README.md")).unwrap();
+            assert!(readme.contains("## Requirements"));
+            assert!(readme.contains("## Build"));
+            assert!(readme.contains(build_command));
+            assert!(readme.contains("## Test"));
+            assert!(readme.contains("## Install with oll"));
+            assert!(!readme.contains("__OLL_"));
+            assert!(readmes.insert(readme), "language templates shared a README");
+            for entry in walkdir::WalkDir::new(&destination) {
+                let entry = entry.unwrap();
+                if entry.file_type().is_file() {
+                    let contents = fs::read_to_string(entry.path()).unwrap();
+                    assert!(
+                        !contents.contains("__OLL_"),
+                        "unrendered placeholder in {}",
+                        entry.path().display()
+                    );
+                }
+            }
             assert!(
                 scaffold_plugin_project(
                     &destination,
                     language,
                     Some(&format!("org.example.plugin-{index}")),
-                    Some(&format!("plugin-{index}")),
+                    Some("example"),
                 )
                 .is_err()
             );

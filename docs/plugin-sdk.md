@@ -160,16 +160,19 @@ ordinary user permissions subject to umask.
 
 Every project contains a source-mode `oll.toml`, build/package metadata, an
 idiomatic action entry point, one example `echo` action, tests, `.gitignore`,
-and a short README. The generated manifest explicitly selects `source` checkout
-for ordinary compiled projects, `install` checkout for Node.js and Haskell, and
-`generation` checkout for Python. These are generator choices, not runtime
-language detection. Scaffold tests are opt-in development checks; installation
-recipes MUST NOT build or run them. Registry-backed templates declare the
-matching published SDK dependency and do not copy SDK implementation source.
-The C++ template uses the pinned CMake `FetchContent` contract above. Templates
-do not create `plugins.lua`, per-plugin Lua configuration, masks,
-`oll-release.json`, a license chosen on the author's behalf, CI tied to one
-forge, or a Git history.
+and a language-specific README with concrete prerequisite, build, test, and oll
+installation commands. Canonical scaffolds are ordinary per-language directory
+trees embedded into the oll binary; the generator recursively renders those
+trees and MUST NOT reconstruct their files or manifests in Rust source. The
+generated manifest explicitly selects `source` checkout for ordinary compiled
+projects, `install` checkout for Node.js and Haskell, and `generation` checkout
+for Python. These are generator choices, not runtime language detection.
+Scaffold tests are opt-in development checks; installation recipes MUST NOT
+build or run them. Registry-backed templates declare the matching published SDK
+dependency and do not copy SDK implementation source. The C++ template uses the
+pinned CMake `FetchContent` contract above. Templates do not create
+`plugins.lua`, per-plugin Lua configuration, masks, `oll-release.json`, a
+license chosen on the author's behalf, CI tied to one forge, or a Git history.
 
 The generated `oll.toml` uses only the placeholders allowed by its declared
 checkout and launches only from the published generation. Recipe commands

@@ -1,0 +1,19 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "source"
+steps = [
+  ["swift", "build", "--package-path", "{source}", "--configuration", "release", "--scratch-path", "{source}/build"],
+  ["install", "-m", "755", "{source}/build/release/__OLL_PLUGIN_NAME__", "{install}/__OLL_PLUGIN_NAME__"],
+]
+
+[source.dependencies]
+"swift" = "Install Swift and ensure swift is in PATH."
+"install" = "Install a POSIX install utility and ensure it is in PATH."
+
+[runtime]
+argv = ["{install}/__OLL_PLUGIN_NAME__"]

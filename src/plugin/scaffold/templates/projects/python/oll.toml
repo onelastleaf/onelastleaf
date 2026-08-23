@@ -1,0 +1,18 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "generation"
+steps = [
+  ["python3", "-m", "venv", "{generation}/.venv"],
+  ["{generation}/.venv/bin/pip", "install", "{generation}"],
+]
+
+[source.dependencies]
+"python3" = "Install Python 3.11 or newer and ensure python3 is in PATH."
+
+[runtime]
+argv = ["{generation}/.venv/bin/__OLL_PLUGIN_NAME__"]

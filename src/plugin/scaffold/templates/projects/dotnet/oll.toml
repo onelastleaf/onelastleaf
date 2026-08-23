@@ -1,0 +1,17 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "source"
+steps = [
+  ["dotnet", "publish", "{source}/src/Plugin.csproj", "--configuration", "Release", "--output", "{install}"],
+]
+
+[source.dependencies]
+"dotnet" = "Install the .NET SDK and ensure dotnet is in PATH."
+
+[runtime]
+argv = ["dotnet", "{install}/Plugin.dll"]

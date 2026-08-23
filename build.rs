@@ -12,6 +12,7 @@ const PROTO_FILES: &[&str] = &[
 ];
 
 fn main() -> Result<(), Box<dyn Error>> {
+    println!("cargo:rerun-if-changed=src/plugin/scaffold/templates/projects");
     for path in PROTO_FILES {
         println!("cargo:rerun-if-changed={path}");
     }

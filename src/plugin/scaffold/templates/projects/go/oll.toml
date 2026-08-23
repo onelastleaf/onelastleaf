@@ -1,0 +1,17 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "source"
+steps = [
+  ["go", "build", "-o", "{install}/__OLL_PLUGIN_NAME__", "./cmd/plugin"],
+]
+
+[source.dependencies]
+"go" = "Install Go and ensure go is in PATH."
+
+[runtime]
+argv = ["{install}/__OLL_PLUGIN_NAME__"]

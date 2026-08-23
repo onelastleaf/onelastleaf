@@ -30,6 +30,7 @@ gix-url = "0.37"
 hyper-util = { version = "0.1", features = ["tokio"] }
 hkdf = "0.13"
 infer = "0.22"
+include_dir = "0.7"
 libc = "0.2"
 loro = "1.13"
 mlua = { version = "0.12", features = ["luajit", "vendored", "send"] }

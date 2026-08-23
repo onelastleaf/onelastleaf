@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "__OLL_PLUGIN_NAME__"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = ["onelastleaf-plugin-sdk==0.1.0"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+__OLL_PLUGIN_NAME__ = "__OLL_PLUGIN_MODULE__.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

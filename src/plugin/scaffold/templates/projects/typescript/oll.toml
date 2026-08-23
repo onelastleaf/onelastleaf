@@ -1,0 +1,17 @@
+format_version = 1
+
+[plugin]
+id = "__OLL_PLUGIN_ID__"
+name = "__OLL_PLUGIN_NAME__"
+
+[source]
+checkout = "install"
+steps = [
+  ["npm", "install"],
+]
+
+[source.dependencies]
+"npm" = "Install Node.js with npm and ensure npm is in PATH."
+
+[runtime]
+argv = ["node", "{install}/dist/index.js"]
