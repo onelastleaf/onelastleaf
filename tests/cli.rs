@@ -786,9 +786,19 @@ fn plugin_install_help_and_validation_expose_file_driven_workflow() {
         stdout.contains("plugins.lua"),
         "missing file workflow:\n{stdout}"
     );
+    assert!(
+        stdout.contains("[<RELEASE_ID>]"),
+        "missing optional release ID:\n{stdout}"
+    );
 
     for arguments in [
         vec!["plugin", "install"],
+        vec![
+            "plugin",
+            "install",
+            "git@github.com:example/plugin.git",
+            "--release",
+        ],
         vec![
             "plugin",
             "install",

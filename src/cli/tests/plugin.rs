@@ -37,6 +37,15 @@ fn parses_documented_plugin_and_job_commands() {
             "--branch",
             "releases",
             "--release",
+        ],
+        vec![
+            "oll",
+            "plugin",
+            "install",
+            "https://github.com/example/oll-anki.git",
+            "--branch",
+            "releases",
+            "--release",
             "v0.3.1",
             "--json",
         ],
@@ -190,10 +199,23 @@ fn converts_plugin_modes_and_local_log_intents() {
     assert_eq!(
         mode,
         PluginInstallMode::Release {
-            release_id: "v0.3.1".to_owned(),
+            release_id: Some("v0.3.1".to_owned()),
         }
     );
     assert!(json);
+
+    let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Remote { mode, .. })) =
+        intent(&[
+            "oll",
+            "plugin",
+            "install",
+            "git@example.com:plugins/example.git",
+            "--release",
+        ])
+    else {
+        panic!()
+    };
+    assert_eq!(mode, PluginInstallMode::Release { release_id: None });
 
     let CliIntent::Plugin(PluginIntent::Install(PluginInstallIntent::Remote {
         selector,

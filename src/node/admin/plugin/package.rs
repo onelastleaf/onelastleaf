@@ -232,7 +232,7 @@ fn encode_installation_outcome(outcome: PackageOperationOutcome) -> i32 {
     }
 }
 
-fn decode_stored_declaration(
+pub(super) fn decode_stored_declaration(
     installed: &InstalledPlugin,
 ) -> Result<oll::PluginDeclaration, Status> {
     let actual_digest: [u8; 32] = Sha256::digest(&installed.normalized_declaration).into();
@@ -255,7 +255,17 @@ fn decode_stored_declaration(
         DeclarationMode::Source => InstallMode::Source,
         DeclarationMode::Release => InstallMode::Release,
     };
-    if mode != installed.install_mode || declaration.release != installed.release_id {
+    let release_matches = match (
+        mode,
+        declaration.release.as_deref(),
+        installed.release_id.as_deref(),
+    ) {
+        (InstallMode::Source, None, None) => true,
+        (InstallMode::Release, Some(declared), Some(installed)) => declared == installed,
+        (InstallMode::Release, None, Some(_)) => true,
+        _ => false,
+    };
+    if mode != installed.install_mode || !release_matches {
         return Err(corrupt_plugin_state(
             "stored declaration differs from installed package metadata",
         ));

@@ -234,6 +234,11 @@ fetch/build/download failure is an item failure and does not discard successful
 items. A global `plugins.lua` syntax/schema failure rejects the request because
 there is no coherent declaration set to admit.
 
+A release-mode remote install may omit `release_id` to request the publisher
+default from `oll-release.json`; a present ID remains opaque and exact. The
+durable declaration preserves that omission, while installed package metadata
+records the concrete release ID selected for the published generation.
+
 When remote installation would replace a declaration, the first call returns
 `confirmation_required`, the resolved PluginId, a redacted change summary, and
 the SHA-256 of the normalized current declaration. After the user confirms, the
@@ -249,8 +254,8 @@ destructive intent begins cannot resurrect partial state.
 `ListPluginReleases` resolves the plugin's declaration, reads the selected
 repository's explicit `oll-release.json`, and returns opaque release IDs and
 declared targets without selecting or parsing a newest version. A PluginId may
-select an uninstalled declaration whose release field is intentionally absent;
-a name selector requires an existing SQL identity binding.
+select an uninstalled declaration whose absent release field requests the
+publisher default; a name selector requires an existing SQL identity binding.
 
 `ListPlugins` returns compact identity, desired/observed state, current/running
 generation, and last-failure summaries. `GetPlugin` returns the complete

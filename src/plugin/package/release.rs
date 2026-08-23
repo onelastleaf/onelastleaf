@@ -13,6 +13,7 @@ use super::{PackageError, PublisherManifest};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReleaseIndex {
     pub plugin_id: String,
+    default_release: Option<String>,
     releases: BTreeMap<String, Release>,
 }
 
@@ -51,7 +52,16 @@ pub struct ReleaseListing {
 struct RawReleaseIndex {
     format_version: u32,
     plugin_id: String,
+    #[serde(default, deserialize_with = "deserialize_present_string")]
+    default_release: Option<String>,
     releases: UniqueMap<Release>,
+}
+
+fn deserialize_present_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
 }
 
 impl ReleaseIndex {
@@ -77,7 +87,7 @@ impl ReleaseIndex {
                 "release index PluginId differs from publisher manifest",
             ));
         }
-        for (release_id, release) in &raw.releases.0 {
+        for (release_id, release) in &raw.releases.entries {
             if release_id.is_empty() {
                 return Err(invalid("release IDs must not be empty"));
             }
@@ -85,10 +95,36 @@ impl ReleaseIndex {
                 artifact.validate()?;
             }
         }
+        let default_release = match raw.default_release {
+            Some(release_id) if release_id.is_empty() => {
+                return Err(invalid("default_release must not be empty"));
+            }
+            Some(release_id) if !raw.releases.entries.contains_key(&release_id) => {
+                return Err(invalid("default_release does not name a release"));
+            }
+            Some(release_id) => Some(release_id),
+            None => raw.releases.first,
+        };
         Ok(Self {
             plugin_id: raw.plugin_id,
-            releases: raw.releases.0,
+            default_release,
+            releases: raw.releases.entries,
         })
+    }
+
+    pub fn resolve_release_id<'a>(
+        &'a self,
+        release_id: Option<&'a str>,
+    ) -> Result<&'a str, PackageError> {
+        release_id
+            .or(self.default_release.as_deref())
+            .ok_or_else(|| {
+                PackageError::new(
+                    "release_not_found",
+                    "release_index",
+                    "release index has no release to select by default",
+                )
+            })
     }
 
     pub fn listings(&self) -> Vec<ReleaseListing> {
@@ -204,7 +240,10 @@ fn invalid(message: impl Into<String>) -> PackageError {
     PackageError::new("release_index_invalid", "release_index", message)
 }
 
-struct UniqueMap<T>(BTreeMap<String, T>);
+struct UniqueMap<T> {
+    entries: BTreeMap<String, T>,
+    first: Option<String>,
+}
 
 impl<'de, T> Deserialize<'de> for UniqueMap<T>
 where
@@ -235,14 +274,18 @@ where
         A: MapAccess<'de>,
     {
         let mut entries = BTreeMap::new();
+        let mut first = None;
         while let Some((key, value)) = access.next_entry::<String, T>()? {
             if entries.insert(key.clone(), value).is_some() {
                 return Err(serde::de::Error::custom(format!(
                     "duplicate object key {key:?}"
                 )));
             }
+            if first.is_none() {
+                first = Some(key);
+            }
         }
-        Ok(UniqueMap(entries))
+        Ok(UniqueMap { entries, first })
     }
 }
 
@@ -272,6 +315,7 @@ argv = ["{install}/bin/test"]
             r#"{{
   "format_version": 1,
   "plugin_id": "oll.test",
+  "default_release": "v0.3.1",
   "releases": {{
     "z": {{"artifacts": []}},
     "v0.3.1": {{"artifacts": [{{
@@ -287,8 +331,51 @@ argv = ["{install}/bin/test"]
         );
         let index = ReleaseIndex::parse(&source, &publisher()).unwrap();
         assert_eq!(index.listings()[0].release_id, "v0.3.1");
+        assert_eq!(index.resolve_release_id(None).unwrap(), "v0.3.1");
         assert!(index.select("V0.3.1", "x86_64-unknown-linux-gnu").is_err());
         assert!(index.select("v0.3.1", "x86_64-unknown-linux-gnu").is_ok());
+    }
+
+    #[test]
+    fn omitted_default_uses_the_first_release_in_json_source_order() {
+        let source = r#"{
+  "format_version": 1,
+  "plugin_id": "oll.test",
+  "releases": {
+    "z-first": {"artifacts": []},
+    "a-second": {"artifacts": []}
+  }
+}"#;
+
+        let index = ReleaseIndex::parse(source, &publisher()).unwrap();
+        assert_eq!(index.resolve_release_id(None).unwrap(), "z-first");
+        assert_eq!(index.listings()[0].release_id, "a-second");
+    }
+
+    #[test]
+    fn explicit_default_must_be_a_nonempty_release_id() {
+        for default_release in [r#"""#, r#""missing""#, "null"] {
+            let source = format!(
+                r#"{{
+  "format_version": 1,
+  "plugin_id": "oll.test",
+  "default_release": {default_release},
+  "releases": {{"present": {{"artifacts": []}}}}
+}}"#
+            );
+
+            let error = ReleaseIndex::parse(&source, &publisher()).unwrap_err();
+            assert_eq!(error.code(), "release_index_invalid");
+        }
+    }
+
+    #[test]
+    fn an_empty_release_index_has_no_implicit_default() {
+        let source = r#"{"format_version":1,"plugin_id":"oll.test","releases":{}}"#;
+        let index = ReleaseIndex::parse(source, &publisher()).unwrap();
+
+        let error = index.resolve_release_id(None).unwrap_err();
+        assert_eq!(error.code(), "release_not_found");
     }
 
     #[test]

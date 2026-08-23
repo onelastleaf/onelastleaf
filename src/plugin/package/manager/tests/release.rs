@@ -345,7 +345,7 @@ async fn failed_git_phase_event_preserves_correlation_and_redacts_remote_credent
 
 #[cfg(target_os = "linux")]
 #[tokio::test]
-async fn release_publication_ignores_source_dependencies_and_preserves_current_on_mismatch() {
+async fn default_release_publication_records_id_and_preserves_current_on_failure() {
     let directory = tempfile::TempDir::new().unwrap();
     let config_root = directory.path().join("config");
     let checkout_root = directory.path().join("release-checkout");
@@ -373,6 +373,7 @@ argv = ["{generation}/plugin"]
     let release_index = serde_json::json!({
         "format_version": 1,
         "plugin_id": plugin_id.as_str(),
+        "default_release": "opaque-v1",
         "releases": {
             "opaque-v1": {
                 "artifacts": [{
@@ -394,7 +395,7 @@ argv = ["{generation}/plugin"]
         remote: "https://example.com/oll-release-test.git".to_owned(),
         mode: DeclarationMode::Release,
         selection: GitSelection::Revision("1".repeat(40)),
-        release: Some("opaque-v1".to_owned()),
+        release: None,
     };
     let mut declarations = PluginDeclarations::default();
     declarations.insert(plugin_id.clone(), declaration.clone());
@@ -439,6 +440,9 @@ argv = ["{generation}/plugin"]
         .await
         .unwrap();
     assert_eq!(installed.release_id.as_deref(), Some("opaque-v1"));
+    let stored_declaration: PluginDeclaration =
+        serde_json::from_slice(&installed.normalized_declaration).unwrap();
+    assert!(stored_declaration.release.is_none());
     assert!(
         layout
             .generation(&plugin_id, installed.current_generation)

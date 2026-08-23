@@ -140,9 +140,9 @@ fn decode_install_remote(
                 "install_remote.release_id is forbidden in source mode",
             ));
         }
-        (DeclarationMode::Release, None | Some("")) => {
+        (DeclarationMode::Release, Some("")) => {
             return Err(Status::invalid_argument(
-                "install_remote.release_id is required in release mode",
+                "install_remote.release_id must not be empty",
             ));
         }
         _ => {}

@@ -274,7 +274,7 @@ impl CandidateBuilder {
             generation: (checkout == SourceCheckout::Generation).then_some(install.as_path()),
             mask_dir: &mask_dir,
         };
-        match declaration.mode {
+        let release_id = match declaration.mode {
             super::DeclarationMode::Source => {
                 check_dependencies(&resolved.effective, &recipe_root)?;
                 for argv in resolved.effective.expanded_source_steps(&paths)? {
@@ -319,9 +319,10 @@ impl CandidateBuilder {
                         error,
                     )
                 })?;
+                None
             }
             super::DeclarationMode::Release => {
-                candidate_guard = self
+                let (release_guard, release_id) = self
                     .materialize_release(ReleaseMaterialization {
                         declaration,
                         resolved: &resolved,
@@ -332,8 +333,10 @@ impl CandidateBuilder {
                         candidate_guard,
                     })
                     .await?;
+                candidate_guard = release_guard;
+                Some(release_id)
             }
-        }
+        };
         let verification_started = Instant::now();
         self.logger.emit(
             LogLevel::Info,
@@ -415,7 +418,7 @@ impl CandidateBuilder {
                 super::DeclarationMode::Source => InstallMode::Source,
                 super::DeclarationMode::Release => InstallMode::Release,
             },
-            release_id: declaration.release.clone(),
+            release_id,
             build_log_path: resolved.build_log,
         })
     }

@@ -255,6 +255,7 @@ a filename or URL.
 {
   "format_version": 1,
   "plugin_id": "oll.anki",
+  "default_release": "v0.3.1",
   "releases": {
     "v0.3.1": {
       "artifacts": [
@@ -274,14 +275,19 @@ a filename or URL.
 }
 ```
 
-Duplicate JSON object keys are invalid. The index PluginId must match the
-publisher manifest. `oll plugin releases <selector>` returns the opaque IDs in
-bytewise order and the canonical targets declared for each. It does not choose
-a newest release.
+Duplicate JSON object keys are invalid. The optional `default_release` must be
+a nonempty exact key in `releases`. When it is absent, the first `releases`
+object member in JSON source order is the default. An empty `releases` object
+has no default and therefore cannot satisfy a default release installation. The
+index PluginId must match the publisher manifest. `oll plugin releases
+<selector>` returns the opaque IDs in bytewise order and the canonical targets
+declared for each. oll never parses those IDs or chooses a newest release.
 
-A release-mode declaration names one exact release. Exactly one artifact in
-that release must match the local canonical target; zero and duplicate matches
-are errors. Initial target names include:
+A release-mode declaration either names one exact release or omits `release` to
+track the publisher-selected default. Each successful installation records the
+actual resolved release ID. Exactly one artifact in that release must match the
+local canonical target; zero and duplicate matches are errors. Initial target
+names include:
 
 ```text
 x86_64-unknown-linux-gnu
@@ -343,11 +349,12 @@ return {
 ```
 
 `mode` is `source` or `release` and defaults to `source`. `branch` and `rev` are
-optional and mutually exclusive. `release` is forbidden in source mode. It may
-be omitted from a release-mode declaration so the user can first run
-`oll plugin releases <plugin-id>` against that declaration; install, update, or
-reconcile then reports `release_selection_required` for that item without
-publishing anything until one opaque ID is written. There is no process-state,
+optional and mutually exclusive. `release` is forbidden in source mode. When
+`release` is omitted in release mode, installation resolves the index default:
+`default_release` when present, otherwise the first `releases` object member in
+source order. The omission remains in the durable declaration so a later
+`plugin update` against a changed Git state resolves its current default rather
+than pinning the previously installed ID. There is no process-state,
 semantic-version range, tag, hosting-platform, or user mask field.
 
 The file accepts one return statement containing a recursively literal table of
@@ -371,7 +378,7 @@ typed operation modes rather than forwarding generic command strings:
 ```text
 oll plugin install
 oll plugin install <git-remote> [--branch <branch> | --rev <revision>]
-  [--source | --release <release-id>]
+  [--source | --release [<release-id>]]
 oll plugin update <plugin-id-or-name>
 oll plugin reconcile
 oll plugin remove <plugin-id-or-name>
@@ -480,8 +487,7 @@ and retained build-log path. The `format_version = 1` diagnostic codes are:
 | `recipe_output_missing` | The effective runtime entrypoint was not produced. |
 | `release_index_missing` | `oll-release.json` is absent in release mode. |
 | `release_index_invalid` | The release index is malformed or inconsistent. |
-| `release_selection_required` | A release declaration must select one listed opaque ID before installation. |
-| `release_not_found` | The selected opaque release ID is absent. |
+| `release_not_found` | The selected opaque release ID is absent, or default selection was requested from an empty index. |
 | `artifact_unavailable` | No artifact matches the canonical local target. |
 | `artifact_ambiguous` | Multiple artifacts match the target. |
 | `artifact_download_failed` | An HTTP, HTTPS, or file download failed. |

@@ -21,7 +21,7 @@ impl CandidateBuilder {
     pub(super) async fn materialize_release(
         &self,
         request: ReleaseMaterialization<'_>,
-    ) -> Result<DirectoryGuard, PackageError> {
+    ) -> Result<(DirectoryGuard, String), PackageError> {
         let ReleaseMaterialization {
             declaration,
             resolved,
@@ -31,13 +31,6 @@ impl CandidateBuilder {
             install,
             candidate_guard,
         } = request;
-        let release_id = declaration.release.as_deref().ok_or_else(|| {
-            PackageError::new(
-                "release_selection_required",
-                "release_index",
-                "release-mode declaration must select an opaque release ID",
-            )
-        })?;
         let release_source = fs::read_to_string(
             resolved.checkout.source_root.join("oll-release.json"),
         )
@@ -50,7 +43,10 @@ impl CandidateBuilder {
             )
         })?;
         let index = ReleaseIndex::parse(&release_source, &resolved.publisher)?;
-        let artifact = index.select(release_id, local_target()?)?;
+        let release_id = index
+            .resolve_release_id(declaration.release.as_deref())?
+            .to_owned();
+        let artifact = index.select(&release_id, local_target()?)?;
         let archive_kind = artifact.archive;
         validate_platform_archive(archive_kind)?;
         let archive = resolved.staging.join(match archive_kind {
@@ -178,7 +174,7 @@ impl CandidateBuilder {
             )
         })?;
         extraction?;
-        Ok(candidate_guard)
+        Ok((candidate_guard, release_id))
     }
 }
 

@@ -8,7 +8,10 @@ use crate::{
         DesiredPluginState, InstalledPlugin, JobState, NormalizedJobPayload, ObservedPluginState,
         PluginArtifact, PluginArtifactId, PluginError, PluginInstanceId, PluginJob,
         PluginJobInspection, PluginOperationId,
-        package::{PackageDiagnostic, PackageOperationOutcome, PackageOperationResult},
+        package::{
+            DeclarationMode, GitSelection, InstallRemoteRequest, PackageDiagnostic,
+            PackageOperationOutcome, PackageOperationResult, PluginDeclaration,
+        },
         runtime::PluginSessionSnapshot,
     },
     protocol::oll::{self, reconcile_plugin_installations_request},
@@ -42,6 +45,23 @@ fn request_decoding_rejects_invalid_selectors_modes_digests_and_timestamps() {
             .code(),
         Code::InvalidArgument
     );
+
+    for invalid_release in [
+        install_remote(
+            oll::PluginPackageMode::Source as i32,
+            Some("release-opaque"),
+        ),
+        install_remote(oll::PluginPackageMode::Release as i32, Some("")),
+    ] {
+        let operation =
+            reconcile_plugin_installations_request::Operation::InstallRemote(invalid_release);
+        assert_eq!(
+            decode_reconcile_operation(Some(operation))
+                .unwrap_err()
+                .code(),
+            Code::InvalidArgument
+        );
+    }
 
     let mut bad_digest = install_remote(oll::PluginPackageMode::Source as i32, None);
     bad_digest.overwrite = Some(oll::PluginOverwriteAuthorization {
@@ -112,6 +132,45 @@ fn request_decoding_maps_every_desired_state_and_package_mode() {
         release,
         Ok(DecodedReconcileOperation::InstallRemote(_))
     ));
+
+    let default_release = decode_reconcile_operation(Some(
+        reconcile_plugin_installations_request::Operation::InstallRemote(install_remote(
+            oll::PluginPackageMode::Release as i32,
+            None,
+        )),
+    ));
+    assert!(matches!(
+        default_release,
+        Ok(DecodedReconcileOperation::InstallRemote(
+            InstallRemoteRequest {
+                declaration: PluginDeclaration {
+                    mode: DeclarationMode::Release,
+                    release: None,
+                    ..
+                },
+                ..
+            }
+        ))
+    ));
+}
+
+#[test]
+fn stored_default_release_declaration_keeps_the_resolved_release_as_package_metadata() {
+    let declaration = PluginDeclaration {
+        remote: "https://example.com/plugin.git".to_owned(),
+        mode: DeclarationMode::Release,
+        selection: GitSelection::Default,
+        release: None,
+    };
+    let mut installed = installed_plugin();
+    installed.normalized_declaration = serde_json::to_vec(&declaration).unwrap();
+    installed.declaration_sha256 = declaration.normalized_sha256();
+    installed.install_mode = crate::plugin::InstallMode::Release;
+    installed.release_id = Some("publisher-default".to_owned());
+
+    let encoded = super::package::decode_stored_declaration(&installed).unwrap();
+    assert_eq!(encoded.mode, oll::PluginPackageMode::Release as i32);
+    assert!(encoded.release_id.is_none());
 }
 
 #[test]

@@ -44,7 +44,8 @@ message InstallRemotePlugin {
   string remote = 1;
   PluginPackageMode mode = 2;
   PluginGitSelection selection = 3;
-  // Required only in release mode. Release IDs are opaque and exact.
+  // Forbidden in source mode. In release mode, omission selects the publisher
+  // default from oll-release.json; a present ID is opaque and exact.
   optional string release_id = 4;
   PluginOverwriteAuthorization overwrite = 5;
 }
@@ -154,6 +155,8 @@ message PluginDeclaration {
   string sanitized_remote = 1;
   PluginPackageMode mode = 2;
   PluginGitSelection selection = 3;
+  // Omission in release mode means that this declaration tracks the publisher
+  // default rather than pinning the currently installed release ID.
   optional string release_id = 4;
   // SHA-256 of the normalized declaration used for change detection and CAS.
   bytes normalized_sha256 = 5;

@@ -330,7 +330,7 @@ daemon's persistent background peer connection.
 oll plugin install [--json]
 oll plugin install <git-remote>
   [--rev <revision> | --branch <branch>]
-  [--release <release-id> | --source] [--json]
+  [--release [<release-id>] | --source] [--json]
 oll plugin new <path> --language <language>
   [--id <plugin-id>] [--name <plugin-name>]
 oll plugin reconcile [--json]
@@ -359,11 +359,12 @@ with the completed project.
 
 `git-remote` accepts standard Git URLs and SCP-style SSH syntax such as
 `git@github.com:example/oll-anki.git`. Source installation is the default.
-`--release <release-id>` and `--source` conflict; `--rev` and `--branch`
+`--release [<release-id>]` and `--source` conflict; `--rev` and `--branch`
 conflict. Source mode reads `oll.toml`; release mode also reads the explicit
 opaque release map in `oll-release.json` from the same selected repository
-state. oll neither parses semantic versions nor infers releases from filenames,
-URLs, tags, or branches.
+state. An omitted release ID selects `default_release`, or the first release in
+JSON source order when that field is absent. oll neither parses semantic
+versions nor infers releases from filenames, URLs, tags, or branches.
 
 Without a remote, `plugin install` installs missing or changed declarations from
 `<config-root>/plugins.lua`; it neither removes undeclared installations nor
@@ -401,10 +402,10 @@ the CLI exits nonzero if any requested item failed or remained unresolved.
 and schema of `<config-root>/plugins.lua` and every present typed mask without
 opening Admin, accessing a remote, running a recipe, or rewriting a file.
 `plugin releases` reads the selected repository's explicit release index and
-lists opaque IDs; an uninstalled release declaration may intentionally omit its
-selection for this discovery step. The command does not choose a newest release
-or change installation state. Publisher and user formats, system-Git behavior,
-and diagnostics are defined in `plugin-packaging.md`.
+lists opaque IDs. A release declaration may omit its release ID to track the
+publisher default. The command does not choose a newest release or change
+installation state. Publisher and user formats, system-Git behavior, and
+diagnostics are defined in `plugin-packaging.md`.
 
 A generic plugin call waits only until the host has durably admitted the job and
 the plugin has returned `JobAccepted`, then prints its JobId. Arguments after

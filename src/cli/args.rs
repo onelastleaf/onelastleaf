@@ -255,14 +255,15 @@ pub enum PluginCommand {
         /// Checkout the head of this branch.
         #[arg(long, conflicts_with = "rev", requires = "repository")]
         branch: Option<String>,
-        /// Install this exact opaque release ID from oll-release.json.
+        /// Install an exact release ID, or the publisher default when omitted.
         #[arg(
             long,
             value_name = "RELEASE_ID",
+            num_args = 0..=1,
             conflicts_with = "source",
             requires = "repository"
         )]
-        release: Option<String>,
+        release: Option<Option<String>>,
         /// Build from source. This is the default installation mode.
         #[arg(long, conflicts_with = "release", requires = "repository")]
         source: bool,

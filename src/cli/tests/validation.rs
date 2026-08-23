@@ -17,7 +17,7 @@ fn intent_whitelist_rejects_invalid_programmatic_states() {
                 repository: Some("https://example.com/plugin.git".parse().unwrap()),
                 rev: Some("v1".to_owned()),
                 branch: Some("main".to_owned()),
-                release: Some("release-1".to_owned()),
+                release: Some(Some("release-1".to_owned())),
                 source: true,
                 json: false,
             },
@@ -106,5 +106,16 @@ fn rejects_conflicting_modes() {
     );
     assert!(parse_from(["oll", "plugin"]).is_err());
     assert!(parse_from(["oll", "plugin", "install", "--release"]).is_err());
+    assert!(
+        parse_from([
+            "oll",
+            "plugin",
+            "install",
+            "https://example.com/plugin.git",
+            "--release=",
+        ])
+        .and_then(Cli::into_intent)
+        .is_err()
+    );
     assert!(parse_from(["oll", "plugin", "install", "--branch", "main"]).is_err());
 }

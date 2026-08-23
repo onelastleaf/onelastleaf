@@ -51,7 +51,7 @@ fn overwrite_authorization_preserves_the_original_remote_request() {
         "ssh://git@example.test/publisher/plugin.git",
         GitSelector::Branch("stable".to_owned()),
         PluginInstallMode::Release {
-            release_id: "release-7".to_owned(),
+            release_id: Some("release-7".to_owned()),
         },
     );
     let authorized = authorize_remote(
@@ -75,6 +75,18 @@ fn overwrite_authorization_preserves_the_original_remote_request() {
     let overwrite = authorized.overwrite.unwrap();
     assert_eq!(overwrite.plugin_id.unwrap().value, "oll.example");
     assert_eq!(overwrite.expected_declaration_sha256, vec![7; 32]);
+}
+
+#[test]
+fn default_release_install_omits_the_release_id() {
+    let remote = remote_install_request(
+        "https://example.test/publisher/plugin.git",
+        GitSelector::Default,
+        PluginInstallMode::Release { release_id: None },
+    );
+
+    assert_eq!(remote.mode, oll::PluginPackageMode::Release as i32);
+    assert!(remote.release_id.is_none());
 }
 
 #[test]

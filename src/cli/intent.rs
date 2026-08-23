@@ -354,7 +354,7 @@ pub enum PluginInstallIntent {
 #[derive(Debug, PartialEq)]
 pub enum PluginInstallMode {
     Source,
-    Release { release_id: String },
+    Release { release_id: Option<String> },
 }
 
 fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
@@ -418,7 +418,12 @@ fn plugin_intent(args: PluginArgs) -> Result<PluginIntent, clap::Error> {
                         "--release cannot be combined with --source",
                     ));
                 }
-                Some(_) if release.as_ref().is_some_and(String::is_empty) => {
+                Some(_)
+                    if release
+                        .as_ref()
+                        .and_then(Option::as_ref)
+                        .is_some_and(String::is_empty) =>
+                {
                     return Err(intent_error(
                         ErrorKind::InvalidValue,
                         "--release must not be empty",

@@ -365,9 +365,7 @@ fn remote_install_request(
     };
     let (mode, release_id) = match mode {
         PluginInstallMode::Source => (oll::PluginPackageMode::Source, None),
-        PluginInstallMode::Release { release_id } => {
-            (oll::PluginPackageMode::Release, Some(release_id))
-        }
+        PluginInstallMode::Release { release_id } => (oll::PluginPackageMode::Release, release_id),
     };
     oll::InstallRemotePlugin {
         remote: remote.to_owned(),
