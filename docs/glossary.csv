@@ -1,218 +1,219 @@
 术语,含义
-onelastleaf / oll,项目名称以及唯一可执行文件的名称；同一个 oll 二进制既提供 CLI 也运行 daemon。
-daemon（守护进程）,由 oll run 启动的长期运行进程；负责一个 node 的配置、副本、同步、插件和日志。
-client process（客户端进程）,执行一个有界命令后退出的 oll 进程；按命令分为 local client、admin client、bootstrap client 或 launcher client。
-deployment（部署）,由一个 config root 界定的一整套本地运行状态；一个 deployment 同时最多有一个 daemon、一个 node 和一个 replica。
-cardinality invariant（基数不变量）,固定关系：one running oll daemon = one node = one replica；oll 不提供进程内多副本挂载或切换。
-config root（配置根目录）,一个 deployment 的用户配置根目录；容纳 config.lua、node.json、replica.json、plugins.lua 和 Admin UDS 等文件。
-deployment key（部署键）,根据 config root 的规范 Unix 路径计算出的 SHA-256 派生键；用于隔离锁和 plugin data root。
-single-instance lock（单实例锁）,daemon 持有的非阻塞独占 flock；阻止同一 deployment 同时运行多个 oll 实例。
-Node（节点）,一个正在运行并参与同步的 oll daemon；拓扑角色不会改变它的副本读写权。
-NodeIdentity（节点身份）,NodeId 与 NodeName 的一对一组合；节点在所有协议边界始终声明同一组合。
-NodeId,标识节点的规范 UUID v4；不携带路由、权限或复制权威语义。
-NodeName,节点声明的人类可读名称；使用小写 ASCII DNS label，并作为已学习 peer 的 CLI 选择器。
-identity binding（身份绑定）,持久记录 NodeId 与 NodeName 的一对一关系；已知 ID 换名或已知名称换 ID 都被视为冲突。
-identity epoch（身份纪元）,node 或 replica 身份被有效替换时递增的本地协调值；旧纪元上的同步会话必须关闭。
-Replica（副本）,一个完整的逻辑文档树；包含一个 catalog LoroDoc、多个 document LoroDoc 和二进制 blob。
-replica slot（副本槽位）,一个 deployment 唯一的副本位置；可以处于 uninitialized、initialized empty 或 initialized populated。
-ReplicaId,标识一个逻辑文档库的规范 UUID v4；同步同一文档库的多个 node 使用相同 ReplicaId。
-uninitialized replica（未初始化副本）,没有 ReplicaId 和 active replica metadata 的槽位；oll init 完成后仍处于该状态。
-initialized empty replica（已初始化空副本）,已有稳定 ReplicaId 和 catalog 但没有可见条目的副本。
-initialized populated replica（已初始化非空副本）,已有稳定 ReplicaId 且至少包含一个可见条目的正常副本。
-working tree（工作树）,replica_root 下由用户直接编辑的普通文件目录树；它是逻辑副本的投影而不是崩溃恢复权威。
-replica_root,配置的 working tree 根目录；其中不得放置 oll 的隐藏元数据、日志、数据库或插件包。
-replica store（副本存储）,oll 管理的 SQL 持久状态；保存 CRDT、blob、身份缓存、操作历史和投影恢复记录。
-store backend（存储后端）,replica store 的物理实现；当前为 SQLite 或 PostgreSQL，二者必须实现相同逻辑契约。
-active generation（活动代）,SQL 中当前对 daemon 可见且具有权威性的 replica generation。
-inactive generation（非活动代）,为同步或导入构建但尚未通过原子切换成为权威状态的候选 generation。
-Catalog（目录对象）,描述 replica 命名空间、树形关系、条目类型、对象身份、元数据和 tombstone 的 LoroDoc。
-catalog LoroDoc,replica 唯一的目录 CRDT 对象；固定包含 tree、catalog 和 entries 三个根容器。
-CatalogNodeId,目录树中一个目录、文本文档或二进制条目的稳定 UUID v4；不同于 LoroTree 内部节点 ID。
-Document（文档）,受支持的文本文件对应的逻辑对象；具有稳定 DocumentId、一个 LoroDoc 和一个 catalog 条目。
-DocumentId,一个 text document LoroDoc 的稳定 UUID v4；可靠的移动或重命名不会改变它。
-document LoroDoc,保存一个文档 content 文本和 data 抽象 CRDT 数据的 LoroDoc。
-Binary（二进制文件）,不符合受支持文本规则的普通文件；具有 BinaryId 和 LWW blob 版本但没有独立 LoroDoc。
-BinaryId,一个二进制文件身份的稳定 UUID v4；可靠移动不改变它，文件类型改变则创建新身份。
-blob,按 SHA-256 寻址的不可变二进制字节内容；catalog 保存其版本引用。
-LoroDoc,Loro 提供的一个 CRDT 文档和事务边界；一个 oll replica 并不是单个 LoroDoc。
-LoroPeerId,replica store 使用的本地 Loro actor 身份；仅属于实现内部，不等同 NodeId 或 ReplicaId。
-LWW（last writer wins）,二进制版本冲突规则；按 lamport_clock 再按 writer NodeId 的确定性顺序选择胜者。
-Lamport clock,持久化的逻辑时钟；为本地二进制写入生成可比较的 LWW 版本戳。
-tombstone（墓碑）,条目从可见命名空间删除后保留的因果历史；在有因果稳定性 GC 方案前不能随意丢弃。
-DocumentPath,document/plugin API 使用的 replica 内规范绝对 UTF-8 地址；路径是地址而不是对象身份。
-NativePath,本地 Unix Admin API 传递的原始路径字节；不同于跨文档 API 的 DocumentPath。
-portable sibling key,对文件名做 Unicode NFC 和完整大小写折叠得到的同级冲突键；用于跨平台检测名称碰撞。
-conflict projection（冲突投影）,同级 catalog 条目名称碰撞时附加 .conflict-<CatalogNodeId> 的确定性显示规则；不会制造新的 CRDT rename。
-CatalogRevision,针对一个 CatalogNodeId 的不透明修订；保护路径、父级、名称、类型和 catalog metadata。
-DocumentRevision,针对一个 DocumentId 的不透明修订；保护正文和抽象 CRDT 容器。
-precondition（前置条件）,写入前指定对象 ID 与 revision 的乐观并发检查；失败返回 REVISION_CONFLICT 且整次提交不生效。
-blind write（盲写）,调用者有意省略 revision precondition 的写入；允许基于当前状态直接提交。
-host-level commit（主机级提交）,跨 catalog、多个 document LoroDoc、binary metadata 和操作历史的本地原子可见提交。
-replica write coordinator（副本写协调器）,串行化 precondition 检查、候选变更、SQL 提交和 daemon 可见状态发布的 owner。
-projection（投影）,根据 replica store 的权威状态在 working tree 中创建、更新、移动或删除文件。
-targeted projection（定点投影）,只重建一次 host-level commit 影响路径的可恢复投影任务。
-projection_pending,snapshot replacement 后要求完整重建 working tree 的 durable marker；清除前禁止扫描旧树作为输入。
-filesystem reconciliation（文件系统协调）,watcher 将 working tree 的最终状态读入并转换为新的本地 replica mutation。
-operation history（操作历史）,本地保存的高级 create、update、move、delete、replace 记录；不复制且不包含 Loro 内部操作。
-.ollsnap,一个 zstd frame 包裹受约束 POSIX tar 的完整逻辑 replica checkpoint 文件。
-snapshot（快照）,catalog、全部保留 document LoroDoc 和所需 blob 的完整检查点；不是同步增量或 node 配置备份。
-snapshot manifest,.ollsnap 中的严格 manifest.json；声明格式版本、身份、条目、尺寸和 SHA-256。
-SnapshotId,标识一次 snapshot 导出文件的规范 UUID v4；不同于其中保存的 ReplicaId。
-snapshot inspect,只验证归档前缀和 manifest 并显示元数据；不声称 payload 已完整验证。
-snapshot verify,流式验证完整归档结构、顺序、尺寸、hash、Loro 可解码性和 catalog 业务一致性。
-snapshot export,在 replica-wide barrier 下取得一致状态并以 no-replace 方式原子发布 .ollsnap。
-snapshot import,先完整验证并构建 inactive generation 再初始化或替换唯一 replica；不是 CRDT merge。
-snapshot initialize,在空 replica slot 中采用 snapshot 的 ReplicaId 和完整内容。
-snapshot replace,在用户两次确认后用 snapshot 破坏性替换当前唯一 replica 和 working tree。
-format_version,持久文件格式的显式版本；用于拒绝不支持的文件布局，不是 protobuf schema 版本。
-connect,节点主动连接的远端 sync target；描述网络拓扑而非复制权威。
-listen,节点被动接受 sync TCP 连接的本地 bind endpoint；描述拓扑而非权限。
-peer,通过 sync transport 与本 node 通信的另一个 node。
-peer directory,deployment-local 的已配置 target、已认证 inbound peer 和已学习 NodeIdentity 绑定集合。
-network key,同一 sync network 所有 node 共享的原始对称密钥输入；仅属于配置且永不进入 protobuf 或日志。
-PSK,从 network key 直接取得或经 HKDF-SHA256 派生的 32 字节 Noise 预共享密钥。
-Noise,sync 使用的 Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s 加密握手和有状态传输。
-OLLSYNC\x01,sync cleartext preface 与 Noise prologue；这是仓库唯一保留的 major protocol version 标记。
-transport frame（传输帧）,sync TCP 流上的 u16 big-endian 长度加 Noise 消息或密文；不是 gRPC frame。
-SyncEnvelope,Noise 解密后一个 frame 中承载的 protobuf 应用消息。
-SyncHello,Noise 完成后双方发送的身份、chunk 上限和本地 replica 状态声明。
-SyncReady,双方验证 hello 后确认选定 chunk 大小和 session ReplicaId 的消息。
-SyncClose,认证后表达正常结束或协议、身份、资源等关闭原因的应用消息。
-sync session（同步会话）,一次认证 TCP/Noise 连接上的应用状态；可能处于 ready 或 waiting_for_replica。
-waiting_for_replica,双方都未初始化时保留的认证 session；参与身份、ping 和生命周期但不运行 sync round。
-normal synchronization（普通同步）,两个拥有相同 ReplicaId 的 peer 交换对象更新和 blob 的过程。
-bootstrap,已初始化 peer 通过普通对象/blob 消息为未初始化 peer 创建第一个完整 replica 的过程。
-bootstrap claim,防止多个 peer 同时 bootstrap 同一未初始化 receiver 的 durable exclusive claim。
-finite sync round（有限同步轮次）,基于一次起始 inventory 的有界双向同步工作；后续新写入留给下一轮。
-inventory（清单）,round 开始时捕获的 replica object summary 与被 catalog 引用的 blob 集合。
-replica object（副本对象）,sync 独立比较和传输的 catalog 或 document LoroDoc；不是整个 replica。
-object transfer（对象传输）,按 version vector 请求、分块、验证并导入一个 catalog/document update batch。
-blob transfer,按 SHA-256 请求、分块并验证不可变二进制内容的传输。
-round candidate（轮次候选）,从 active generation 私下复制并导入本轮全部数据的完整候选状态；验证通过前不可见。
-compare-and-swap / CAS,仅当 active generation 仍等于 round base 时切换 candidate 的原子检查。
-no-progress deadline（无进展期限）,对 inventory capture 或每个预期 wire step 的 120 秒停滞上限；不是整轮总时限。
-sync heartbeat,空闲认证 session 上的 SyncPing/SyncPong 活性探测；与 TCP keepalive 分工。
-TCP keepalive,操作系统提供的次级连接失效探测；配置失败不否定应用层 session。
-background sync（后台同步）,daemon 持续维护 peer 连接并在需要时运行同步；不由一次 CLI 等待的生命周期所有。
-manual sync（手动同步）,oll sync 发起的一次 Admin 请求；等待每个目标的一次有限双向 round 结果。
-sync ping,oll ping 通过已认证 sync session 测量 SyncPing/SyncPong RTT；不是 ICMP。
-Admin API,daemon 在本地 Unix domain socket 上提供的 typed protobuf gRPC 管理接口。
-Admin UDS,位于 <config-root>/run/admin.sock 的 Unix domain socket；不监听 TCP 网络接口。
-AdminCallContext,每个 Admin 请求携带的上下文；其中 trace 必须传播到下游 RPC、任务、存储和日志。
-CliIntent,Clap argv 解析后得到的规范客户端意图；daemon 不会再次解析 CLI 语法。
-local client,不连接 Admin 的有界命令进程；例如 psk、snapshot inspect/verify、plugin validate 和日志查看。
-admin client,通过 Admin UDS 调用 typed RPC 并渲染结果后退出的 oll 进程。
-bootstrap client,执行 oll init 的本地进程；在 daemon 尚不存在时创建 deployment 初始配置。
-launcher client,执行 oll start 的进程；拉起 detached oll run 子进程并通过 nonce channel 验证 readiness。
-config.lua,受信任的可执行 LuaJIT 配置模块；必须返回完整版本化 node 配置表。
-node.json,用户拥有的严格 NodeId/NodeName 身份记录；daemon 可热加载有效替换。
-replica.json,用户拥有的严格 ReplicaId 记录；未初始化时不存在，并与 SQL identity transition 协调。
-plugins.lua,用户与 oll CLI 共同维护的 literal-only 插件安装声明表；不保存 process desired state。
-plugin mask,位于 plugin-masks/<PluginId>.toml 的 typed 用户覆盖；只允许修改明确列出的 publisher manifest 字段。
-per-plugin Lua configuration,位于 plugins/<PluginId>.lua 的实时受信任配置；每次顶层读取都会重新打开并求值。
-ConfigValue,plugin host API 与 Lua 之间可表示的 typed 值树；有统一深度和类型约束。
-ConfigFunctionRef,指向 host Lua registry 中 closure 的 session_id + function_id 句柄；不能跨 session 使用。
-Plugin（插件）,由 oll 信任并作为独立子进程运行的扩展；通过 protobuf/gRPC 边界访问 host 能力。
-PluginId,publisher 声明的不可变 dotted path-safe 身份；当前作为 package、process、job 和 filesystem owner key。
-PluginName,deployment 内唯一且可被 mask 修改的人类可读 DNS-label 名称；可作为 CLI selector。
-plugin selector,Admin/CLI 接受的 PluginId 或当前 PluginName；请求进入 owner 后统一解析为 PluginId。
-oll.toml,publisher 拥有的严格 plugin manifest；声明格式、身份、名称、source recipe 和 runtime argv。
-publisher manifest,从 repository root 的 oll.toml 解析出的作者声明；不会被用户直接重写。
-effective manifest,publisher manifest 与允许的 plugin mask 合并并完整验证后的实际安装/运行配置。
-oll-release.json,publisher 拥有的严格 release index；声明 opaque release ID 与各 target 的 package。
-release index,oll-release.json 的领域模型；只做精确 release/target 选择，不解释 semantic version。
-release ID,publisher 自定义的非空 opaque 字符串；oll 精确比较但不排序版本语义。
-default_release,oll-release.json 中可选的默认 release ID；缺省时使用 releases 对象源码顺序的第一个成员。
-release package,一个 target 对应的可启动归档；远端安装要求 URL、size 和 SHA-256，本地开发可使用 workspace path。
-target,release package 面向的规范平台/架构字符串；例如 x86_64-unknown-linux-gnu。
-installation declaration（安装声明）,plugins.lua 中按 PluginId 索引的 location、mode、Git selection 和可选 release 选择。
-Git location,以 Git remote 加 default branch、branch 或 exact revision 选择 plugin source/release metadata。
-local workspace,以 canonical absolute path 引用的本地插件项目；oll 借用它且不会删除或接管。
-source mode,读取 oll.toml 并执行 source recipe 生成 install tree 的安装方式。
-release mode,读取 oll.toml 和 oll-release.json 并提取已构建 package 的安装方式。
-source recipe,oll.toml 中无需 shell 的 argv step 列表；用于把 source 准备为可启动 generation。
-source.checkout = source,recipe 在 Git checkout 或原 local workspace 中运行，并通过 {install} 输出 candidate。
-source.checkout = install,先把 source 复制进 candidate，再在 candidate 内运行 recipe 并整体发布。
-source.checkout = generation,先创建最终 generation 并在其中构建；适合记录绝对安装前缀的工具。
-placeholder（占位符）,source/runtime argv 中由 oll 按 checkout scope 替换的 {source}、{install}、{generation} 或 {mask_dir}。
+onelastleaf / oll,项目名称以及唯一可执行文件的名称；同一个 oll 二进制既提供 CLI 也运行 daemon
+daemon（守护进程）,由 oll run 启动的长期运行进程；负责一个 node 的配置、副本、同步、插件和日志
+client process（客户端进程）,执行一个有界命令后退出的 oll 进程；按命令分为 local client、admin client、bootstrap client 或 launcher client
+deployment（部署）,由一个 config root 界定的一整套本地运行状态；一个 deployment 同时最多有一个 daemon、一个 node 和一个 replica
+cardinality invariant（基数不变量）,固定关系：one running oll daemon = one node = one replica；oll 不提供进程内多副本挂载或切换
+config root（配置根目录）,一个 deployment 的用户配置根目录；容纳 config.lua、node.json、replica.json、plugins.lua 和 Admin UDS 等文件
+deployment key（部署键）,根据 config root 的规范 Unix 路径计算出的 SHA-256 派生键；用于隔离锁和 plugin data root
+single-instance lock（单实例锁）,daemon 持有的非阻塞独占 flock；阻止同一 deployment 同时运行多个 oll 实例
+Node（节点）,一个正在运行并参与同步的 oll daemon；拓扑角色不会改变它的副本读写权
+NodeIdentity（节点身份）,NodeId 与 NodeName 的一对一组合；节点在所有协议边界始终声明同一组合
+NodeId,标识节点的规范 UUID v4；不携带路由、权限或复制权威语义
+NodeName,节点声明的人类可读名称；使用小写 ASCII DNS label，并作为已学习 peer 的 CLI 选择器
+identity binding（身份绑定）,持久记录 NodeId 与 NodeName 的一对一关系；已知 ID 换名或已知名称换 ID 都被视为冲突
+identity epoch（身份纪元）,node 或 replica 身份被有效替换时递增的本地协调值；旧纪元上的同步会话必须关闭
+Replica（副本）,一个完整的逻辑文档树；包含一个 catalog LoroDoc、多个 document LoroDoc 和二进制 blob
+replica slot（副本槽位）,一个 deployment 唯一的副本位置；可以处于 uninitialized、initialized empty 或 initialized populated
+ReplicaId,标识一个逻辑文档库的规范 UUID v4；同步同一文档库的多个 node 使用相同 ReplicaId
+uninitialized replica（未初始化副本）,没有 ReplicaId 和 active replica metadata 的槽位；oll init 完成后仍处于该状态
+initialized empty replica（已初始化空副本）,已有稳定 ReplicaId 和 catalog 但没有可见条目的副本
+initialized populated replica（已初始化非空副本）,已有稳定 ReplicaId 且至少包含一个可见条目的正常副本
+working tree（工作树）,replica_root 下由用户直接编辑的普通文件目录树；它是逻辑副本的投影而不是崩溃恢复权威
+replica_root,配置的 working tree 根目录；其中不得放置 oll 的隐藏元数据、日志、数据库或插件包
+replica store（副本存储）,oll 管理的 SQL 持久状态；保存 CRDT、blob、身份缓存、操作历史和投影恢复记录
+store backend（存储后端）,replica store 的物理实现；当前为 SQLite 或 PostgreSQL，二者必须实现相同逻辑契约
+active generation（活动代）,SQL 中当前对 daemon 可见且具有权威性的 replica generation
+inactive generation（非活动代）,为同步或导入构建但尚未通过原子切换成为权威状态的候选 generation
+Catalog（目录对象）,描述 replica 命名空间、树形关系、条目类型、对象身份、元数据和 tombstone 的 LoroDoc
+catalog LoroDoc,replica 唯一的目录 CRDT 对象；固定包含 tree、catalog 和 entries 三个根容器
+CatalogNodeId,目录树中一个目录、文本文档或二进制条目的稳定 UUID v4；不同于 LoroTree 内部节点 ID
+Document（文档）,受支持的文本文件对应的逻辑对象；具有稳定 DocumentId、一个 LoroDoc 和一个 catalog 条目
+DocumentId,一个 text document LoroDoc 的稳定 UUID v4；可靠的移动或重命名不会改变它
+document LoroDoc,保存一个文档 content 文本和 data 抽象 CRDT 数据的 LoroDoc
+Binary（二进制文件）,不符合受支持文本规则的普通文件；具有 BinaryId 和 LWW blob 版本但没有独立 LoroDoc
+BinaryId,一个二进制文件身份的稳定 UUID v4；可靠移动不改变它，文件类型改变则创建新身份
+blob,按 SHA-256 寻址的不可变二进制字节内容；catalog 保存其版本引用
+LoroDoc,Loro 提供的一个 CRDT 文档和事务边界；一个 oll replica 并不是单个 LoroDoc
+LoroPeerId,replica store 使用的本地 Loro actor 身份；仅属于实现内部，不等同 NodeId 或 ReplicaId
+LWW（last writer wins）,二进制版本冲突规则；按 lamport_clock 再按 writer NodeId 的确定性顺序选择胜者
+Lamport clock,持久化的逻辑时钟；为本地二进制写入生成可比较的 LWW 版本戳
+tombstone（墓碑）,条目从可见命名空间删除后保留的因果历史；在有因果稳定性 GC 方案前不能随意丢弃
+DocumentPath,document/plugin API 使用的 replica 内规范绝对 UTF-8 地址；路径是地址而不是对象身份
+NativePath,本地 Unix Admin API 传递的原始路径字节；不同于跨文档 API 的 DocumentPath
+portable sibling key,对文件名做 Unicode NFC 和完整大小写折叠得到的同级冲突键；用于跨平台检测名称碰撞
+conflict projection（冲突投影）,同级 catalog 条目名称碰撞时附加 .conflict-<CatalogNodeId> 的确定性显示规则；不会制造新的 CRDT rename
+CatalogRevision,针对一个 CatalogNodeId 的不透明修订；保护路径、父级、名称、类型和 catalog metadata
+DocumentRevision,针对一个 DocumentId 的不透明修订；保护正文和抽象 CRDT 容器
+precondition（前置条件）,写入前指定对象 ID 与 revision 的乐观并发检查；失败返回 REVISION_CONFLICT 且整次提交不生效
+blind write（盲写）,调用者有意省略 revision precondition 的写入；允许基于当前状态直接提交
+host-level commit（主机级提交）,跨 catalog、多个 document LoroDoc、binary metadata 和操作历史的本地原子可见提交
+replica write coordinator（副本写协调器）,串行化 precondition 检查、候选变更、SQL 提交和 daemon 可见状态发布的 owner
+projection（投影）,根据 replica store 的权威状态在 working tree 中创建、更新、移动或删除文件
+targeted projection（定点投影）,只重建一次 host-level commit 影响路径的可恢复投影任务
+projection_pending,snapshot replacement 后要求完整重建 working tree 的 durable marker；清除前禁止扫描旧树作为输入
+filesystem reconciliation（文件系统协调）,watcher 将 working tree 的最终状态读入并转换为新的本地 replica mutation
+operation history（操作历史）,本地保存的高级 create、update、move、delete、replace 记录；不复制且不包含 Loro 内部操作
+.ollsnap,一个 zstd frame 包裹受约束 POSIX tar 的完整逻辑 replica checkpoint 文件
+snapshot（快照）,catalog、全部保留 document LoroDoc 和所需 blob 的完整检查点；不是同步增量或 node 配置备份
+snapshot manifest,.ollsnap 中的严格 manifest.json；声明格式版本、身份、条目、尺寸和 SHA-256
+SnapshotId,标识一次 snapshot 导出文件的规范 UUID v4；不同于其中保存的 ReplicaId
+snapshot inspect,只验证归档前缀和 manifest 并显示元数据；不声称 payload 已完整验证
+snapshot verify,流式验证完整归档结构、顺序、尺寸、hash、Loro 可解码性和 catalog 业务一致性
+snapshot export,在 replica-wide barrier 下取得一致状态并以 no-replace 方式原子发布 .ollsnap
+snapshot import,先完整验证并构建 inactive generation 再初始化或替换唯一 replica；不是 CRDT merge
+snapshot initialize,在空 replica slot 中采用 snapshot 的 ReplicaId 和完整内容
+snapshot replace,在用户两次确认后用 snapshot 破坏性替换当前唯一 replica 和 working tree
+format_version,持久文件格式的显式版本；用于拒绝不支持的文件布局，不是 protobuf schema 版本
+connect,节点主动连接的远端 sync target；描述网络拓扑而非复制权威
+listen,节点被动接受 sync TCP 连接的本地 bind endpoint；描述拓扑而非权限
+peer,通过 sync transport 与本 node 通信的另一个 node
+peer directory,deployment-local 的已配置 target、已认证 inbound peer 和已学习 NodeIdentity 绑定集合
+network key,同一 sync network 所有 node 共享的原始对称密钥输入；仅属于配置且永不进入 protobuf 或日志
+PSK,从 network key 直接取得或经 HKDF-SHA256 派生的 32 字节 Noise 预共享密钥
+Noise,sync 使用的 Noise_NNpsk0_25519_ChaChaPoly_BLAKE2s 加密握手和有状态传输
+OLLSYNC\x01,sync cleartext preface 与 Noise prologue；这是仓库唯一保留的 major protocol version 标记
+transport frame（传输帧）,sync TCP 流上的 u16 big-endian 长度加 Noise 消息或密文；不是 gRPC frame
+SyncEnvelope,Noise 解密后一个 frame 中承载的 protobuf 应用消息
+SyncHello,Noise 完成后双方发送的身份、chunk 上限和本地 replica 状态声明
+SyncReady,双方验证 hello 后确认选定 chunk 大小和 session ReplicaId 的消息
+SyncClose,认证后表达正常结束或协议、身份、资源等关闭原因的应用消息
+sync session（同步会话）,一次认证 TCP/Noise 连接上的应用状态；可能处于 ready 或 waiting_for_replica
+waiting_for_replica,双方都未初始化时保留的认证 session；参与身份、ping 和生命周期但不运行 sync round
+normal synchronization（普通同步）,两个拥有相同 ReplicaId 的 peer 交换对象更新和 blob 的过程
+bootstrap,已初始化 peer 通过普通对象/blob 消息为未初始化 peer 创建第一个完整 replica 的过程
+bootstrap claim,防止多个 peer 同时 bootstrap 同一未初始化 receiver 的 durable exclusive claim
+finite sync round（有限同步轮次）,基于一次起始 inventory 的有界双向同步工作；后续新写入留给下一轮
+inventory（清单）,round 开始时捕获的 replica object summary 与被 catalog 引用的 blob 集合
+replica object（副本对象）,sync 独立比较和传输的 catalog 或 document LoroDoc；不是整个 replica
+object transfer（对象传输）,按 version vector 请求、分块、验证并导入一个 catalog/document update batch
+blob transfer,按 SHA-256 请求、分块并验证不可变二进制内容的传输
+round candidate（轮次候选）,从 active generation 私下复制并导入本轮全部数据的完整候选状态；验证通过前不可见
+compare-and-swap / CAS,仅当 active generation 仍等于 round base 时切换 candidate 的原子检查
+no-progress deadline（无进展期限）,对 inventory capture 或每个预期 wire step 的 120 秒停滞上限；不是整轮总时限
+sync heartbeat,空闲认证 session 上的 SyncPing/SyncPong 活性探测；与 TCP keepalive 分工
+TCP keepalive,操作系统提供的次级连接失效探测；配置失败不否定应用层 session
+background sync（后台同步）,daemon 持续维护 peer 连接并在需要时运行同步；不由一次 CLI 等待的生命周期所有
+manual sync（手动同步）,oll sync 发起的一次 Admin 请求；等待每个目标的一次有限双向 round 结果
+sync ping,oll ping 通过已认证 sync session 测量 SyncPing/SyncPong RTT；不是 ICMP
+Admin API,daemon 在本地 Unix domain socket 上提供的 typed protobuf gRPC 管理接口
+Admin UDS,位于 <config-root>/run/admin.sock 的 Unix domain socket；不监听 TCP 网络接口
+AdminCallContext,每个 Admin 请求携带的上下文；其中 trace 必须传播到下游 RPC、任务、存储和日志
+CliIntent,Clap argv 解析后得到的规范客户端意图；daemon 不会再次解析 CLI 语法
+local client,不连接 Admin 的有界命令进程；例如 psk、snapshot inspect/verify、plugin validate 和日志查看
+admin client,通过 Admin UDS 调用 typed RPC 并渲染结果后退出的 oll 进程
+bootstrap client,执行 oll init 的本地进程；在 daemon 尚不存在时创建 deployment 初始配置
+launcher client,执行 oll start 的进程；拉起 detached oll run 子进程并通过 nonce channel 验证 readiness
+config.lua,受信任的可执行 LuaJIT 配置模块；必须返回完整版本化 node 配置表
+node.json,用户拥有的严格 NodeId/NodeName 身份记录；daemon 可热加载有效替换
+replica.json,用户拥有的严格 ReplicaId 记录；未初始化时不存在，并与 SQL identity transition 协调
+plugins.lua,用户与 oll CLI 共同维护的 literal-only 插件安装声明表；不保存 process desired state
+plugin mask,位于 plugin-masks/<PluginId>.toml 的 typed 用户覆盖；只允许修改明确列出的 publisher manifest 字段
+per-plugin Lua configuration,位于 plugins/<PluginId>.lua 的实时受信任配置；每次顶层读取都会重新打开并求值
+ConfigValue,plugin host API 与 Lua 之间可表示的 typed 值树；有统一深度和类型约束
+ConfigFunctionRef,指向 host Lua registry 中 closure 的 session_id + function_id 句柄；不能跨 session 使用
+Plugin（插件）,由 oll 信任并作为独立子进程运行的扩展；通过 protobuf/gRPC 边界访问 host 能力
+PluginId,publisher 声明的不可变 dotted path-safe 身份；当前作为 package、process、job 和 filesystem owner key
+PluginName,deployment 内唯一且可被 mask 修改的人类可读 DNS-label 名称；可作为 CLI selector
+plugin selector,Admin/CLI 接受的 PluginId 或当前 PluginName；请求进入 owner 后统一解析为 PluginId
+oll.toml,publisher 拥有的严格 plugin manifest；声明格式、身份、名称、source recipe 和 runtime argv
+publisher manifest,从 repository root 的 oll.toml 解析出的作者声明；不会被用户直接重写
+effective manifest,publisher manifest 与允许的 plugin mask 合并并完整验证后的实际安装/运行配置
+oll-release.json,publisher 拥有的严格 release index；声明 opaque release ID 与各 target 的 package
+release index,oll-release.json 的领域模型；只做精确 release/target 选择，不解释 semantic version
+release ID,publisher 自定义的非空 opaque 字符串；oll 精确比较但不排序版本语义
+default_release,oll-release.json 中可选的默认 release ID；缺省时使用 releases 对象源码顺序的第一个成员
+release package,一个 target 对应的可启动归档；远端安装要求 URL、size 和 SHA-256，本地开发可使用 workspace path
+target,release package 面向的规范平台/架构字符串；例如 x86_64-unknown-linux-gnu
+installation declaration（安装声明）,plugins.lua 中按 PluginId 索引的 location、mode、Git selection 和可选 release 选择
+Git location,以 Git remote 加 default branch、branch 或 exact revision 选择 plugin source/release metadata
+local workspace,以 canonical absolute path 引用的本地插件项目；oll 借用它且不会删除或接管
+source mode,读取 oll.toml 并执行 source recipe 生成 install tree 的安装方式
+release mode,读取 oll.toml 和 oll-release.json 并提取已构建 package 的安装方式
+source recipe,oll.toml 中无需 shell 的 argv step 列表；用于把 source 准备为可启动 generation
+source.checkout = source,recipe 在 Git checkout 或原 local workspace 中运行，并通过 {install} 输出 candidate
+source.checkout = install,先把 source 复制进 candidate，再在 candidate 内运行 recipe 并整体发布
+source.checkout = generation,先创建最终 generation 并在其中构建；适合记录绝对安装前缀的工具
+placeholder（占位符）,source/runtime argv 中由 oll 按 checkout scope 替换的 {source}、{install}、{generation} 或 {mask_dir}
 {source},仅供 source.checkout = source 使用；路径通常为 <plugin-data-root>/.resolve-<operation-id>/repository
 {install},供 source.checkout = source 或 install；通常为 <plugin-data-root>/<plugin-id>/candidates/<install-generation>
 {generation},仅供 source.checkout = generation 使用；指向最终的 <plugin-data-root>/<plugin-id>/generations/<install-generation>
-{mask_dir},所有 checkout 均可使用；固定指向 <config-root>/plugin-masks，即使当前 PluginId 没有 mask 文件也保持该位置。
-plugin data root,oll 管理的 deployment-local 插件 package generation、current symlink 和 build log 根目录。
-install generation,一次成功 package build/extraction 对应的 host-generated UUID v4 目录。
-current generation,current symlink 与 SQL 当前安装指针选择的新 job/process 应使用的 generation。
-running generation,当前存活 plugin process 实际从中启动的 generation；update 后可暂时不同于 current generation。
-package candidate,验证和发布前私下构建或提取的 plugin install tree。
-package publication（包发布）,在 SQL intent 保护下将已验证 candidate 移入 generations、切换 current 并最终提交 SQL。
-package publish intent,跨 SQL 与 filesystem current 切换的 durable recovery record。
-removal intent,保证 plugin declaration、process、package tree、SQL/job state 在崩溃后继续一致删除的 durable record。
-oll plugin install,安装显式 location 或补齐 plugins.lua 中缺失/已变更声明；无参数形式不会删除未声明插件。
-oll plugin reconcile,让已安装集合与 plugins.lua 完全一致；会安装/更新声明项并删除文件中不存在的插件。
-oll plugin validate,只在本地检查 plugins.lua、local path 和 plugin mask；不连接 daemon、访问网络、构建或改文件。
-oll plugin releases,读取选定 Git state 或 local workspace 的 oll-release.json 并列出 opaque release ID 和 target；不安装。
-desired plugin state,SQL 持久的 running 或 stopped 意图；只由 start、stop、restart 生命周期命令改变。
-observed plugin state,当前进程的 starting、ready、stopping、exited 或 failed 事实；daemon 启动后重建。
-plugin supervisor,node runtime 内部协调所有 plugin controller、进程和 session 的 owner；不是外部 process manager。
-plugin controller,每个已安装 PluginId 的事件驱动状态机；确保最多一个直接子进程并执行 restart backoff。
-process group,oll 为 plugin 或 recipe 启动的 Unix 前台进程组；signal escalation 必须覆盖整组并完成 reap。
-parent-liveness pipe,plugin child 的 stdin；oll 只保持写端存活且不传业务数据，EOF 表示 host 已死亡。
-OLL_PLUGIN_ENDPOINT,oll 为一个 plugin instance 注入的私有 loopback gRPC endpoint 环境变量。
-PluginRuntime.Connect,plugin 作为 gRPC client 连接 oll-hosted bidi stream 的唯一 runtime RPC。
-plugin instance,一次具体 child process 启动；由 host-generated PluginInstanceId 标识。
-plugin session,一个 plugin instance 建立的 bidi gRPC 应用会话；由 session_id 和 plugin_instance_id 共同约束。
-HostHello,oll 发送的 runtime handshake 首消息；声明 node、预期 plugin identity、深度和 artifact chunk 上限。
-PluginHello,plugin 回显预期 identity 并声明 actions 和 informational build version 的握手消息。
-SessionReady,双方完成 hello 验证后发送的 readiness 消息；双方 ready 前禁止 job 和 host call。
-PluginEnvelope,plugin runtime bidi stream 的统一 protobuf envelope；承载身份、trace、顺序和 payload。
-message_id,每个 sender 在一个 plugin session 内独立维护的非零严格递增 envelope 序号；允许跳号。
-reply_to,直接 response 指向 request message_id 的字段。
-ordered sender（有序发送器）,SDK 中串行化全部 stream write 的单一带背压发送路径；避免并发写乱序和无界排队。
-trace context,跨 Admin、sync、plugin、job、artifact 和 async task 传播的 correlation、call depth、causal depth 与 task 信息。
-correlation ID,把一次外部操作及全部派生工作和日志串起来的必填标识；不能被下游边界随意替换。
-parent_call_id,nested call 指向父调用的标识；与 call_depth 一起表达调用链。
-call_depth,同步嵌套调用深度；超过 host 宣告上限时请求被拒绝。
-causal_depth,异步因果派生深度；独立于同步 call stack 并受单独上限约束。
-task_id / task_group_id,trace 中标识一个异步任务及其逻辑任务组的可选字段。
-Action（动作）,plugin 对外声明的命名操作；接收保持顺序的 shell-style UTF-8 argument list。
-plugin job（插件作业）,host 持久化并由 plugin 异步执行的一次 action invocation。
-PluginJobId,host 为一次 plugin job 生成的规范 UUID v4。
-operation ID,调用者提供的 deployment-wide 幂等 admission key；相同 key 只能对应同一规范 job payload。
-job admission（作业准入）,先持久化 dispatching job 再发送 StartJobRequest，并等待 JobAccepted 或终结准入失败。
-JobAccepted,plugin 已接受该 JobId 并会异步执行的确认；不代表 job 已完成。
-JobUpdate,plugin 报告 progress、status 或 terminal result/error 的消息。
-terminal job state（终态）,succeeded、failed、cancelled 或 timed_out；host 第一个持久提交的终态获胜。
-CancelJobRequest,host 针对一个 JobId 发出的取消或 deadline 请求；绝不能升级为杀死整个 plugin process。
-CancelJobAcknowledged,幂等确认该 JobId 已无 action 执行；不声称取消请求赢得了 completion race。
-completion/cancellation race,terminal JobUpdate 与 CancelJobRequest 在相反方向交叉；host 第一个 durable terminal transition 获胜。
-Heartbeat,oll 对 ready plugin session 的应用层活性探测；plugin 必须回显 nonce 并设置 reply_to。
-ShutdownRequest,process-scoped 优雅停止请求；stop、restart、remove 和 daemon shutdown 先使用它再进行 signal escalation。
-host call,plugin 通过同一 bidi stream 向 oll 请求 document、CRDT 或 configuration 能力的调用。
-Artifact（产物）,plugin job 输出并由 oll 验证后发布到 artifact_download_dir 的文件；不是 release package。
-PluginArtifactId,plugin 为一次 artifact transfer 生成且在 deployment 内唯一的规范 UUID v4。
-ArtifactDescriptor,artifact 的 ID、文件名、media type、byte size 和 SHA-256 声明。
-artifact chunk,按 HostHello 上限切分的 artifact 字节片段；用于避免把整个文件放进一个 PluginEnvelope。
-ArtifactStored,oll 完成 byte/hash 验证、no-replace 文件发布和 SQL metadata 后返回的确认。
-artifact publication,通过 durable intent 跨 staging file、download directory 和 SQL metadata 原子恢复地发布 artifact。
-artifact_download_dir,config.lua 在 daemon startup 解析的用户可见 artifact 输出目录；修改后需重启才生效。
-build log,每次 plugin install operation 私有保留的 recipe stdout/stderr 文件；不会混入 plugin.log。
-Plugin SDK,隐藏 PluginEnvelope 状态机并提供语言惯用 action API 的官方 runtime library。
-conformance suite（一致性测试）,语言无关的黑盒测试；验证每个 SDK 对同一 plugin protocol 状态机的语义实现。
-wire compatibility（线兼容）,依赖 protobuf 未知字段和安全默认值进行可加性演进；项目禁止 protobuf schema hash/fingerprint。
-API versioning,显式协议版本协商；protobuf API 尽量不用，仓库仅保留 OLLSYNC\x01 的 transport major byte。
-structured log（结构化日志）,UTF-8 JSON Lines 事件；每行一个对象并带稳定 event、level、target 和 correlation_id。
-oll.log,daemon 的高信号总时间线；包含生命周期、恢复和各模块摘要但不记录 per-chunk payload。
-sync.log,详细 sync transport、handshake、round、transfer、retry 和 recovery 事件日志。
-plugin.log,plugin LogRecord 与 child stdout/stderr 的结构化汇聚日志；不包含 source recipe build output。
-foreground operator view,交互式 oll run 的人类可读高信号 stdout；不是权威日志且不能阻塞 daemon。
-log target,结构化事件所属的 tracing 模块路径；可通过 oll log set 临时调整 level filter。
-log level,ERROR、WARN、INFO、DEBUG 或 TRACE；级别不改变敏感数据禁记规则。
-log sink,专用 writer thread 写入的目标日志文件；业务 task 不直接执行文件 I/O。
-log backpressure,4096 事件有界队列满时丢弃事件而不阻塞业务；恢复后记录 log_events_dropped。
-redaction（脱敏）,在结构化序列化前删除 secret、credential、payload 和不允许记录的内容。
-no-replace publication,通过原子操作发布新文件且绝不覆盖已有目标；用于 snapshot、artifact 和 package 等边界。
-durable intent（持久意图）,跨 SQL 与 filesystem 无法组成单事务时记录的可恢复操作状态。
-linearization point（线性化点）,并发或崩溃语义中一次操作正式成为权威结果的唯一原子边界。
-idempotency（幂等性）,重复执行同一逻辑请求得到同一结果且不制造第二次副作用的性质。
-backpressure（背压）,消费者变慢时通过有界队列、等待或 TCP 流控限制生产速度，防止无界内存增长。
-trusted code（受信任代码）,deployment 用户明确允许执行的 Lua、source recipe 或 plugin；可信不等于跳过输入和协议验证。
+{mask_dir},所有 checkout 均可使用；固定指向 <config-root>/plugin-masks，即使当前 PluginId 没有 mask 文件也保持该位置
+local development（本地联调）,以本地 workspace path 为安装来源，通过 source 或 release mode 反复安装、更新、重启和调用插件的开发流程
+plugin data root,oll 管理的 deployment-local 插件 package generation、current symlink 和 build log 根目录
+install generation,一次成功 package build/extraction 对应的 host-generated UUID v4 目录
+current generation,current symlink 与 SQL 当前安装指针选择的新 job/process 应使用的 generation
+running generation,当前存活 plugin process 实际从中启动的 generation；update 后可暂时不同于 current generation
+package candidate,验证和发布前私下构建或提取的 plugin install tree
+package publication（包发布）,在 SQL intent 保护下将已验证 candidate 移入 generations、切换 current 并最终提交 SQL
+package publish intent,跨 SQL 与 filesystem current 切换的 durable recovery record
+removal intent,保证 plugin declaration、process、package tree、SQL/job state 在崩溃后继续一致删除的 durable record
+oll plugin install,安装显式 location 或补齐 plugins.lua 中缺失/已变更声明；无参数形式不会删除未声明插件
+oll plugin reconcile,让已安装集合与 plugins.lua 完全一致；会安装/更新声明项并删除文件中不存在的插件
+oll plugin validate,只在本地检查 plugins.lua、local path 和 plugin mask；不连接 daemon、访问网络、构建或改文件
+oll plugin releases,读取选定 Git state 或 local workspace 的 oll-release.json 并列出 opaque release ID 和 target；不安装
+desired plugin state,SQL 持久的 running 或 stopped 意图；只由 start、stop、restart 生命周期命令改变
+observed plugin state,当前进程的 starting、ready、stopping、exited 或 failed 事实；daemon 启动后重建
+plugin supervisor,node runtime 内部协调所有 plugin controller、进程和 session 的 owner；不是外部 process manager
+plugin controller,每个已安装 PluginId 的事件驱动状态机；确保最多一个直接子进程并执行 restart backoff
+process group,oll 为 plugin 或 recipe 启动的 Unix 前台进程组；signal escalation 必须覆盖整组并完成 reap
+parent-liveness pipe,plugin child 的 stdin；oll 只保持写端存活且不传业务数据，EOF 表示 host 已死亡
+OLL_PLUGIN_ENDPOINT,oll 为一个 plugin instance 注入的私有 loopback gRPC endpoint 环境变量
+PluginRuntime.Connect,plugin 作为 gRPC client 连接 oll-hosted bidi stream 的唯一 runtime RPC
+plugin instance,一次具体 child process 启动；由 host-generated PluginInstanceId 标识
+plugin session,一个 plugin instance 建立的 bidi gRPC 应用会话；由 session_id 和 plugin_instance_id 共同约束
+HostHello,oll 发送的 runtime handshake 首消息；声明 node、预期 plugin identity、深度和 artifact chunk 上限
+PluginHello,plugin 回显预期 identity 并声明 actions 和 informational build version 的握手消息
+SessionReady,双方完成 hello 验证后发送的 readiness 消息；双方 ready 前禁止 job 和 host call
+PluginEnvelope,plugin runtime bidi stream 的统一 protobuf envelope；承载身份、trace、顺序和 payload
+message_id,每个 sender 在一个 plugin session 内独立维护的非零严格递增 envelope 序号；允许跳号
+reply_to,直接 response 指向 request message_id 的字段
+ordered sender（有序发送器）,SDK 中串行化全部 stream write 的单一带背压发送路径；避免并发写乱序和无界排队
+trace context,跨 Admin、sync、plugin、job、artifact 和 async task 传播的 correlation、call depth、causal depth 与 task 信息
+correlation ID,把一次外部操作及全部派生工作和日志串起来的必填标识；不能被下游边界随意替换
+parent_call_id,nested call 指向父调用的标识；与 call_depth 一起表达调用链
+call_depth,同步嵌套调用深度；超过 host 宣告上限时请求被拒绝
+causal_depth,异步因果派生深度；独立于同步 call stack 并受单独上限约束
+task_id / task_group_id,trace 中标识一个异步任务及其逻辑任务组的可选字段
+Action（动作）,plugin 对外声明的命名操作；接收保持顺序的 shell-style UTF-8 argument list
+plugin job（插件作业）,host 持久化并由 plugin 异步执行的一次 action invocation
+PluginJobId,host 为一次 plugin job 生成的规范 UUID v4
+operation ID,调用者提供的 deployment-wide 幂等 admission key；相同 key 只能对应同一规范 job payload
+job admission（作业准入）,先持久化 dispatching job 再发送 StartJobRequest，并等待 JobAccepted 或终结准入失败
+JobAccepted,plugin 已接受该 JobId 并会异步执行的确认；不代表 job 已完成
+JobUpdate,plugin 报告 progress、status 或 terminal result/error 的消息
+terminal job state（终态）,succeeded、failed、cancelled 或 timed_out；host 第一个持久提交的终态获胜
+CancelJobRequest,host 针对一个 JobId 发出的取消或 deadline 请求；绝不能升级为杀死整个 plugin process
+CancelJobAcknowledged,幂等确认该 JobId 已无 action 执行；不声称取消请求赢得了 completion race
+completion/cancellation race,terminal JobUpdate 与 CancelJobRequest 在相反方向交叉；host 第一个 durable terminal transition 获胜
+Heartbeat,oll 对 ready plugin session 的应用层活性探测；plugin 必须回显 nonce 并设置 reply_to
+ShutdownRequest,process-scoped 优雅停止请求；stop、restart、remove 和 daemon shutdown 先使用它再进行 signal escalation
+host call,plugin 通过同一 bidi stream 向 oll 请求 document、CRDT 或 configuration 能力的调用
+Artifact（产物）,plugin job 输出并由 oll 验证后发布到 artifact_download_dir 的文件；不是 release package
+PluginArtifactId,plugin 为一次 artifact transfer 生成且在 deployment 内唯一的规范 UUID v4
+ArtifactDescriptor,artifact 的 ID、文件名、media type、byte size 和 SHA-256 声明
+artifact chunk,按 HostHello 上限切分的 artifact 字节片段；用于避免把整个文件放进一个 PluginEnvelope
+ArtifactStored,oll 完成 byte/hash 验证、no-replace 文件发布和 SQL metadata 后返回的确认
+artifact publication,通过 durable intent 跨 staging file、download directory 和 SQL metadata 原子恢复地发布 artifact
+artifact_download_dir,config.lua 在 daemon startup 解析的用户可见 artifact 输出目录；修改后需重启才生效
+build log,每次 plugin install operation 私有保留的 recipe stdout/stderr 文件；不会混入 plugin.log
+Plugin SDK,隐藏 PluginEnvelope 状态机并提供语言惯用 action API 的官方 runtime library
+conformance suite（一致性测试）,语言无关的黑盒测试；验证每个 SDK 对同一 plugin protocol 状态机的语义实现
+wire compatibility（线兼容）,依赖 protobuf 未知字段和安全默认值进行可加性演进；项目禁止 protobuf schema hash/fingerprint
+API versioning,显式协议版本协商；protobuf API 尽量不用，仓库仅保留 OLLSYNC\x01 的 transport major byte
+structured log（结构化日志）,UTF-8 JSON Lines 事件；每行一个对象并带稳定 event、level、target 和 correlation_id
+oll.log,daemon 的高信号总时间线；包含生命周期、恢复和各模块摘要但不记录 per-chunk payload
+sync.log,详细 sync transport、handshake、round、transfer、retry 和 recovery 事件日志
+plugin.log,plugin LogRecord 与 child stdout/stderr 的结构化汇聚日志；不包含 source recipe build output
+foreground operator view,交互式 oll run 的人类可读高信号 stdout；不是权威日志且不能阻塞 daemon
+log target,结构化事件所属的 tracing 模块路径；可通过 oll log set 临时调整 level filter
+log level,ERROR、WARN、INFO、DEBUG 或 TRACE；级别不改变敏感数据禁记规则
+log sink,专用 writer thread 写入的目标日志文件；业务 task 不直接执行文件 I/O
+log backpressure,4096 事件有界队列满时丢弃事件而不阻塞业务；恢复后记录 log_events_dropped
+redaction（脱敏）,在结构化序列化前删除 secret、credential、payload 和不允许记录的内容
+no-replace publication,通过原子操作发布新文件且绝不覆盖已有目标；用于 snapshot、artifact 和 package 等边界
+durable intent（持久意图）,跨 SQL 与 filesystem 无法组成单事务时记录的可恢复操作状态
+linearization point（线性化点）,并发或崩溃语义中一次操作正式成为权威结果的唯一原子边界
+idempotency（幂等性）,重复执行同一逻辑请求得到同一结果且不制造第二次副作用的性质
+backpressure（背压）,消费者变慢时通过有界队列、等待或 TCP 流控限制生产速度，防止无界内存增长
+trusted code（受信任代码）,deployment 用户明确允许执行的 Lua、source recipe 或 plugin；可信不等于跳过输入和协议验证
