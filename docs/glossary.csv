@@ -178,7 +178,7 @@ task_id / task_group_id,trace 中标识一个异步任务及其逻辑任务组�
 Action（动作）,plugin 对外声明的命名操作；接收保持顺序的 shell-style UTF-8 argument list
 plugin job（插件作业）,host 持久化并由 plugin 异步执行的一次 action invocation
 PluginJobId,host 为一次 plugin job 生成的规范 UUID v4
-operation ID,调用者提供的 deployment-wide 幂等 admission key；相同 key 只能对应同一规范 job payload
+operation ID,调用者提供的 deployment-wide 幂等 UUID v4；相同 key 只能对应同一规范 job payload
 job admission（作业准入）,先持久化 dispatching job 再发送 StartJobRequest，并等待 JobAccepted 或终结准入失败
 JobAccepted,plugin 已接受该 JobId 并会异步执行的确认；不代表 job 已完成
 JobUpdate,plugin 报告 progress、status 或 terminal result/error 的消息
