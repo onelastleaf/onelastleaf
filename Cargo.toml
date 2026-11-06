@@ -16,4 +16,5 @@ name = "oll"
 path = "src/main.rs"
 
 [dependencies]
+xxhash-rust = { version = "0.8", features = ["xxh3", "const_xxh3"] }
 # clap = { version = "4.6", features = ["derive", "env"] }
