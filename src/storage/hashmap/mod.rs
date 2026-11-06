@@ -1,6 +1,9 @@
+mod tobytes;
+
+use self::tobytes::ToBytes;
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
-pub struct HashMap<K, V, const B: usize = 8, const H: usize = 3> {
+pub struct HashMap<K: ToBytes, V, const B: usize = 8, const H: usize = 3> {
     subtables: [Subtable<K, V, B>; 256],
     seeds: [u64; H],
 }
@@ -36,7 +39,7 @@ impl<K, V, const B: usize> Subtable<K, V, B> {
     }
 }
 
-impl<K, V, const B: usize, const H: usize> HashMap<K, V, B, H> {
+impl<K: ToBytes, V, const B: usize, const H: usize> HashMap<K, V, B, H> {
     fn new(buckets_per_subtable: usize) -> Self {
         assert!(B > 0);
         assert!(H > 0);
@@ -46,5 +49,9 @@ impl<K, V, const B: usize, const H: usize> HashMap<K, V, B, H> {
             subtables: std::array::from_fn(|_| Subtable::new(buckets_per_subtable)),
             seeds: std::array::from_fn(|_| std::random::random(..)),
         }
+    }
+
+    fn candidates(key: &K, seeds: &[u64; H]) -> [u64; H] {
+        key.with_bytes(|bytes| std::array::from_fn(|i| xxh3_64_with_seed(bytes, seeds[i])))
     }
 }
