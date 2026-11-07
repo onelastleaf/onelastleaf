@@ -98,7 +98,7 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
 
         for hash in hash_values {
             let high_bits_number: u32 = S.ilog2();
-            let subtable_index: usize = (hash >> (usize::BITS - high_bits_number)) as usize;
+            let subtable_index: usize = (hash >> (u64::BITS - high_bits_number)) as usize;
             let subtable_len = self.subtables[subtable_index].buckets.len();
             let bucket_index = (hash as usize) & (subtable_len - 1);
             // why (subtable_len - 1)?
