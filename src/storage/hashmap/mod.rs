@@ -86,6 +86,6 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
             }
         }
 
-        None
+        &None
     }
 }
