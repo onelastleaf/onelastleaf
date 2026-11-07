@@ -1,7 +1,7 @@
 mod tobytes;
 
 pub use self::tobytes::ToBytes;
-use std::simd::Simd;
+use std::simd::{Simd, cmp::SimdPartialEq};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 /// K is the generic type used by callers for lookups.
@@ -47,6 +47,10 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     }
 
     fn lookup(&self, key: &K, fingerprint: u8) -> Option<&V> {
+        let bitmask = Simd::<u8, B>::from_array(self.fingerprints)
+            .simd_eq(Simd::splat(fingerprint))
+            .to_bitmask();
+
         todo!()
     }
 }
