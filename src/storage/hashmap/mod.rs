@@ -92,16 +92,15 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
     fn lookup(&self, key: &K) -> Option<&V> {
         let hash_values: [u64; H] = Self::candidates(key, &self.seeds);
 
-        for i in 0..H {
+        for hash in hash_values {
             let high_bits_number: u32 = S.ilog2();
-            let subtable_index: usize =
-                (hash_values[i] >> (usize::BITS - high_bits_number)) as usize;
+            let subtable_index: usize = (hash >> (usize::BITS - high_bits_number)) as usize;
             let subtable_len = self.subtables[subtable_index].buckets.len();
-            let bucket_index = (hash_values[i] as usize) & (subtable_len - 1);
+            let bucket_index = (hash as usize) & (subtable_len - 1);
             // why (subtable_len - 1)?
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
-            let fingerprint = Self::fingerprint(hash_values[i]);
+            let fingerprint = Self::fingerprint(hash);
 
             self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
         }
