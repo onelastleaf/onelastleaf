@@ -47,11 +47,26 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     }
 
     fn lookup(&self, key: &K, fingerprint: u8) -> Option<&V> {
-        let bitmask = Simd::<u8, B>::from_array(self.fingerprints)
+        let mut bitmask = Simd::<u8, B>::from_array(self.fingerprints)
             .simd_eq(Simd::splat(fingerprint))
             .to_bitmask();
 
-        todo!()
+        while bitmask != 0 {
+            let index = bitmask.trailing_zeros() as usize;
+
+            let Some(slot) = &self.slots[index] else {
+                eprintln!("[WARN] slot should not be None. fingerprints has something wrong.");
+                continue;
+            };
+
+            if key == &slot.key {
+                return Some(&slot.value);
+            }
+
+            bitmask &= bitmask - 1;
+        }
+
+        None
     }
 }
 
@@ -105,6 +120,7 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
             let fingerprint = Self::fingerprint(hash);
+            debug_assert_ne!(fingerprint, 0x80);
 
             self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
         }
