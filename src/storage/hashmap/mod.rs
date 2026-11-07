@@ -68,6 +68,10 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
 
         None
     }
+
+    fn insert(&mut self, slot: Slot<K, V>, fingerprint: u8) -> Result<(), Slot<K, V>> {
+        todo!()
+    }
 }
 
 impl<K: PartialEq, V, const B: usize> Subtable<K, V, B> {
@@ -136,5 +140,9 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
         }
 
         None
+    }
+
+    fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
+        todo!()
     }
 }
