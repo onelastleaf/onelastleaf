@@ -38,6 +38,11 @@ pub struct Slot<K, V> {
     value: V,
 }
 
+pub enum InsertError<K, V> {
+    DuplicateKey(K, V),
+    NoSpace(K, V),
+}
+
 impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     fn new() -> Self {
         Self {
@@ -142,7 +147,7 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
         None
     }
 
-    fn insert(&mut self, key: K, value: V) -> Result<Option<V>, (K, V)> {
+    fn insert(&mut self, key: K, value: V) -> Result<Option<V>, InsertError<K, V>> {
         todo!()
     }
 }
