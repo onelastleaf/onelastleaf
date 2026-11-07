@@ -46,7 +46,7 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
         }
     }
 
-    fn lookup(&self, key: &K, hash: u64) -> Option<&V> {
+    fn lookup(&self, key: &K, fingerprint: u8) -> Option<&V> {
         todo!()
     }
 }
@@ -101,7 +101,9 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
             // why (subtable_len - 1)?
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
-            self.subtables[subtable_index].buckets[bucket_index].lookup(key, hash_values[i]);
+            let fingerprint = Self::fingerprint(hash_values[i]);
+
+            self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
         }
 
         None
