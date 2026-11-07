@@ -122,7 +122,12 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
             let fingerprint = Self::fingerprint(hash);
             debug_assert_ne!(fingerprint, 0x80);
 
-            self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
+            let result_of_this_hash: Option<&V> =
+                self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
+
+            if let Some(result) = result_of_this_hash {
+                return Some(result);
+            }
         }
 
         None
