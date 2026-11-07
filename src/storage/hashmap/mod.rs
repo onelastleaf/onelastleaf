@@ -19,7 +19,6 @@ pub struct Bucket<K, V, const B: usize> {
 }
 
 pub struct Slot<K, V> {
-    hash: u64,
     key: K,
     value: V,
 }
