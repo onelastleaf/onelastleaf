@@ -1,6 +1,6 @@
 mod tobytes;
 
-use self::tobytes::ToBytes;
+pub use self::tobytes::ToBytes;
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 pub struct HashMap<K: ToBytes, V, const B: usize = 8, const H: usize = 3> {
@@ -15,6 +15,7 @@ pub struct Subtable<K, V, const B: usize> {
 // TODO: Option<Slot> is not suitable for the SIMD comparison
 pub struct Bucket<K, V, const B: usize> {
     slots: [Option<Slot<K, V>>; B],
+    is_full: bool,
 }
 
 pub struct Slot<K, V> {
@@ -27,7 +28,12 @@ impl<K, V, const B: usize> Bucket<K, V, B> {
     fn new() -> Self {
         Self {
             slots: [const { None }; B],
+            is_full: false,
         }
+    }
+
+    fn lookup(&self, key: &K, hash: u64) -> Option<V> {
+        todo!()
     }
 }
 
@@ -53,5 +59,22 @@ impl<K: ToBytes, V, const B: usize, const H: usize> HashMap<K, V, B, H> {
 
     fn candidates(key: &K, seeds: &[u64; H]) -> [u64; H] {
         key.with_bytes(|bytes| std::array::from_fn(|i| xxh3_64_with_seed(bytes, seeds[i])))
+    }
+
+    fn lookup(&self, key: &K) -> Option<V> {
+        let hash_values = Self::candidates(key, &self.seeds);
+
+        for i in 0..H {
+            let subtable_index: usize = (hash_values[i] >> 56) as usize;
+            let subtable_len: usize = self.subtables[subtable_index].buckets.len();
+            let mask = subtable_len - 1;
+            let bucket_index = (hash_values[i] as usize) & mask;
+
+            if !self.subtables[subtable_index].buckets[bucket_index].is_full {
+                self.subtables[subtable_index].buckets[bucket_index].lookup(key, hash_values[i]);
+            }
+        }
+
+        None
     }
 }
