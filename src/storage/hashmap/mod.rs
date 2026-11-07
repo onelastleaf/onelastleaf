@@ -53,6 +53,7 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
 
         while bitmask != 0 {
             let index = bitmask.trailing_zeros() as usize;
+            bitmask &= bitmask - 1;
 
             let Some(slot) = &self.slots[index] else {
                 eprintln!("[WARN] slot should not be None. fingerprints has something wrong.");
@@ -62,8 +63,6 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
             if key == &slot.key {
                 return Some(&slot.value);
             }
-
-            bitmask &= bitmask - 1;
         }
 
         None
