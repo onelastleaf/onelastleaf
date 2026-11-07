@@ -81,9 +81,7 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
             // why (subtable_len - 1)?
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
-            if !self.subtables[subtable_index].buckets[bucket_index].is_full {
-                self.subtables[subtable_index].buckets[bucket_index].lookup(key, hash_values[i]);
-            }
+            self.subtables[subtable_index].buckets[bucket_index].lookup(key, hash_values[i]);
         }
 
         &None
