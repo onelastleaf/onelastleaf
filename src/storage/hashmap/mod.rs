@@ -10,17 +10,23 @@ use xxhash_rust::xxh3::xxh3_64_with_seed;
 /// S is the number of subtables in the HashMap. It should be the power of 2. For SIMD optimization,
 /// it can only be one of 8, 16, 32, and 64.
 /// H is the number of candidates hash positions per key.
-pub struct HashMap<K: ToBytes, V, const B: usize = 8, const S: usize = 256, const H: usize = 3> {
+pub struct HashMap<
+    K: ToBytes + PartialEq,
+    V,
+    const B: usize = 8,
+    const S: usize = 256,
+    const H: usize = 3,
+> {
     subtables: [Subtable<K, V, B>; S],
     seeds: [u64; H],
 }
 
-pub struct Subtable<K, V, const B: usize> {
+pub struct Subtable<K: PartialEq, V, const B: usize> {
     buckets: Vec<Bucket<K, V, B>>,
 }
 
 // TODO: Option<Slot> is not suitable for the SIMD comparison
-pub struct Bucket<K, V, const B: usize> {
+pub struct Bucket<K: PartialEq, V, const B: usize> {
     slots: [Option<Slot<K, V>>; B],
     fingerprints: [u8; B],
     is_full: bool,
@@ -31,7 +37,7 @@ pub struct Slot<K, V> {
     value: V,
 }
 
-impl<K, V, const B: usize> Bucket<K, V, B> {
+impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     fn new() -> Self {
         Self {
             slots: [const { None }; B],
@@ -45,7 +51,7 @@ impl<K, V, const B: usize> Bucket<K, V, B> {
     }
 }
 
-impl<K, V, const B: usize> Subtable<K, V, B> {
+impl<K: PartialEq, V, const B: usize> Subtable<K, V, B> {
     fn new(n: usize) -> Self {
         Self {
             buckets: std::iter::repeat_with(Bucket::new).take(n).collect(),
@@ -53,7 +59,9 @@ impl<K, V, const B: usize> Subtable<K, V, B> {
     }
 }
 
-impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V, B, S, H> {
+impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
+    HashMap<K, V, B, S, H>
+{
     fn new(buckets_per_subtable: usize) -> Self {
         assert!(B > 0);
         assert!(H > 0);
