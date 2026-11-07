@@ -69,6 +69,18 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
         key.with_bytes(|bytes| std::array::from_fn(|i| xxh3_64_with_seed(bytes, seeds[i])))
     }
 
+    #[inline]
+    fn fingerprint(hash: u64) -> u8 {
+        let shift = u64::BITS - S.ilog2() - 8;
+        let fingerprint = (hash >> shift) as u8;
+
+        if fingerprint == 0x80 {
+            0x81
+        } else {
+            fingerprint
+        }
+    }
+
     fn lookup(&self, key: &K) -> Option<&V> {
         let hash_values: [u64; H] = Self::candidates(key, &self.seeds);
 
