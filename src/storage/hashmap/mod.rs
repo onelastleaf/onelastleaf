@@ -77,7 +77,7 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
             let subtable_index: usize =
                 (hash_values[i] >> (usize::BITS - high_bits_number)) as usize;
             let subtable_len = self.subtables[subtable_index].buckets.len();
-            let bucket_index = (hash_values[i] as usize) % (subtable_len - 1);
+            let bucket_index = (hash_values[i] as usize) & (subtable_len - 1);
             // why (subtable_len - 1)?
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
