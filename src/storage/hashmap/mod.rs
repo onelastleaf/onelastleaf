@@ -10,6 +10,7 @@ use xxhash_rust::xxh3::xxh3_64_with_seed;
 /// S is the number of subtables in the HashMap. It should be the power of 2. For SIMD optimization,
 /// it can only be one of 8, 16, 32, and 64.
 /// H is the number of candidates hash positions per key.
+// TODO: PartialEq has some problem about +0.0, -0.0 and NaN
 pub struct HashMap<
     K: ToBytes + PartialEq,
     V,
@@ -81,8 +82,13 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
     HashMap<K, V, B, S, H>
 {
     fn new(buckets_per_subtable: usize) -> Self {
-        assert!(B > 0);
-        assert!(H > 0);
+        const {
+            assert!(B > 0 && B.is_power_of_two());
+            assert!(S >= 2 && S.is_power_of_two());
+            assert!(S.ilog2() + 8 <= u64::BITS);
+            assert!(H > 0);
+        }
+
         assert!(buckets_per_subtable.is_power_of_two());
 
         Self {
