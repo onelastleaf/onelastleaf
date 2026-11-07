@@ -40,7 +40,7 @@ impl<K, V, const B: usize> Bucket<K, V, B> {
         }
     }
 
-    fn lookup(&self, key: &K, hash: u64) -> &Option<V> {
+    fn lookup(&self, key: &K, hash: u64) -> Option<&V> {
         todo!()
     }
 }
@@ -69,7 +69,7 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
         key.with_bytes(|bytes| std::array::from_fn(|i| xxh3_64_with_seed(bytes, seeds[i])))
     }
 
-    fn lookup(&self, key: &K) -> &Option<V> {
+    fn lookup(&self, key: &K) -> Option<&V> {
         let hash_values: [u64; H] = Self::candidates(key, &self.seeds);
 
         for i in 0..H {
@@ -84,6 +84,6 @@ impl<K: ToBytes, V, const B: usize, const S: usize, const H: usize> HashMap<K, V
             self.subtables[subtable_index].buckets[bucket_index].lookup(key, hash_values[i]);
         }
 
-        &None
+        None
     }
 }
