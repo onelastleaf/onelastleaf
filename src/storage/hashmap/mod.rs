@@ -54,8 +54,6 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     }
 
     fn lookup(&self, key: &K, fingerprint: u8) -> Option<&V> {
-        debug_assert!(fingerprint != EMPTY_FINGERPRINT);
-
         let mut bitmask = Simd::<u8, B>::from_array(self.fingerprints)
             .simd_eq(Simd::splat(fingerprint))
             .to_bitmask();
@@ -78,6 +76,8 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     }
 
     fn insert(&mut self, slot: Slot<K, V>, fingerprint: u8) -> Result<(), InsertError<K, V>> {
+        debug_assert!(fingerprint != EMPTY_FINGERPRINT);
+
         let Some(index) = Simd::<u8, B>::from_array(self.fingerprints)
             .simd_eq(Simd::splat(EMPTY_FINGERPRINT))
             .first_set()
