@@ -45,6 +45,12 @@ pub enum InsertError<K, V> {
     FalseEmpty(K, V),
 }
 
+impl<K, V> Slot<K, V> {
+    fn new(key: K, value: V) -> Self {
+        Self { key, value }
+    }
+}
+
 impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     fn new() -> Self {
         Self {
