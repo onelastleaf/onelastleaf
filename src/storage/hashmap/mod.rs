@@ -1,8 +1,11 @@
 mod tobytes;
 
 pub use self::tobytes::ToBytes;
+use core::index;
 use std::simd::{Simd, cmp::SimdPartialEq};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
+
+const EMPTY_FINGERPRINT: u8 = 0x80;
 
 /// K is the generic type used by callers for lookups.
 /// V is the value type that callers of this HashMap store and retrieve.
@@ -30,7 +33,6 @@ pub struct Subtable<K: PartialEq, V, const B: usize> {
 pub struct Bucket<K: PartialEq, V, const B: usize> {
     slots: [Option<Slot<K, V>>; B],
     fingerprints: [u8; B],
-    is_full: bool,
 }
 
 pub struct Slot<K, V> {
@@ -41,14 +43,14 @@ pub struct Slot<K, V> {
 pub enum InsertError<K, V> {
     DuplicateKey(K, V),
     NoSpace(K, V),
+    FalseEmpty(K, V),
 }
 
 impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
     fn new() -> Self {
         Self {
             slots: [const { None }; B],
-            fingerprints: [0x80; B],
-            is_full: false,
+            fingerprints: [EMPTY_FINGERPRINT; B],
         }
     }
 
@@ -74,8 +76,22 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
         None
     }
 
-    fn insert(&mut self, slot: Slot<K, V>, fingerprint: u8) -> Result<(), Slot<K, V>> {
-        todo!()
+    fn insert(&mut self, slot: Slot<K, V>, fingerprint: u8) -> Result<(), InsertError<K, V>> {
+        let Some(index) = Simd::<u8, B>::from_array(self.fingerprints)
+            .simd_eq(Simd::splat(EMPTY_FINGERPRINT))
+            .first_set()
+        else {
+            return Err(InsertError::NoSpace(slot.key, slot.value));
+        };
+
+        if self.slots[index].is_some() {
+            eprintln!("[WARN] this slot is occupied, but it's empty in fingerprints");
+            return Err(InsertError::FalseEmpty(slot.key, slot.value));
+        };
+
+        self.fingerprints[index] = fingerprint;
+        self.slots[index] = Some(slot);
+        Ok(())
     }
 }
 
@@ -115,8 +131,8 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
         let shift = u64::BITS - S.ilog2() - 8;
         let fingerprint = (hash >> shift) as u8;
 
-        if fingerprint == 0x80 {
-            0x81
+        if fingerprint == EMPTY_FINGERPRINT {
+            EMPTY_FINGERPRINT + 1
         } else {
             fingerprint
         }
@@ -134,7 +150,7 @@ impl<K: ToBytes + PartialEq, V, const B: usize, const S: usize, const H: usize>
             // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
 
             let fingerprint = Self::fingerprint(hash);
-            debug_assert_ne!(fingerprint, 0x80);
+            debug_assert_ne!(fingerprint, EMPTY_FINGERPRINT);
 
             let result_of_this_hash: Option<&V> =
                 self.subtables[subtable_index].buckets[bucket_index].lookup(key, fingerprint);
