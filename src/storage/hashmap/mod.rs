@@ -5,6 +5,7 @@ use std::simd::{Simd, cmp::SimdPartialEq};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 const EMPTY_FINGERPRINT: u8 = 0x80;
+const BFS_PROBE_BUDGET: i32 = 256;
 
 /// K is the generic type used by callers for lookups.
 /// V is the value type that callers of this HashMap store and retrieve.
