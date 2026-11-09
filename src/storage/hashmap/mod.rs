@@ -43,6 +43,7 @@ pub enum InsertError<K, V> {
     DuplicateKey(K, V),
     NoSpace(K, V),
     FalseEmpty(K, V),
+    FalseOccupied(K, V),
 }
 
 impl<K, V> Slot<K, V> {
@@ -145,16 +146,23 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         }
     }
 
+    #[inline]
+    fn hash2bucket(&self, hash: u64) -> (usize, usize) {
+        let high_bits_number: u32 = S.ilog2();
+        let subtable_index: usize = (hash >> (u64::BITS - high_bits_number)) as usize;
+        let subtable_len = self.subtables[subtable_index].buckets.len();
+        let bucket_index = (hash as usize) & (subtable_len - 1);
+        // why (subtable_len - 1)?
+        // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
+
+        (subtable_index, bucket_index)
+    }
+
     fn lookup(&self, key: &K) -> Option<&V> {
         let hash_values: [u64; H] = Self::candidates(key, &self.seeds);
 
         for hash in hash_values {
-            let high_bits_number: u32 = S.ilog2();
-            let subtable_index: usize = (hash >> (u64::BITS - high_bits_number)) as usize;
-            let subtable_len = self.subtables[subtable_index].buckets.len();
-            let bucket_index = (hash as usize) & (subtable_len - 1);
-            // why (subtable_len - 1)?
-            // because subtable_len is power of 2, (subtable_len - 1) has all 1 in low bits
+            let (subtable_index, bucket_index) = self.hash2bucket(hash);
 
             let fingerprint = Self::fingerprint(hash);
             debug_assert_ne!(fingerprint, EMPTY_FINGERPRINT);
@@ -170,7 +178,53 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         None
     }
 
-    fn insert(&mut self, key: K, value: V) -> Result<Option<V>, InsertError<K, V>> {
-        todo!()
+    fn insert(&mut self, key: K, value: V) -> Result<(), InsertError<K, V>> {
+        let hash_values: [u64; H] = Self::candidates(&key, &self.seeds);
+        let mut empty_slot_index: Option<(usize, usize, usize, u8)> = None;
+
+        for hash in hash_values {
+            let (subtable_index, bucket_index) = self.hash2bucket(hash);
+            let bucket = &self.subtables[subtable_index].buckets[bucket_index];
+
+            let fingerprint = Self::fingerprint(hash);
+            debug_assert_ne!(fingerprint, EMPTY_FINGERPRINT);
+
+            let vector_fingerprints = Simd::<u8, B>::from_array(bucket.fingerprints);
+            let vector_fingerprint = Simd::<u8, B>::splat(fingerprint);
+            let vector_empty = Simd::<u8, B>::splat(EMPTY_FINGERPRINT);
+
+            if let Some(index) = vector_fingerprints.simd_eq(vector_fingerprint).first_set() {
+                if let Some(slot) = bucket.slots[index].as_ref() {
+                    if slot.key == key {
+                        return Err(InsertError::DuplicateKey(key, value));
+                    }
+                } else {
+                    eprintln!("[WARN] slot is empty, but fingerprints is occupied");
+                    return Err(InsertError::FalseOccupied(key, value));
+                }
+            }
+
+            if empty_slot_index.is_none()
+                && let Some(index) = vector_fingerprints.simd_eq(vector_empty).first_set()
+            {
+                if bucket.slots[index].is_some() {
+                    eprintln!("[WARN] slot is occupied, but fingerprints is empty");
+                    return Err(InsertError::FalseEmpty(key, value));
+                } else {
+                    let fingerprint = Self::fingerprint(hash);
+                    empty_slot_index = Some((subtable_index, bucket_index, index, fingerprint));
+                }
+            }
+        }
+
+        let slot: Slot<K, V> = Slot::new(key, value);
+
+        if let Some(indexs) = empty_slot_index {
+            self.subtables[indexs.0].buckets[indexs.1].slots[indexs.2] = Some(slot);
+            self.subtables[indexs.0].buckets[indexs.1].fingerprints[indexs.2] = indexs.3;
+            Ok(())
+        } else {
+            todo!();
+        }
     }
 }
