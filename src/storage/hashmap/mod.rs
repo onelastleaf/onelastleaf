@@ -194,14 +194,21 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
             let vector_fingerprint = Simd::<u8, B>::splat(fingerprint);
             let vector_empty = Simd::<u8, B>::splat(EMPTY_FINGERPRINT);
 
-            if let Some(index) = vector_fingerprints.simd_eq(vector_fingerprint).first_set() {
-                if let Some(slot) = bucket.slots[index].as_ref() {
-                    if slot.key == key {
+            let mut bitmask = vector_fingerprints.simd_eq(vector_fingerprint).to_bitmask();
+
+            while bitmask != 0 {
+                let index = bitmask.trailing_zeros() as usize;
+                bitmask &= bitmask - 1;
+
+                match bucket.slots[index].as_ref() {
+                    Some(slot) if slot.key == key => {
                         return Err(InsertError::DuplicateKey(key, value));
                     }
-                } else {
-                    eprintln!("[WARN] slot is empty, but fingerprints is occupied");
-                    return Err(InsertError::FalseOccupied(key, value));
+                    Some(_) => {}
+                    None => {
+                        eprintln!("[WARN] slot is empty, but fingerprints is occupied");
+                        return Err(InsertError::FalseOccupied(key, value));
+                    }
                 }
             }
 
