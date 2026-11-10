@@ -289,6 +289,15 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
 
             let init_fingerprint = Self::fingerprint(init_hash);
 
+            // although these hashes are all from 1 key, their buckets may be duplicated
+            if bfs_queue[..tail]
+                .iter()
+                .flatten()
+                .any(|node| node.bucket == init_bucket_pos)
+            {
+                continue;
+            }
+
             // although `bfs_queue` length < H is very impossible, but I must deal with this thing
             if tail == BFS_PROBE_BUDGET {
                 return Err(InsertError::NoSpace(new_slot.key, new_slot.value));
