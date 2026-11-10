@@ -1,10 +1,7 @@
 mod tobytes;
 
 pub use self::tobytes::ToBytes;
-use std::{
-    simd::{Simd, cmp::SimdPartialEq},
-    thread::current,
-};
+use std::simd::{Simd, cmp::SimdPartialEq};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 const EMPTY_FINGERPRINT: u8 = 0x80;
