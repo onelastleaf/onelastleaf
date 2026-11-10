@@ -228,8 +228,8 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         let slot: Slot<K, V> = Slot::new(key, value);
 
         if let Some(indexs) = empty_slot_index {
-            self.subtables[indexs.0].buckets[indexs.1].slots[indexs.2] = Some(slot);
             self.subtables[indexs.0].buckets[indexs.1].fingerprints[indexs.2] = indexs.3;
+            self.subtables[indexs.0].buckets[indexs.1].slots[indexs.2] = Some(slot);
             Ok(())
         } else {
             todo!();
