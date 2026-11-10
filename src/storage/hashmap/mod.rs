@@ -1,11 +1,14 @@
 mod tobytes;
 
 pub use self::tobytes::ToBytes;
-use std::simd::{Simd, cmp::SimdPartialEq};
+use std::{
+    simd::{Simd, cmp::SimdPartialEq},
+    thread::current,
+};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
 const EMPTY_FINGERPRINT: u8 = 0x80;
-const BFS_PROBE_BUDGET: i32 = 256;
+const BFS_PROBE_BUDGET: usize = 256;
 
 /// K is the generic type used by callers for lookups.
 /// V is the value type that callers of this HashMap store and retrieve.
@@ -45,6 +48,36 @@ pub enum InsertError<K, V> {
     NoSpace(K, V),
     FalseEmpty(K, V),
     FalseOccupied(K, V),
+    BfsTreeError(K, V),
+    RelocationError(K, V), // Invariant violated: source and source_node did not become None together.
+}
+
+#[derive(Clone, Copy)]
+struct BfsNode {
+    bucket: BucketPos,          // who is me
+    parent_node: Option<usize>, // who is my parent's bfsnode
+    parent: Option<SlotPos>,    // who is my parent's bucket and slot
+    fingerprint: u8,            // who is my fingerprint, if here's a empty slot, i'll insert it
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct BucketPos {
+    subtable: usize,
+    bucket: usize,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SlotPos {
+    bucket: BucketPos,
+    slot: usize,
+}
+
+#[derive(Clone, Copy)]
+struct Relocation {
+    source_node: Option<usize>,
+    source: Option<SlotPos>,
+    target: SlotPos,
+    fingerprint: u8,
 }
 
 impl<K, V> Slot<K, V> {
@@ -232,7 +265,230 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
             self.subtables[indexs.0].buckets[indexs.1].slots[indexs.2] = Some(slot);
             Ok(())
         } else {
-            todo!();
+            self.bfs_displacement(slot, hash_values)
+        }
+    }
+
+    fn bfs_displacement(
+        &mut self,
+        new_slot: Slot<K, V>,
+        hash_values: [u64; H],
+    ) -> Result<(), InsertError<K, V>> {
+        let mut bfs_queue: [Option<BfsNode>; BFS_PROBE_BUDGET] = [None; BFS_PROBE_BUDGET];
+
+        let mut head = 0usize;
+        let mut tail = 0usize;
+
+        // insert the basic H bucket into bfs_queue
+        for init_hash in hash_values {
+            let (init_subtable_index, init_bucket_index) = self.hash2bucket(init_hash);
+            let init_bucket_pos = BucketPos {
+                subtable: init_subtable_index,
+                bucket: init_bucket_index,
+            };
+
+            let init_fingerprint = Self::fingerprint(init_hash);
+
+            // although `bfs_queue` length < H is very impossible, but I must deal with this thing
+            if tail == BFS_PROBE_BUDGET {
+                return Err(InsertError::NoSpace(new_slot.key, new_slot.value));
+            }
+
+            bfs_queue[tail] = Some(BfsNode {
+                bucket: init_bucket_pos,
+                parent_node: None,
+                parent: None,
+                fingerprint: init_fingerprint,
+            });
+            tail += 1;
+        }
+
+        // if successful, find the final empty slot, restore its position, and "how to move it"
+        let mut found: Option<(BfsNode, SlotPos)> = None;
+
+        // bfs search the empty slot
+        'search: while head < tail {
+            // take the current bucket
+            let Some(current_bfsnode) = bfs_queue[head] else {
+                return Err(InsertError::BfsTreeError(new_slot.key, new_slot.value));
+            };
+            let current_bucketpos = current_bfsnode.bucket;
+            let bucket =
+                &self.subtables[current_bucketpos.subtable].buckets[current_bucketpos.bucket];
+
+            // iter current bucket's every slots
+            // cause every bucket in `bfs_queue` is checked full. I don't check double times
+            for current_slot_index in 0..B {
+                // I hope every slot in the Bucket is `Some`.
+                // If `None`, it must be something wrong. Either fingerprints is wrong, or I found
+                // the empty slot.
+                // To be honest, even if the fingerprints are incorrect, we can still find the empty
+                // slot, but I don't think this is a error that can be ignored.
+                let Some(current_slot) = bucket.slots[current_slot_index].as_ref() else {
+                    if bucket.fingerprints[current_slot_index] != EMPTY_FINGERPRINT {
+                        return Err(InsertError::FalseOccupied(new_slot.key, new_slot.value));
+                    };
+
+                    found = Some((
+                        bfs_queue[head].unwrap(),
+                        SlotPos {
+                            bucket: current_bucketpos,
+                            slot: current_slot_index,
+                        },
+                    ));
+                    break 'search;
+                };
+
+                // For every candidates buckets per KV in current slot, there may be some empty
+                // slots in these buckets.
+                // We need to search them out :)
+                let hashes = Self::candidates(&current_slot.key, &self.seeds);
+
+                for hash in hashes {
+                    // From hash to bucket
+                    let (target_subtable_index, target_bucket_index) = self.hash2bucket(hash);
+                    let target_bucket_pos = BucketPos {
+                        subtable: target_subtable_index,
+                        bucket: target_bucket_index,
+                    };
+                    let target_bucket =
+                        &self.subtables[target_subtable_index].buckets[target_bucket_index];
+
+                    // First, the bucket being traversed must not be the "current bucket", since
+                    // each KV has H candidate positions, and this position may naturally be one of them.
+                    // Second, we also don't want the current bucket to have already been searched
+                    // earlier, so we need to prune it.
+                    if target_bucket_pos == current_bucketpos
+                        || bfs_queue[..tail]
+                            .iter()
+                            .flatten()
+                            .any(|node| node.bucket == target_bucket_pos)
+                    {
+                        continue;
+                    }
+
+                    // Build a BfsNode first so it can be used either way: if an empty slot is found
+                    // in this bucket, construct `found` and return; otherwise, push the BfsNode into
+                    // `bfs_queue`
+                    let next = BfsNode {
+                        bucket: target_bucket_pos,
+                        parent_node: Some(head),
+                        parent: Some(SlotPos {
+                            bucket: current_bucketpos,
+                            slot: current_slot_index,
+                        }),
+                        fingerprint: Self::fingerprint(hash), // new bucket, new fingerprint
+                    };
+
+                    // Core step: find empty slot in the bucket
+                    // I hope this fingerprints has some EMPTY_FINGERPRINT.
+                    // If not, we have to push it into `bfs_queue`.
+                    let Some(target_slot_index) = Simd::<u8, B>::from_array(
+                        self.subtables[target_subtable_index].buckets[target_bucket_index]
+                            .fingerprints,
+                    )
+                    .simd_eq(Simd::splat(EMPTY_FINGERPRINT))
+                    .first_set() else {
+                        // Sadly, we found nothing, and have to push it into queue.
+                        if tail < BFS_PROBE_BUDGET {
+                            bfs_queue[tail] = Some(next);
+                            tail += 1;
+                        };
+                        continue;
+                    };
+
+                    if target_bucket.slots[target_slot_index].is_some() {
+                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                    }
+
+                    // If this slot isn't `Some(...)`, it must be `None`.
+                    // We found it!
+                    found = Some((
+                        next,
+                        SlotPos {
+                            bucket: target_bucket_pos,
+                            slot: target_slot_index,
+                        },
+                    ));
+                    break 'search;
+                }
+            }
+
+            head += 1;
+        }
+
+        // We've searched all possible places. Now let's reveal the result:
+        // did we actually find an empty slot?
+
+        // Bad End: no, we found nothing, so we must return `NoSpace` error.
+        if found.is_none() {
+            return Err(InsertError::NoSpace(new_slot.key, new_slot.value));
+        }
+
+        // Good End: yes, we found the empty slot!
+        // Now we must perform the final step: execute the reverse relocation.
+        // But wait, what is `found`? How did it tell us "how to relocate"?
+        // Every relocation is three steps:
+        // - Who am I?
+        // - Where do I come from?
+        // - Where am I going?
+        //
+        // Who am I? We must resolve the ownership issue.
+        // Where do I come from? `bfsnode.source`
+        // Where am i going? `bfsnode.bucket` + `slotpos` + `bfsnode.fingerprint`
+        let (init_empty_slot_bfsnode, init_empty_slot_slotpos) = found.unwrap();
+
+        let mut current_relocation = Relocation {
+            source_node: init_empty_slot_bfsnode.parent_node,
+            source: init_empty_slot_bfsnode.parent,
+            target: init_empty_slot_slotpos,
+            fingerprint: init_empty_slot_bfsnode.fingerprint,
+        };
+
+        loop {
+            if let Some(source) = current_relocation.source {
+                // Move the source KV, and make the fingerprint empty
+                let source_bucket =
+                    &mut self.subtables[source.bucket.subtable].buckets[source.bucket.bucket];
+                source_bucket.fingerprints[source.slot] = EMPTY_FINGERPRINT;
+                let moved_slot = source_bucket.slots[source.slot]
+                    .take()
+                    .expect("BFS source slot unexpectedly empty");
+
+                // Move the KV into target empty slot, and update the fingerprint
+                let target_pos = current_relocation.target;
+                let target_bucket = &mut self.subtables[target_pos.bucket.subtable].buckets
+                    [target_pos.bucket.bucket];
+                target_bucket.fingerprints[target_pos.slot] = current_relocation.fingerprint;
+                target_bucket.slots[target_pos.slot] = Some(moved_slot);
+
+                // After finishing moving, update current_relocation confirm next loop
+                let hole = source;
+
+                let Some(next_bfsnode_index) = current_relocation.source_node else {
+                    return Err(InsertError::RelocationError(new_slot.key, new_slot.value));
+                };
+                let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
+                    return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                };
+
+                current_relocation.source_node = next_bfsnode.parent_node;
+                current_relocation.source = next_bfsnode.parent;
+                current_relocation.target = hole;
+                current_relocation.fingerprint = next_bfsnode.fingerprint;
+            } else {
+                // Now we have a empty slot in root bucket, so we can perform final insertion
+                let hole = current_relocation.target;
+
+                let bucket = &mut self.subtables[hole.bucket.subtable].buckets[hole.bucket.bucket];
+
+                debug_assert!(bucket.slots[hole.slot].is_none());
+
+                bucket.slots[hole.slot] = Some(new_slot);
+                bucket.fingerprints[hole.slot] = current_relocation.fingerprint;
+
+                return Ok(());
+            }
         }
     }
 }
