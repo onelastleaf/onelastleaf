@@ -41,12 +41,24 @@ pub struct Slot<K, V> {
 }
 
 pub enum InsertError<K, V> {
+    /// The key already exists. Insertion does not overwrite existing values.
     DuplicateKey(K, V),
+
+    /// No available slot was found within the BFS search budget.
+    /// This does not necessarily mean the HashMap is full.
     NoSpace(K, V),
+
+    /// A slot is occupied, but its fingerprint is marked as empty.
     FalseEmpty(K, V),
+
+    /// A slot is empty, but its fingerprint is marked as occupied.
     FalseOccupied(K, V),
+
+    /// Invariant violated: an expected BFS node is missing from the queue.
     BfsTreeError(K, V),
-    RelocationError(K, V), // Invariant violated: source and source_node did not become None together.
+
+    /// Invariant violated: source and source_node did not become None together.
+    RelocationError(K, V),
 }
 
 #[derive(Clone, Copy)]
