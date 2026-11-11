@@ -523,4 +523,8 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
             }
         }
     }
+
+    fn resize(&mut self) {
+        todo!()
+    }
 }
