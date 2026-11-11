@@ -40,6 +40,7 @@ pub struct Slot<K, V> {
     value: V,
 }
 
+#[derive(Debug, PartialEq, Eq)]
 pub enum InsertError<K, V> {
     /// The key already exists. Insertion does not overwrite existing values.
     DuplicateKey(K, V),
@@ -524,7 +525,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         }
     }
 
-    fn resize(&mut self) {
+    fn resize(&mut self) -> Result<(), ()> {
         todo!()
     }
 }
