@@ -460,6 +460,11 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         loop {
             match (current_relocation.source_node, current_relocation.source) {
                 (Some(next_bfsnode_index), Some(source)) => {
+                    // Maybe the parent bfsnode is `None`? If happened, it must covered before relocation.
+                    let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
+                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                    };
+
                     // Move the source KV, and make the fingerprint empty
                     let source_bucket =
                         &mut self.subtables[source.bucket.subtable].buckets[source.bucket.bucket];
@@ -477,10 +482,6 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
 
                     // After finishing moving, update current_relocation confirm next loop
                     let hole = source;
-
-                    let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
-                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
-                    };
 
                     current_relocation.source_node = next_bfsnode.parent_node;
                     current_relocation.source = next_bfsnode.parent;
