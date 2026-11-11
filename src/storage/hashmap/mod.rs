@@ -344,6 +344,12 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                     ));
                     break 'search;
                 };
+                // I know there's another FalseEmpty error I haven't covered. This is not a bug——I
+                // just don't want to cover it. The fingerprint and slot state should already match.
+                // If an empty slot is found, checking the fingerprint once at the end is cheap: the
+                // fingerprint is about to be relocated anyway, so loading it into hot CPU cache
+                // costs little. But checking the fingerprint every time no empty slot is found
+                // would be completely unnecessary.
 
                 // For every candidates buckets per KV in current slot, there may be some empty
                 // slots in these buckets.
