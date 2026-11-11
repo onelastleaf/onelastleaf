@@ -528,3 +528,385 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         todo!()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, HashSet};
+
+    // B=8: a supported SIMD lane count; S=8: a small, easy-to-control table.
+    type TestMap<const H: usize> = HashMap<u64, i32, 8, 8, H>;
+
+    fn seeded_map<const H: usize>(buckets_per_subtable: usize) -> TestMap<H> {
+        let mut map = TestMap::<H>::new(buckets_per_subtable);
+        map.seeds = std::array::from_fn(|i| 0x9E37_79B9_7F4A_7C15_u64.wrapping_mul(i as u64 + 1));
+        map
+    }
+
+    fn snapshot<const H: usize>(map: &TestMap<H>) -> Vec<(u8, Option<(u64, i32)>)> {
+        map.subtables
+            .iter()
+            .flat_map(|subtable| subtable.buckets.iter())
+            .flat_map(|bucket| {
+                (0..8).map(move |i| {
+                    (
+                        bucket.fingerprints[i],
+                        bucket.slots[i].as_ref().map(|slot| (slot.key, slot.value)),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    fn occupied_count<const H: usize>(map: &TestMap<H>) -> usize {
+        snapshot(map)
+            .iter()
+            .filter(|(_, slot)| slot.is_some())
+            .count()
+    }
+
+    // Checks both metadata consistency and the hash-location invariant.
+    fn assert_storage_invariants<const H: usize>(map: &TestMap<H>) {
+        let mut seen_keys = HashSet::new();
+
+        for (si, subtable) in map.subtables.iter().enumerate() {
+            for (bi, bucket) in subtable.buckets.iter().enumerate() {
+                for index in 0..8 {
+                    let fingerprint = bucket.fingerprints[index];
+                    let slot = &bucket.slots[index];
+                    assert_eq!(
+                        slot.is_none(),
+                        fingerprint == EMPTY_FINGERPRINT,
+                        "slot/fingerprint mismatch at ({si}, {bi}, {index})"
+                    );
+
+                    if let Some(slot) = slot {
+                        assert!(seen_keys.insert(slot.key), "duplicate key: {}", slot.key);
+
+                        let in_correct_position = TestMap::<H>::candidates(&slot.key, &map.seeds)
+                            .into_iter()
+                            .any(|hash| {
+                                map.hash2bucket(hash) == (si, bi)
+                                    && TestMap::<H>::fingerprint(hash) == fingerprint
+                            });
+
+                        assert!(
+                            in_correct_position,
+                            "key {} is stored outside its candidate buckets, or has the wrong fingerprint",
+                            slot.key
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn empty_map_and_basic_insert_lookup() {
+        let mut map = seeded_map::<2>(2);
+        assert_eq!(map.lookup(&10), None);
+        assert_eq!(occupied_count(&map), 0);
+
+        assert!(map.insert(10, 100).is_ok());
+        assert!(map.insert(20, 200).is_ok());
+
+        assert_eq!(map.lookup(&10), Some(&100));
+        assert_eq!(map.lookup(&20), Some(&200));
+        assert_eq!(map.lookup(&30), None);
+        assert_eq!(occupied_count(&map), 2);
+        assert_storage_invariants(&map);
+    }
+
+    #[test]
+    fn bucket_lookup_checks_keys_after_fingerprint_collision() {
+        let mut bucket = Bucket::<u64, i32, 8>::new();
+        assert!(bucket.insert(Slot::new(1, 10), 7).is_ok());
+        assert!(bucket.insert(Slot::new(2, 20), 7).is_ok());
+
+        assert_eq!(bucket.lookup(&1, 7), Some(&10));
+        assert_eq!(bucket.lookup(&2, 7), Some(&20));
+        assert_eq!(bucket.lookup(&3, 7), None);
+        assert_eq!(bucket.lookup(&1, 8), None);
+
+        for key in 10_u64..16 {
+            assert!(bucket.insert(Slot::new(key, key as i32), 7).is_ok());
+        }
+        assert!(matches!(
+            bucket.insert(Slot::new(999, 9), 7),
+            Err(InsertError::NoSpace(999, 9))
+        ));
+    }
+
+    #[test]
+    fn duplicate_insert_preserves_original_value_and_layout() {
+        let mut map = seeded_map::<2>(2);
+        assert!(map.insert(42, 7).is_ok());
+        let before = snapshot(&map);
+
+        assert!(matches!(
+            map.insert(42, 999),
+            Err(InsertError::DuplicateKey(42, 999))
+        ));
+        assert_eq!(map.lookup(&42), Some(&7));
+        assert_eq!(snapshot(&map), before);
+        assert_storage_invariants(&map);
+    }
+
+    #[test]
+    fn fingerprint_never_uses_empty_sentinel() {
+        let shift = u64::BITS - 8_usize.ilog2() - 8;
+        for raw in 0..=u8::MAX {
+            let hash = (raw as u64) << shift;
+            let expected = if raw == EMPTY_FINGERPRINT {
+                EMPTY_FINGERPRINT + 1
+            } else {
+                raw
+            };
+            assert_eq!(TestMap::<2>::fingerprint(hash), expected);
+        }
+    }
+
+    #[test]
+    fn hash_to_bucket_uses_high_and_low_bits() {
+        let map = seeded_map::<2>(4);
+        let hash = (5_u64 << (u64::BITS - 8_usize.ilog2())) | 0b1010;
+        assert_eq!(map.hash2bucket(hash), (5, 2));
+    }
+
+    #[test]
+    #[should_panic]
+    fn zero_buckets_per_subtable_is_rejected() {
+        let _ = TestMap::<2>::new(0);
+    }
+
+    #[test]
+    fn no_space_in_one_candidate_bucket_does_not_modify_map() {
+        let mut map = seeded_map::<1>(1);
+        let first_hash = TestMap::<1>::candidates(&0, &map.seeds)[0];
+        let target = map.hash2bucket(first_hash);
+
+        let keys: Vec<u64> = (0_u64..10_000)
+            .filter(|key| {
+                let hash = TestMap::<1>::candidates(key, &map.seeds)[0];
+                map.hash2bucket(hash) == target
+            })
+            .take(9)
+            .collect();
+        assert_eq!(keys.len(), 9);
+
+        for (index, &key) in keys.iter().take(8).enumerate() {
+            assert!(map.insert(key, index as i32).is_ok());
+        }
+        let before = snapshot(&map);
+        let rejected_key = keys[8];
+
+        assert!(matches!(
+            map.insert(rejected_key, 999),
+            Err(InsertError::NoSpace(key, 999)) if key == rejected_key
+        ));
+        assert_eq!(snapshot(&map), before);
+        assert_eq!(map.lookup(&rejected_key), None);
+        assert_eq!(occupied_count(&map), 8); // Other subtables still have free slots.
+        assert_storage_invariants(&map);
+    }
+
+    #[test]
+    fn insert_detects_inconsistent_slot_fingerprints() {
+        // Occupied fingerprint but no slot.
+        let mut map = seeded_map::<2>(1);
+        let hash = TestMap::<2>::candidates(&42, &map.seeds)[0];
+        let (si, bi) = map.hash2bucket(hash);
+        map.subtables[si].buckets[bi].fingerprints[0] = TestMap::<2>::fingerprint(hash);
+        let before = snapshot(&map);
+
+        assert!(matches!(
+            map.insert(42, 7),
+            Err(InsertError::FalseOccupied(42, 7))
+        ));
+        assert_eq!(snapshot(&map), before);
+
+        // Slot exists but its fingerprint says "empty".
+        let mut map = seeded_map::<2>(1);
+        let hash = TestMap::<2>::candidates(&43, &map.seeds)[0];
+        let (si, bi) = map.hash2bucket(hash);
+        map.subtables[si].buckets[bi].slots[0] = Some(Slot::new(999, 11));
+        let before = snapshot(&map);
+
+        assert!(matches!(
+            map.insert(43, 8),
+            Err(InsertError::FalseEmpty(43, 8))
+        ));
+        assert_eq!(snapshot(&map), before);
+    }
+
+    fn bucket_pos(map: &TestMap<2>, hash: u64) -> BucketPos {
+        let (subtable, bucket) = map.hash2bucket(hash);
+        BucketPos { subtable, bucket }
+    }
+
+    fn candidate_positions(map: &TestMap<2>, key: u64) -> [BucketPos; 2] {
+        TestMap::<2>::candidates(&key, &map.seeds).map(|hash| bucket_pos(map, hash))
+    }
+
+    // Build a valid table state directly, so the BFS test does not rely on
+    // lucky insertion sequences or accidental hash collisions.
+    fn place_fixture(map: &mut TestMap<2>, where_: BucketPos, key: u64) {
+        let hash = TestMap::<2>::candidates(&key, &map.seeds)
+            .into_iter()
+            .find(|&hash| bucket_pos(map, hash) == where_)
+            .expect("fixture key must hash to the chosen bucket");
+        let fingerprint = TestMap::<2>::fingerprint(hash);
+        let bucket = &mut map.subtables[where_.subtable].buckets[where_.bucket];
+        let index = bucket
+            .slots
+            .iter()
+            .position(|slot| slot.is_none())
+            .expect("fixture bucket has room");
+
+        bucket.slots[index] = Some(Slot::new(key, key as i32));
+        bucket.fingerprints[index] = fingerprint;
+    }
+
+    fn place_matching(
+        map: &mut TestMap<2>,
+        where_: BucketPos,
+        used: &mut HashSet<u64>,
+        predicate: impl Fn([BucketPos; 2]) -> bool,
+    ) {
+        let key = (0_u64..100_000)
+            .find(|key| {
+                !used.contains(key) && {
+                    let positions = candidate_positions(map, *key);
+                    positions.contains(&where_) && predicate(positions)
+                }
+            })
+            .expect("could not construct BFS fixture");
+
+        place_fixture(map, where_, key);
+        used.insert(key);
+    }
+
+    #[test]
+    fn bfs_relocation_can_follow_two_edges() {
+        let mut map = seeded_map::<2>(1);
+        let new_key = (0_u64..1_000)
+            .find(|&key| {
+                let positions = candidate_positions(&map, key);
+                positions[0] != positions[1]
+            })
+            .expect("need two different candidate buckets");
+        let [a, b] = candidate_positions(&map, new_key);
+        let c = (0..8)
+            .map(|subtable| BucketPos {
+                subtable,
+                bucket: 0,
+            })
+            .find(|&pos| pos != a && pos != b)
+            .unwrap();
+
+        let mut used = HashSet::new();
+        used.insert(new_key);
+
+        // A and B (the new key's two candidate buckets) are both full.
+        // Every resident of A/B can move only within A, B, C.
+        // At least one resident of A can move into C.
+        place_matching(&mut map, a, &mut used, |positions| positions.contains(&c));
+        for _ in 1..8 {
+            place_matching(&mut map, a, &mut used, |positions| {
+                positions.iter().all(|pos| [a, b, c].contains(pos))
+            });
+        }
+        for _ in 0..8 {
+            place_matching(&mut map, b, &mut used, |positions| {
+                positions.iter().all(|pos| [a, b, c].contains(pos))
+            });
+        }
+
+        // C is also full, but each C resident has a free candidate bucket
+        // outside A/B/C. Therefore insertion needs at least two relocations.
+        for _ in 0..8 {
+            place_matching(&mut map, c, &mut used, |positions| {
+                positions.iter().any(|pos| ![a, b, c].contains(pos))
+            });
+        }
+
+        assert_eq!(occupied_count(&map), 24);
+        assert_storage_invariants(&map);
+        for &key in &used {
+            if key != new_key {
+                assert_eq!(map.lookup(&key), Some(&(key as i32)));
+            }
+        }
+
+        assert!(map.insert(new_key, -999).is_ok());
+        assert_eq!(map.lookup(&new_key), Some(&-999));
+        assert_eq!(occupied_count(&map), 25);
+        assert_storage_invariants(&map);
+
+        for &key in &used {
+            if key != new_key {
+                assert_eq!(map.lookup(&key), Some(&(key as i32)));
+            }
+        }
+        for pos in [a, b, c] {
+            let bucket = &map.subtables[pos.subtable].buckets[pos.bucket];
+            assert!(bucket.slots.iter().all(|slot| slot.is_some()));
+        }
+    }
+
+    #[test]
+    fn default_configuration_with_three_candidates_works() {
+        // Uses the original defaults: B=8, S=256, H=3.
+        let mut map = HashMap::<u64, i32>::new(1);
+        map.seeds = [11, 22, 33];
+
+        for key in 0_u64..64 {
+            assert!(map.insert(key, key as i32).is_ok());
+        }
+        for key in 0_u64..64 {
+            assert_eq!(map.lookup(&key), Some(&(key as i32)));
+        }
+        assert_eq!(map.lookup(&10_000), None);
+    }
+
+    #[test]
+    fn repeated_inserts_agree_with_reference_model() {
+        let mut map = seeded_map::<2>(4);
+        let mut model = BTreeMap::<u64, i32>::new();
+        let mut state = 0x1234_5678_9ABC_DEF0_u64;
+
+        for step in 0..500 {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            let key = state % 80;
+            let value = step;
+
+            if let Some(old_value) = model.get(&key) {
+                assert!(matches!(
+                    map.insert(key, value),
+                    Err(InsertError::DuplicateKey(k, v)) if k == key && v == value
+                ));
+                assert_eq!(map.lookup(&key), Some(old_value));
+            } else {
+                assert!(
+                    map.insert(key, value).is_ok(),
+                    "insert failed for key {key}"
+                );
+                model.insert(key, value);
+            }
+
+            if step % 25 == 0 {
+                for (&key, &value) in &model {
+                    assert_eq!(map.lookup(&key), Some(&value));
+                }
+                assert_storage_invariants(&map);
+            }
+        }
+
+        for key in 0..80 {
+            assert_eq!(map.lookup(&key).copied(), model.get(&key).copied());
+        }
+        assert_storage_invariants(&map);
+    }
+}
