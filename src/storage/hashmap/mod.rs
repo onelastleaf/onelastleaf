@@ -158,26 +158,6 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
 
         None
     }
-
-    fn insert(&mut self, slot: Slot<K, V>, fingerprint: u8) -> Result<(), InsertError<K, V>> {
-        debug_assert!(fingerprint != EMPTY_FINGERPRINT);
-
-        let Some(index) = Simd::<u8, B>::from_array(self.fingerprints)
-            .simd_eq(Simd::splat(EMPTY_FINGERPRINT))
-            .first_set()
-        else {
-            fail!(InsertError::NoSpace(slot.key, slot.value));
-        };
-
-        if self.slots[index].is_some() {
-            eprintln!("[WARN] this slot is occupied, but it's empty in fingerprints");
-            fail!(InsertError::FalseEmpty(slot.key, slot.value));
-        };
-
-        self.fingerprints[index] = fingerprint;
-        self.slots[index] = Some(slot);
-        Ok(())
-    }
 }
 
 impl<K: PartialEq, V, const B: usize> Subtable<K, V, B> {
@@ -558,19 +538,16 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         }
     }
 
-    pub fn resize(&mut self, subtable_index: usize) -> Result<(), ()> {
-        // 1. Check subtable index and capacity.
+    /// Doubles the selected subtable's bucket count.
+    /// Returns `false` without modifying the map if the subtable index is out of
+    /// bounds, or `true` after resizing.
+    pub fn resize(&mut self, subtable_index: usize) -> bool {
         let Some(old_subtable_ref) = self.subtables.get(subtable_index) else {
-            return Err(());
+            return false;
         };
 
         let old_len = old_subtable_ref.buckets.len();
-
-        if old_len == 0 || !old_len.is_power_of_two() {
-            return Err(());
-        }
-
-        let new_len = old_len.checked_mul(2).ok_or(())?;
+        let new_len = old_len * 2;
 
         // Determine whether a candidate hash corresponds to a slot's
         // original bucket and fingerprint.
@@ -584,35 +561,11 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
             s == subtable_index && b == bucket_index && Self::fingerprint(hash) == fingerprint
         };
 
-        // 2. Validate the old subtable before modifying anything.
-        // All recoverable errors must be detected before mem::replace().
-        for (bucket_index, bucket) in old_subtable_ref.buckets.iter().enumerate() {
-            for (slot_index, slot) in bucket.slots.iter().enumerate() {
-                let fingerprint = bucket.fingerprints[slot_index];
-
-                match slot {
-                    None if fingerprint == EMPTY_FINGERPRINT => {}
-
-                    Some(slot) if fingerprint != EMPTY_FINGERPRINT => {
-                        let valid = Self::candidates(&slot.key, &self.seeds)
-                            .into_iter()
-                            .any(|hash| matches_old(hash, bucket_index, fingerprint));
-
-                        if !valid {
-                            return Err(());
-                        }
-                    }
-
-                    _ => return Err(()),
-                }
-            }
-        }
-
-        // 3. Replace the old subtable with a new, empty, doubled subtable.
+        // Replace the old subtable with a new, empty, doubled subtable.
         let old_subtable =
             std::mem::replace(&mut self.subtables[subtable_index], Subtable::new(new_len));
 
-        // 4. Migrate every KV from the old subtable.
+        // Migrate every KV from the old subtable.
         for (old_bucket_index, old_bucket) in old_subtable.buckets.into_iter().enumerate() {
             let old_fingerprints = old_bucket.fingerprints;
 
@@ -625,26 +578,20 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                 let hash = Self::candidates(&slot.key, &self.seeds)
                     .into_iter()
                     .find(|&hash| matches_old(hash, old_bucket_index, old_fingerprints[slot_index]))
-                    .expect("Prevalidated slot has no matching candidate");
+                    .expect("Stored slot has no matching candidate");
 
                 // With doubled capacity, the destination is either:
                 // old_bucket_index or old_bucket_index + old_len.
                 let new_bucket_index = (hash as usize) & (new_len - 1);
 
-                debug_assert_eq!(new_bucket_index & (old_len - 1), old_bucket_index);
-
-                let new_fingerprint = Self::fingerprint(hash);
-
-                // Reuse Bucket::insert(), without HashMap::insert()
-                // or BFS displacement.
+                // Each destination belongs to one old bucket, so preserving the
+                // slot index cannot cause collisions. The fingerprint is unchanged.
                 let target_bucket = &mut self.subtables[subtable_index].buckets[new_bucket_index];
-
-                if target_bucket.insert(slot, new_fingerprint).is_err() {
-                    unreachable!("DySECT resize: destination bucket overflow");
-                }
+                target_bucket.slots[slot_index] = Some(slot);
+                target_bucket.fingerprints[slot_index] = old_fingerprints[slot_index];
             }
         }
 
-        Ok(())
+        true
     }
 }
