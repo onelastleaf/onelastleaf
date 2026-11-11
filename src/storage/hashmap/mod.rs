@@ -452,48 +452,55 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         };
 
         loop {
-            if let Some(source) = current_relocation.source {
-                // Move the source KV, and make the fingerprint empty
-                let source_bucket =
-                    &mut self.subtables[source.bucket.subtable].buckets[source.bucket.bucket];
-                source_bucket.fingerprints[source.slot] = EMPTY_FINGERPRINT;
-                let moved_slot = source_bucket.slots[source.slot]
-                    .take()
-                    .expect("BFS source slot unexpectedly empty");
+            match (current_relocation.source_node, current_relocation.source) {
+                (Some(next_bfsnode_index), Some(source)) => {
+                    // Move the source KV, and make the fingerprint empty
+                    let source_bucket =
+                        &mut self.subtables[source.bucket.subtable].buckets[source.bucket.bucket];
+                    source_bucket.fingerprints[source.slot] = EMPTY_FINGERPRINT;
+                    let moved_slot = source_bucket.slots[source.slot]
+                        .take()
+                        .expect("BFS source slot unexpectedly empty");
 
-                // Move the KV into target empty slot, and update the fingerprint
-                let target_pos = current_relocation.target;
-                let target_bucket = &mut self.subtables[target_pos.bucket.subtable].buckets
-                    [target_pos.bucket.bucket];
-                target_bucket.fingerprints[target_pos.slot] = current_relocation.fingerprint;
-                target_bucket.slots[target_pos.slot] = Some(moved_slot);
+                    // Move the KV into target empty slot, and update the fingerprint
+                    let target_pos = current_relocation.target;
+                    let target_bucket = &mut self.subtables[target_pos.bucket.subtable].buckets
+                        [target_pos.bucket.bucket];
+                    target_bucket.fingerprints[target_pos.slot] = current_relocation.fingerprint;
+                    target_bucket.slots[target_pos.slot] = Some(moved_slot);
 
-                // After finishing moving, update current_relocation confirm next loop
-                let hole = source;
+                    // After finishing moving, update current_relocation confirm next loop
+                    let hole = source;
 
-                let Some(next_bfsnode_index) = current_relocation.source_node else {
+                    let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
+                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                    };
+
+                    current_relocation.source_node = next_bfsnode.parent_node;
+                    current_relocation.source = next_bfsnode.parent;
+                    current_relocation.target = hole;
+                    current_relocation.fingerprint = next_bfsnode.fingerprint;
+                }
+                (Some(_), None) => {
                     return Err(InsertError::RelocationError(new_slot.key, new_slot.value));
-                };
-                let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
-                    return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
-                };
+                }
+                (None, Some(_)) => {
+                    return Err(InsertError::RelocationError(new_slot.key, new_slot.value));
+                }
+                (None, None) => {
+                    // Now we have a empty slot in root bucket, so we can perform final insertion
+                    let hole = current_relocation.target;
 
-                current_relocation.source_node = next_bfsnode.parent_node;
-                current_relocation.source = next_bfsnode.parent;
-                current_relocation.target = hole;
-                current_relocation.fingerprint = next_bfsnode.fingerprint;
-            } else {
-                // Now we have a empty slot in root bucket, so we can perform final insertion
-                let hole = current_relocation.target;
+                    let bucket =
+                        &mut self.subtables[hole.bucket.subtable].buckets[hole.bucket.bucket];
 
-                let bucket = &mut self.subtables[hole.bucket.subtable].buckets[hole.bucket.bucket];
+                    debug_assert!(bucket.slots[hole.slot].is_none());
 
-                debug_assert!(bucket.slots[hole.slot].is_none());
+                    bucket.slots[hole.slot] = Some(new_slot);
+                    bucket.fingerprints[hole.slot] = current_relocation.fingerprint;
 
-                bucket.slots[hole.slot] = Some(new_slot);
-                bucket.fingerprints[hole.slot] = current_relocation.fingerprint;
-
-                return Ok(());
+                    return Ok(());
+                }
             }
         }
     }
