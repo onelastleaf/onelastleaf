@@ -191,7 +191,7 @@ impl<K: PartialEq, V, const B: usize> Subtable<K, V, B> {
 impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: usize>
     HashMap<K, V, B, S, H>
 {
-    fn new(buckets_per_subtable: usize) -> Self {
+    pub fn new(buckets_per_subtable: usize) -> Self {
         const {
             assert!(B > 0 && B.is_power_of_two());
             assert!(S >= 2 && S.is_power_of_two());
@@ -235,7 +235,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         (subtable_index, bucket_index)
     }
 
-    fn lookup(&self, key: &K) -> Option<&V> {
+    pub fn lookup(&self, key: &K) -> Option<&V> {
         let hash_values: [u64; H] = Self::candidates(key, &self.seeds);
 
         for hash in hash_values {
@@ -255,7 +255,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         None
     }
 
-    fn insert(&mut self, key: K, value: V) -> Result<(), InsertError<K, V>> {
+    pub fn insert(&mut self, key: K, value: V) -> Result<(), InsertError<K, V>> {
         let hash_values: [u64; H] = Self::candidates(&key, &self.seeds);
         let mut empty_slot_index: Option<(usize, usize, usize, u8)> = None;
 
@@ -558,7 +558,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         }
     }
 
-    fn resize(&mut self, subtable_index: usize) -> Result<(), ()> {
+    pub fn resize(&mut self, subtable_index: usize) -> Result<(), ()> {
         // 1. Check subtable index and capacity.
         let Some(old_subtable_ref) = self.subtables.get(subtable_index) else {
             return Err(());
