@@ -62,6 +62,39 @@ pub enum InsertError<K, V> {
     RelocationError(K, V),
 }
 
+impl<K, V> InsertError<K, V> {
+    fn message(&self) -> &'static str {
+        match self {
+            Self::DuplicateKey(..) => {
+                "DuplicateKey: the key already exists; insertion does not overwrite existing values"
+            }
+            Self::NoSpace(..) => {
+                "NoSpace: no available slot was found within the BFS search budget; the HashMap may still have free space"
+            }
+            Self::FalseEmpty(..) => {
+                "FalseEmpty: a slot is occupied, but its fingerprint marks it as empty"
+            }
+            Self::FalseOccupied(..) => {
+                "FalseOccupied: a slot is empty, but its fingerprint marks it as occupied"
+            }
+            Self::BfsTreeError(..) => {
+                "BfsTreeError: an expected BFS node is missing from the search queue"
+            }
+            Self::RelocationError(..) => {
+                "RelocationError: source and source_node have inconsistent states; both must be Some or both None"
+            }
+        }
+    }
+}
+
+macro_rules! fail {
+    ($error:expr) => {{
+        let error = $error;
+        let _ = crate::logging::error(module_path!(), error.message());
+        return Err(error);
+    }};
+}
+
 #[derive(Clone, Copy)]
 struct BfsNode {
     bucket: BucketPos,          // who is me
@@ -133,12 +166,12 @@ impl<K: PartialEq, V, const B: usize> Bucket<K, V, B> {
             .simd_eq(Simd::splat(EMPTY_FINGERPRINT))
             .first_set()
         else {
-            return Err(InsertError::NoSpace(slot.key, slot.value));
+            fail!(InsertError::NoSpace(slot.key, slot.value));
         };
 
         if self.slots[index].is_some() {
             eprintln!("[WARN] this slot is occupied, but it's empty in fingerprints");
-            return Err(InsertError::FalseEmpty(slot.key, slot.value));
+            fail!(InsertError::FalseEmpty(slot.key, slot.value));
         };
 
         self.fingerprints[index] = fingerprint;
@@ -245,12 +278,12 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
 
                 match bucket.slots[index].as_ref() {
                     Some(slot) if slot.key == key => {
-                        return Err(InsertError::DuplicateKey(key, value));
+                        fail!(InsertError::DuplicateKey(key, value));
                     }
                     Some(_) => {}
                     None => {
                         eprintln!("[WARN] slot is empty, but fingerprints is occupied");
-                        return Err(InsertError::FalseOccupied(key, value));
+                        fail!(InsertError::FalseOccupied(key, value));
                     }
                 }
             }
@@ -260,7 +293,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
             {
                 if bucket.slots[index].is_some() {
                     eprintln!("[WARN] slot is occupied, but fingerprints is empty");
-                    return Err(InsertError::FalseEmpty(key, value));
+                    fail!(InsertError::FalseEmpty(key, value));
                 } else {
                     let fingerprint = Self::fingerprint(hash);
                     empty_slot_index = Some((subtable_index, bucket_index, index, fingerprint));
@@ -310,7 +343,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
 
             // although `bfs_queue` length < H is very impossible, but I must deal with this thing
             if tail == BFS_PROBE_BUDGET {
-                return Err(InsertError::NoSpace(new_slot.key, new_slot.value));
+                fail!(InsertError::NoSpace(new_slot.key, new_slot.value));
             }
 
             bfs_queue[tail] = Some(BfsNode {
@@ -329,7 +362,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         'search: while head < tail {
             // take the current bucket
             let Some(current_bfsnode) = bfs_queue[head] else {
-                return Err(InsertError::BfsTreeError(new_slot.key, new_slot.value));
+                fail!(InsertError::BfsTreeError(new_slot.key, new_slot.value));
             };
             let current_bucketpos = current_bfsnode.bucket;
             let bucket =
@@ -345,7 +378,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                 // slot, but I don't think this is a error that can be ignored.
                 let Some(current_slot) = bucket.slots[current_slot_index].as_ref() else {
                     if bucket.fingerprints[current_slot_index] != EMPTY_FINGERPRINT {
-                        return Err(InsertError::FalseOccupied(new_slot.key, new_slot.value));
+                        fail!(InsertError::FalseOccupied(new_slot.key, new_slot.value));
                     };
 
                     found = Some((
@@ -423,7 +456,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                     };
 
                     if target_bucket.slots[target_slot_index].is_some() {
-                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                        fail!(InsertError::FalseEmpty(new_slot.key, new_slot.value));
                     }
 
                     // If this slot isn't `Some(...)`, it must be `None`.
@@ -447,7 +480,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
 
         // Bad End: no, we found nothing, so we must return `NoSpace` error.
         if found.is_none() {
-            return Err(InsertError::NoSpace(new_slot.key, new_slot.value));
+            fail!(InsertError::NoSpace(new_slot.key, new_slot.value));
         }
 
         // Good End: yes, we found the empty slot!
@@ -475,7 +508,7 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                 (Some(next_bfsnode_index), Some(source)) => {
                     // Maybe the parent bfsnode is `None`? If happened, it must covered before relocation.
                     let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
-                        return Err(InsertError::FalseEmpty(new_slot.key, new_slot.value));
+                        fail!(InsertError::FalseEmpty(new_slot.key, new_slot.value));
                     };
 
                     // Move the source KV, and make the fingerprint empty
@@ -502,10 +535,10 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                     current_relocation.fingerprint = next_bfsnode.fingerprint;
                 }
                 (Some(_), None) => {
-                    return Err(InsertError::RelocationError(new_slot.key, new_slot.value));
+                    fail!(InsertError::RelocationError(new_slot.key, new_slot.value));
                 }
                 (None, Some(_)) => {
-                    return Err(InsertError::RelocationError(new_slot.key, new_slot.value));
+                    fail!(InsertError::RelocationError(new_slot.key, new_slot.value));
                 }
                 (None, None) => {
                     // Now we have a empty slot in root bucket, so we can perform final insertion
