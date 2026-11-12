@@ -595,3 +595,1121 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         true
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::{BTreeMap, BTreeSet};
+
+    type RelocationMap = HashMap<u64, String, 1, 2, 2>;
+
+    fn new_test_map<const B: usize, const S: usize, const H: usize>(
+        buckets_per_subtable: usize,
+        seeds: [u64; H],
+    ) -> HashMap<u64, String, B, S, H> {
+        let mut map = HashMap::new(buckets_per_subtable);
+        map.seeds = seeds;
+        map
+    }
+
+    fn assert_encoding<Value: ToBytes + ?Sized>(value: &Value, expected_bytes: &[u8]) {
+        Value::with_bytes(value, |bytes| {
+            assert_eq!(bytes, expected_bytes);
+        });
+    }
+
+    fn assert_key_round_trips<Key: ToBytes + PartialEq + Copy + std::fmt::Debug>(keys: &[Key]) {
+        let mut map = HashMap::<Key, usize, 8, 4, 3>::new(8);
+        map.seeds = [11, 29, 47];
+
+        for (key_index, &key) in keys.iter().enumerate() {
+            assert_eq!(map.insert(key, key_index), Ok(()));
+        }
+        for (key_index, key) in keys.iter().enumerate() {
+            assert_eq!(map.lookup(key), Some(&key_index));
+        }
+    }
+
+    fn assert_bucket_lookup_for_width<const B: usize>() {
+        let mut bucket = Bucket::<usize, usize, B>::new();
+        for slot_index in 0..B {
+            bucket.slots[slot_index] = Some(Slot::new(slot_index, slot_index + 100));
+            bucket.fingerprints[slot_index] = 0xff;
+        }
+        for slot_index in 0..B {
+            assert_eq!(bucket.lookup(&slot_index, 0xff), Some(&(slot_index + 100)));
+        }
+        assert_eq!(bucket.lookup(&B, 0xff), None);
+    }
+
+    // Pick a key that lands in the candidate buckets needed by a test.
+    // For example, a BFS relocation test may need candidates A and B, but an
+    // arbitrary key might land in C and D. Try consecutive keys until one fits.
+    // An illustrative search starting at key 0 could look like this:
+    //   key 0 -> candidates C, D -> skip
+    //   key 1 -> candidates A, C -> skip
+    //   key 2 -> candidates A, B -> return 2
+    // Each attempt uses this map's seeds and must match expected_buckets in order.
+    // Search up to 100,000 keys starting at first_key; fail the test if none match.
+    fn find_key_with_candidate_buckets<const B: usize, const S: usize, const H: usize>(
+        map: &HashMap<u64, String, B, S, H>,
+        expected_buckets: [(usize, usize); H],
+        first_key: u64,
+    ) -> u64 {
+        (first_key..first_key + 100_000)
+            .find(|candidate_key| {
+                HashMap::<u64, String, B, S, H>::candidates(candidate_key, &map.seeds)
+                    .map(|candidate_hash| map.hash2bucket(candidate_hash))
+                    == expected_buckets
+            })
+            .expect("the fixed seeds must provide a key for the requested bucket layout")
+    }
+
+    // Build occupied buckets without invoking the insertion path under test.
+    // Every fixture entry still uses a real candidate bucket and fingerprint.
+    fn place_entry_in_candidate<const B: usize, const S: usize, const H: usize>(
+        map: &mut HashMap<u64, String, B, S, H>,
+        key: u64,
+        value: String,
+        candidate_index: usize,
+        slot_index: usize,
+    ) {
+        let candidate_hash =
+            HashMap::<u64, String, B, S, H>::candidates(&key, &map.seeds)[candidate_index];
+        let (subtable_index, bucket_index) = map.hash2bucket(candidate_hash);
+        let target_bucket = &mut map.subtables[subtable_index].buckets[bucket_index];
+        assert!(target_bucket.slots[slot_index].is_none());
+        target_bucket.slots[slot_index] = Some(Slot::new(key, value));
+        target_bucket.fingerprints[slot_index] =
+            HashMap::<u64, String, B, S, H>::fingerprint(candidate_hash);
+    }
+
+    fn assert_map_matches<const B: usize, const S: usize, const H: usize>(
+        map: &HashMap<u64, String, B, S, H>,
+        expected_entries: &BTreeMap<u64, String>,
+    ) {
+        for (expected_key, expected_value) in expected_entries {
+            assert_eq!(map.lookup(expected_key), Some(expected_value));
+        }
+
+        let mut stored_keys = BTreeSet::new();
+        for (subtable_index, subtable) in map.subtables.iter().enumerate() {
+            for (bucket_index, bucket) in subtable.buckets.iter().enumerate() {
+                for (slot_index, stored_slot) in bucket.slots.iter().enumerate() {
+                    let stored_fingerprint = bucket.fingerprints[slot_index];
+                    match stored_slot {
+                        Some(stored_slot) => {
+                            assert!(stored_keys.insert(stored_slot.key), "duplicate stored key");
+                            assert_eq!(
+                                expected_entries.get(&stored_slot.key),
+                                Some(&stored_slot.value)
+                            );
+                            let candidate_hashes = HashMap::<u64, String, B, S, H>::candidates(
+                                &stored_slot.key,
+                                &map.seeds,
+                            );
+                            assert!(candidate_hashes.into_iter().any(|candidate_hash| {
+                                map.hash2bucket(candidate_hash) == (subtable_index, bucket_index)
+                                    && HashMap::<u64, String, B, S, H>::fingerprint(candidate_hash)
+                                        == stored_fingerprint
+                            }));
+                        }
+                        None => assert_eq!(stored_fingerprint, EMPTY_FINGERPRINT),
+                    }
+                }
+            }
+        }
+        assert_eq!(stored_keys.len(), expected_entries.len());
+    }
+
+    #[test]
+    fn test_to_bytes_u8() {
+        assert_encoding(&0_u8, &[0]);
+        assert_encoding(&0x12_u8, &[0x12]);
+        assert_encoding(&u8::MAX, &[0xff]);
+    }
+
+    #[test]
+    fn test_to_bytes_u16() {
+        assert_encoding(&0_u16, &[0; 2]);
+        assert_encoding(&0x1234_u16, &[0x34, 0x12]);
+        assert_encoding(&u16::MAX, &[0xff; 2]);
+    }
+
+    #[test]
+    fn test_to_bytes_u32() {
+        assert_encoding(&0_u32, &[0; 4]);
+        assert_encoding(&0x12345678_u32, &[0x78, 0x56, 0x34, 0x12]);
+        assert_encoding(&u32::MAX, &[0xff; 4]);
+    }
+
+    #[test]
+    fn test_to_bytes_u64() {
+        assert_encoding(&0_u64, &[0; 8]);
+        assert_encoding(
+            &0x0102030405060708_u64,
+            &[0x08, 0x07, 0x06, 0x05, 0x04, 0x03, 0x02, 0x01],
+        );
+        assert_encoding(&u64::MAX, &[0xff; 8]);
+    }
+
+    #[test]
+    fn test_to_bytes_u128() {
+        assert_encoding(&0_u128, &[0; 16]);
+        assert_encoding(
+            &0x0102030405060708090a0b0c0d0e0f10_u128,
+            &[
+                0x10, 0x0f, 0x0e, 0x0d, 0x0c, 0x0b, 0x0a, 0x09, 0x08, 0x07, 0x06, 0x05, 0x04, 0x03,
+                0x02, 0x01,
+            ],
+        );
+        assert_encoding(&u128::MAX, &[0xff; 16]);
+    }
+
+    #[test]
+    fn test_to_bytes_usize() {
+        assert_encoding(&0_usize, &vec![0; size_of::<usize>()]);
+        let mut expected_example_bytes = vec![0; size_of::<usize>()];
+        expected_example_bytes[0] = 0x34;
+        expected_example_bytes[1] = 0x12;
+        assert_encoding(&0x1234_usize, &expected_example_bytes);
+        assert_encoding(&usize::MAX, &vec![0xff; size_of::<usize>()]);
+    }
+
+    #[test]
+    fn test_to_bytes_i8() {
+        assert_encoding(&0_i8, &[0]);
+        assert_encoding(&-2_i8, &[0xfe]);
+        assert_encoding(&i8::MIN, &[0x80]);
+        assert_encoding(&i8::MAX, &[0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_i16() {
+        assert_encoding(&0_i16, &[0; 2]);
+        assert_encoding(&-2_i16, &[0xfe, 0xff]);
+        assert_encoding(&i16::MIN, &[0, 0x80]);
+        assert_encoding(&i16::MAX, &[0xff, 0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_i32() {
+        assert_encoding(&0_i32, &[0; 4]);
+        assert_encoding(&-2_i32, &[0xfe, 0xff, 0xff, 0xff]);
+        assert_encoding(&i32::MIN, &[0, 0, 0, 0x80]);
+        assert_encoding(&i32::MAX, &[0xff, 0xff, 0xff, 0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_i64() {
+        assert_encoding(&0_i64, &[0; 8]);
+        assert_encoding(&-2_i64, &[0xfe, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+        assert_encoding(&i64::MIN, &[0, 0, 0, 0, 0, 0, 0, 0x80]);
+        assert_encoding(&i64::MAX, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_i128() {
+        assert_encoding(&0_i128, &[0; 16]);
+        let mut expected_negative_bytes = [0xff; 16];
+        expected_negative_bytes[0] = 0xfe;
+        assert_encoding(&-2_i128, &expected_negative_bytes);
+        let mut expected_minimum_bytes = [0; 16];
+        expected_minimum_bytes[15] = 0x80;
+        assert_encoding(&i128::MIN, &expected_minimum_bytes);
+        let mut expected_maximum_bytes = [0xff; 16];
+        expected_maximum_bytes[15] = 0x7f;
+        assert_encoding(&i128::MAX, &expected_maximum_bytes);
+    }
+
+    #[test]
+    fn test_to_bytes_isize() {
+        assert_encoding(&0_isize, &vec![0; size_of::<isize>()]);
+        let mut expected_negative_bytes = vec![0xff; size_of::<isize>()];
+        expected_negative_bytes[0] = 0xfe;
+        assert_encoding(&-2_isize, &expected_negative_bytes);
+        let mut expected_minimum_bytes = vec![0; size_of::<isize>()];
+        *expected_minimum_bytes.last_mut().unwrap() = 0x80;
+        assert_encoding(&isize::MIN, &expected_minimum_bytes);
+        let mut expected_maximum_bytes = vec![0xff; size_of::<isize>()];
+        *expected_maximum_bytes.last_mut().unwrap() = 0x7f;
+        assert_encoding(&isize::MAX, &expected_maximum_bytes);
+    }
+
+    #[test]
+    fn test_to_bytes_f32() {
+        assert_encoding(&1.5_f32, &[0, 0, 0xc0, 0x3f]);
+        assert_encoding(&-2.5_f32, &[0, 0, 0x20, 0xc0]);
+        assert_encoding(&f32::MIN_POSITIVE, &[0, 0, 0x80, 0]);
+        assert_encoding(&f32::MAX, &[0xff, 0xff, 0x7f, 0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_f64() {
+        assert_encoding(&1.5_f64, &[0, 0, 0, 0, 0, 0, 0xf8, 0x3f]);
+        assert_encoding(&-2.5_f64, &[0, 0, 0, 0, 0, 0, 0x04, 0xc0]);
+        assert_encoding(&f64::MIN_POSITIVE, &[0, 0, 0, 0, 0, 0, 0x10, 0]);
+        assert_encoding(&f64::MAX, &[0xff, 0xff, 0xff, 0xff, 0xff, 0xff, 0xef, 0x7f]);
+    }
+
+    #[test]
+    fn test_to_bytes_str() {
+        assert_encoding("", b"");
+        assert_encoding("hello\0world", b"hello\0world");
+        assert_encoding("你好🦀", b"\xe4\xbd\xa0\xe5\xa5\xbd\xf0\x9f\xa6\x80");
+    }
+
+    #[test]
+    fn test_to_bytes_string() {
+        assert_encoding(&String::new(), b"");
+        assert_encoding(&String::from("hello\0world"), b"hello\0world");
+        assert_encoding(
+            &String::from("你好🦀"),
+            b"\xe4\xbd\xa0\xe5\xa5\xbd\xf0\x9f\xa6\x80",
+        );
+    }
+
+    #[test]
+    fn test_to_bytes_references() {
+        let integer = 0x1234_u16;
+        let integer_reference = &integer;
+        assert_encoding(&integer_reference, &[0x34, 0x12]);
+        assert_encoding(&&integer_reference, &[0x34, 0x12]);
+        let string_slice = "你好";
+        assert_encoding(&string_slice, b"\xe4\xbd\xa0\xe5\xa5\xbd");
+        let owned_string = String::from("hello");
+        assert_encoding(&&owned_string, b"hello");
+    }
+
+    #[test]
+    fn test_slot_new() {
+        let slot = Slot::new(String::from("key"), vec![1, 2, 3]);
+        assert_eq!(slot.key, "key");
+        assert_eq!(slot.value, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn test_bucket_new() {
+        let bucket = Bucket::<u64, String, 8>::new();
+        assert!(bucket.slots.iter().all(Option::is_none));
+        assert_eq!(bucket.fingerprints, [EMPTY_FINGERPRINT; 8]);
+    }
+
+    #[test]
+    fn test_bucket_lookup() {
+        let mut bucket = Bucket::<u64, String, 8>::new();
+        assert_eq!(bucket.lookup(&10, 7), None);
+        for (slot_index, key) in [(0, 10), (3, 20), (7, 30)] {
+            bucket.slots[slot_index] = Some(Slot::new(key, format!("value {key}")));
+            bucket.fingerprints[slot_index] = 7;
+        }
+
+        for key in [10, 20, 30] {
+            assert_eq!(bucket.lookup(&key, 7), Some(&format!("value {key}")));
+        }
+        assert_eq!(bucket.lookup(&40, 7), None);
+        assert_eq!(bucket.lookup(&10, 8), None);
+    }
+
+    #[test]
+    fn test_bucket_lookup_all_supported_simd_widths() {
+        assert_bucket_lookup_for_width::<1>();
+        assert_bucket_lookup_for_width::<2>();
+        assert_bucket_lookup_for_width::<4>();
+        assert_bucket_lookup_for_width::<8>();
+        assert_bucket_lookup_for_width::<16>();
+        assert_bucket_lookup_for_width::<32>();
+        assert_bucket_lookup_for_width::<64>();
+    }
+
+    #[test]
+    fn test_subtable_new() {
+        for bucket_count in [0, 1, 4] {
+            let subtable = Subtable::<u64, String, 8>::new(bucket_count);
+            assert_eq!(subtable.buckets.len(), bucket_count);
+            for bucket in subtable.buckets {
+                assert!(bucket.slots.iter().all(Option::is_none));
+                assert_eq!(bucket.fingerprints, [EMPTY_FINGERPRINT; 8]);
+            }
+        }
+    }
+
+    #[test]
+    fn test_hashmap_new() {
+        let map = HashMap::<u64, String>::new(1);
+        assert_eq!(map.subtables.len(), 256);
+        assert_eq!(map.seeds.len(), 3);
+        for subtable in &map.subtables {
+            assert_eq!(subtable.buckets.len(), 1);
+            for bucket in &subtable.buckets {
+                assert!(bucket.slots.iter().all(Option::is_none));
+                assert_eq!(bucket.fingerprints, [EMPTY_FINGERPRINT; 8]);
+            }
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "buckets_per_subtable.is_power_of_two()")]
+    fn test_hashmap_new_rejects_zero_buckets() {
+        HashMap::<u64, String>::new(0);
+    }
+
+    #[test]
+    #[should_panic(expected = "buckets_per_subtable.is_power_of_two()")]
+    fn test_hashmap_new_rejects_non_power_of_two_buckets() {
+        HashMap::<u64, String>::new(3);
+    }
+
+    #[test]
+    fn test_candidates() {
+        let key = 0x0102030405060708_u64;
+        let seeds = [11, 29, 47];
+        let key_bytes = [8, 7, 6, 5, 4, 3, 2, 1];
+        let expected_hashes = seeds.map(|seed| xxh3_64_with_seed(&key_bytes, seed));
+        assert_eq!(
+            HashMap::<u64, (), 8, 4, 3>::candidates(&key, &seeds),
+            expected_hashes
+        );
+        let repeated_seeds = [29, 29, 11];
+        assert_eq!(
+            HashMap::<u64, (), 8, 4, 3>::candidates(&key, &repeated_seeds),
+            [expected_hashes[1], expected_hashes[1], expected_hashes[0]]
+        );
+    }
+
+    #[test]
+    fn test_candidates_string_keys() {
+        for key in ["", "hello", "你好"] {
+            let expected_hash = xxh3_64_with_seed(key.as_bytes(), 11);
+            assert_eq!(
+                HashMap::<&str, (), 8, 2, 1>::candidates(&key, &[11]),
+                [expected_hash]
+            );
+        }
+    }
+
+    #[test]
+    fn test_fingerprint() {
+        for fingerprint_byte in 0_u8..=u8::MAX {
+            if fingerprint_byte == EMPTY_FINGERPRINT {
+                continue;
+            }
+            let hash = u64::from(fingerprint_byte) << 54;
+            assert_eq!(
+                HashMap::<u64, (), 8, 4, 3>::fingerprint(hash),
+                fingerprint_byte
+            );
+            let hash_with_other_bits = hash | (3 << 62) | ((1 << 54) - 1);
+            assert_eq!(
+                HashMap::<u64, (), 8, 4, 3>::fingerprint(hash_with_other_bits),
+                fingerprint_byte
+            );
+        }
+    }
+
+    #[test]
+    fn test_fingerprint_remaps_empty_marker() {
+        assert_eq!(HashMap::<u64, (), 8, 2, 1>::fingerprint(0x80 << 55), 0x81);
+        assert_eq!(HashMap::<u64, (), 8, 4, 3>::fingerprint(0x80 << 54), 0x81);
+        assert_eq!(HashMap::<u64, ()>::fingerprint(0x80 << 48), 0x81);
+    }
+
+    #[test]
+    fn test_hash2bucket() {
+        let mut map = new_test_map::<8, 4, 3>(4, [11, 29, 47]);
+        map.subtables[2] = Subtable::new(8);
+        map.subtables[3] = Subtable::new(1);
+        for (hash, expected_bucket) in [
+            (0, (0, 0)),
+            (1, (0, 1)),
+            (3, (0, 3)),
+            (4, (0, 0)),
+            ((1 << 62) | 3, (1, 3)),
+            ((2 << 62) | 7, (2, 7)),
+            (u64::MAX, (3, 0)),
+        ] {
+            assert_eq!(map.hash2bucket(hash), expected_bucket);
+        }
+    }
+
+    #[test]
+    fn test_lookup() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        assert_eq!(map.lookup(&0), None);
+        let stored_key = find_key_with_candidate_buckets(&map, [(0, 0), (1, 3)], 0);
+        place_entry_in_candidate(&mut map, stored_key, String::from("second candidate"), 1, 0);
+        assert_eq!(
+            map.lookup(&stored_key).map(String::as_str),
+            Some("second candidate")
+        );
+        assert_eq!(map.lookup(&(stored_key + 1)), None);
+    }
+
+    #[test]
+    fn test_insert() {
+        let mut map = new_test_map::<8, 2, 2>(1, [11, 29]);
+        let inserted_key = find_key_with_candidate_buckets(&map, [(0, 0), (1, 0)], 0);
+        assert_eq!(
+            map.insert(inserted_key, String::from("first candidate")),
+            Ok(())
+        );
+        let inserted_slot = map.subtables[0].buckets[0].slots[0].as_ref().unwrap();
+        assert_eq!(inserted_slot.key, inserted_key);
+        assert_eq!(inserted_slot.value, "first candidate");
+        assert!(
+            map.subtables[1].buckets[0]
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([(inserted_key, String::from("first candidate"))]),
+        );
+    }
+
+    #[test]
+    fn test_insert_rejects_duplicate_in_later_candidate() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let stored_key = find_key_with_candidate_buckets(&map, [(0, 0), (1, 3)], 0);
+        place_entry_in_candidate(&mut map, stored_key, String::from("original"), 1, 0);
+
+        assert_eq!(
+            map.insert(stored_key, String::from("rejected")),
+            Err(InsertError::DuplicateKey(
+                stored_key,
+                String::from("rejected")
+            ))
+        );
+        assert!(map.subtables[0].buckets[0].slots[0].is_none());
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([(stored_key, String::from("original"))]),
+        );
+    }
+
+    #[test]
+    fn test_insert_distinguishes_keys_with_same_fingerprint() {
+        type CollisionMap = HashMap<u64, String, 2, 2, 1>;
+        let mut map = new_test_map::<2, 2, 1>(1, [11]);
+        let original_key = 0_u64;
+        let original_hash = CollisionMap::candidates(&original_key, &map.seeds)[0];
+        let colliding_key = (1..100_000)
+            .find(|candidate_key| {
+                let candidate_hash = CollisionMap::candidates(candidate_key, &map.seeds)[0];
+                map.hash2bucket(candidate_hash) == map.hash2bucket(original_hash)
+                    && CollisionMap::fingerprint(candidate_hash)
+                        == CollisionMap::fingerprint(original_hash)
+            })
+            .unwrap();
+        place_entry_in_candidate(&mut map, original_key, String::from("original"), 0, 0);
+
+        assert_eq!(map.insert(colliding_key, String::from("collision")), Ok(()));
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([
+                (original_key, String::from("original")),
+                (colliding_key, String::from("collision")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_insert_uses_later_candidate_when_first_is_full() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let stored_key = find_key_with_candidate_buckets(&map, [(0, 0), (0, 0)], 0);
+        let inserted_key = find_key_with_candidate_buckets(&map, [(0, 0), (1, 3)], stored_key + 1);
+        place_entry_in_candidate(&mut map, stored_key, String::from("original"), 0, 0);
+
+        assert_eq!(
+            map.insert(inserted_key, String::from("later candidate")),
+            Ok(())
+        );
+        assert_eq!(
+            map.subtables[1].buckets[3].slots[0].as_ref().unwrap().key,
+            inserted_key
+        );
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([
+                (stored_key, String::from("original")),
+                (inserted_key, String::from("later candidate")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_insert_fills_bucket_to_last_simd_lane() {
+        let mut map = new_test_map::<64, 2, 1>(1, [11]);
+        let mut expected_entries = BTreeMap::new();
+        let mut first_unused_key = 0_u64;
+        for expected_slot_index in 0..64 {
+            let inserted_key = find_key_with_candidate_buckets(&map, [(0, 0)], first_unused_key);
+            let inserted_value = format!("slot {expected_slot_index}");
+            assert_eq!(map.insert(inserted_key, inserted_value.clone()), Ok(()));
+            assert_eq!(
+                map.subtables[0].buckets[0].slots[expected_slot_index]
+                    .as_ref()
+                    .unwrap()
+                    .key,
+                inserted_key
+            );
+            expected_entries.insert(inserted_key, inserted_value);
+            first_unused_key = inserted_key + 1;
+        }
+        let rejected_key = find_key_with_candidate_buckets(&map, [(0, 0)], first_unused_key);
+        assert_eq!(
+            map.insert(rejected_key, String::from("rejected")),
+            Err(InsertError::NoSpace(rejected_key, String::from("rejected")))
+        );
+        assert_eq!(map.lookup(&rejected_key), None);
+        assert!(
+            map.subtables[1].buckets[0]
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
+        assert_map_matches(&map, &expected_entries);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_unsigned_keys() {
+        assert_key_round_trips(&[0_u8, 1, u8::MAX]);
+        assert_key_round_trips(&[0_u16, 1, u16::MAX]);
+        assert_key_round_trips(&[0_u32, 1, u32::MAX]);
+        assert_key_round_trips(&[0_u64, 1, u64::MAX]);
+        assert_key_round_trips(&[0_u128, 1, u128::MAX]);
+        assert_key_round_trips(&[0_usize, 1, usize::MAX]);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_signed_keys() {
+        assert_key_round_trips(&[i8::MIN, -1, 0, 1, i8::MAX]);
+        assert_key_round_trips(&[i16::MIN, -1, 0, 1, i16::MAX]);
+        assert_key_round_trips(&[i32::MIN, -1, 0, 1, i32::MAX]);
+        assert_key_round_trips(&[i64::MIN, -1, 0, 1, i64::MAX]);
+        assert_key_round_trips(&[i128::MIN, -1, 0, 1, i128::MAX]);
+        assert_key_round_trips(&[isize::MIN, -1, 0, 1, isize::MAX]);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_finite_float_keys() {
+        assert_key_round_trips(&[-2.5_f32, 1.5, f32::MIN_POSITIVE, f32::MAX]);
+        assert_key_round_trips(&[-2.5_f64, 1.5, f64::MIN_POSITIVE, f64::MAX]);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_string_keys() {
+        assert_key_round_trips(&["", "hello", "hello\0world", "你好🦀"]);
+        let owned_key = String::from("owned string borrowed as a key");
+        assert_key_round_trips(&[&owned_key]);
+        let string_slice = "nested reference";
+        assert_key_round_trips(&[&string_slice]);
+    }
+
+    #[test]
+    fn test_bfs_displacement() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let displaced_key = find_key_with_candidate_buckets(&map, [(0, 0), (0, 1)], 0);
+        let inserted_key =
+            find_key_with_candidate_buckets(&map, [(0, 0), (0, 0)], displaced_key + 1);
+        place_entry_in_candidate(&mut map, displaced_key, String::from("displaced"), 0, 0);
+        let inserted_hashes = RelocationMap::candidates(&inserted_key, &map.seeds);
+
+        assert_eq!(
+            map.bfs_displacement(
+                Slot::new(inserted_key, String::from("inserted")),
+                inserted_hashes
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            map.subtables[0].buckets[0].slots[0].as_ref().unwrap().key,
+            inserted_key
+        );
+        assert_eq!(
+            map.subtables[0].buckets[1].slots[0].as_ref().unwrap().key,
+            displaced_key
+        );
+        let displaced_hashes = RelocationMap::candidates(&displaced_key, &map.seeds);
+        assert_ne!(
+            RelocationMap::fingerprint(displaced_hashes[0]),
+            RelocationMap::fingerprint(displaced_hashes[1])
+        );
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([
+                (displaced_key, String::from("displaced")),
+                (inserted_key, String::from("inserted")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_bfs_displacement_multiple_steps() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let mut expected_entries = BTreeMap::new();
+        let mut first_unused_key = 0_u64;
+        let mut displaced_keys = Vec::new();
+        let relocation_path = [(0, 0), (0, 1), (1, 0), (1, 1)];
+        for (&source_bucket, &target_bucket) in relocation_path.iter().zip(&relocation_path[1..]) {
+            let displaced_key = find_key_with_candidate_buckets(
+                &map,
+                [source_bucket, target_bucket],
+                first_unused_key,
+            );
+            let displaced_value = format!("displaced from {source_bucket:?}");
+            place_entry_in_candidate(&mut map, displaced_key, displaced_value.clone(), 0, 0);
+            expected_entries.insert(displaced_key, displaced_value);
+            displaced_keys.push(displaced_key);
+            first_unused_key = displaced_key + 1;
+        }
+        let inserted_key =
+            find_key_with_candidate_buckets(&map, [(0, 0), (0, 0)], first_unused_key);
+
+        // Exercise the public insertion path into BFS as well as reverse relocation.
+        assert_eq!(map.insert(inserted_key, String::from("inserted")), Ok(()));
+        expected_entries.insert(inserted_key, String::from("inserted"));
+        for (displaced_key, &(target_subtable_index, target_bucket_index)) in
+            displaced_keys.into_iter().zip(&relocation_path[1..])
+        {
+            assert_eq!(
+                map.subtables[target_subtable_index].buckets[target_bucket_index].slots[0]
+                    .as_ref()
+                    .unwrap()
+                    .key,
+                displaced_key
+            );
+        }
+        assert_map_matches(&map, &expected_entries);
+    }
+
+    #[test]
+    fn test_bfs_displacement_prefers_shorter_path() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let first_root_key = find_key_with_candidate_buckets(&map, [(0, 0), (0, 2)], 0);
+        let second_root_key =
+            find_key_with_candidate_buckets(&map, [(0, 1), (0, 3)], first_root_key + 1);
+        let intermediate_key =
+            find_key_with_candidate_buckets(&map, [(0, 2), (1, 0)], second_root_key + 1);
+        let inserted_key =
+            find_key_with_candidate_buckets(&map, [(0, 0), (0, 1)], intermediate_key + 1);
+        place_entry_in_candidate(&mut map, first_root_key, String::from("first root"), 0, 0);
+        place_entry_in_candidate(&mut map, second_root_key, String::from("second root"), 0, 0);
+        place_entry_in_candidate(
+            &mut map,
+            intermediate_key,
+            String::from("intermediate"),
+            0,
+            0,
+        );
+
+        assert_eq!(map.insert(inserted_key, String::from("inserted")), Ok(()));
+        assert_eq!(
+            map.subtables[0].buckets[0].slots[0].as_ref().unwrap().key,
+            first_root_key
+        );
+        assert_eq!(
+            map.subtables[0].buckets[2].slots[0].as_ref().unwrap().key,
+            intermediate_key
+        );
+        assert_eq!(
+            map.subtables[0].buckets[3].slots[0].as_ref().unwrap().key,
+            second_root_key
+        );
+        assert!(map.subtables[1].buckets[0].slots[0].is_none());
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([
+                (first_root_key, String::from("first root")),
+                (second_root_key, String::from("second root")),
+                (intermediate_key, String::from("intermediate")),
+                (inserted_key, String::from("inserted")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_bfs_displacement_returns_no_space_for_cycle() {
+        let mut map = new_test_map::<1, 2, 2>(4, [11, 29]);
+        let first_cycle_key = find_key_with_candidate_buckets(&map, [(0, 0), (0, 1)], 0);
+        let second_cycle_key =
+            find_key_with_candidate_buckets(&map, [(0, 1), (0, 0)], first_cycle_key + 1);
+        let rejected_key =
+            find_key_with_candidate_buckets(&map, [(0, 0), (0, 0)], second_cycle_key + 1);
+        place_entry_in_candidate(
+            &mut map,
+            first_cycle_key,
+            String::from("first cycle entry"),
+            0,
+            0,
+        );
+        place_entry_in_candidate(
+            &mut map,
+            second_cycle_key,
+            String::from("second cycle entry"),
+            0,
+            0,
+        );
+        let rejected_hashes = RelocationMap::candidates(&rejected_key, &map.seeds);
+
+        assert_eq!(
+            map.bfs_displacement(
+                Slot::new(rejected_key, String::from("rejected")),
+                rejected_hashes
+            ),
+            Err(InsertError::NoSpace(rejected_key, String::from("rejected")))
+        );
+        assert!(map.subtables[0].buckets[2].slots[0].is_none());
+        assert_eq!(map.lookup(&rejected_key), None);
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([
+                (first_cycle_key, String::from("first cycle entry")),
+                (second_cycle_key, String::from("second cycle entry")),
+            ]),
+        );
+    }
+
+    #[test]
+    fn test_insert_returns_no_space_when_candidate_roots_exceed_search_budget() {
+        const CANDIDATE_COUNT: usize = BFS_PROBE_BUDGET * 4;
+        type WideCandidateMap = HashMap<u64, String, 1, 2, CANDIDATE_COUNT>;
+        let seeds = std::array::from_fn(|seed_index| seed_index as u64);
+        let mut map = new_test_map::<1, 2, CANDIDATE_COUNT>(256, seeds);
+        let mut expected_entries = BTreeMap::new();
+        let mut first_unused_key = 0_u64;
+
+        // Fill each bucket using its first candidate, without requiring BFS.
+        for candidate_key in 0_u64..20_000 {
+            let first_hash = xxh3_64_with_seed(&candidate_key.to_le_bytes(), seeds[0]);
+            let (subtable_index, bucket_index) = map.hash2bucket(first_hash);
+            if map.subtables[subtable_index].buckets[bucket_index].slots[0].is_none() {
+                let candidate_value = format!("value {candidate_key}");
+                place_entry_in_candidate(&mut map, candidate_key, candidate_value.clone(), 0, 0);
+                expected_entries.insert(candidate_key, candidate_value);
+            }
+            if expected_entries.len() == 512 {
+                first_unused_key = candidate_key + 1;
+                break;
+            }
+        }
+        assert_eq!(expected_entries.len(), 512);
+        let distinct_roots: BTreeSet<_> = WideCandidateMap::candidates(&first_unused_key, &seeds)
+            .map(|candidate_hash| map.hash2bucket(candidate_hash))
+            .into_iter()
+            .collect();
+        assert!(distinct_roots.len() > BFS_PROBE_BUDGET);
+
+        assert_eq!(
+            map.insert(first_unused_key, String::from("rejected")),
+            Err(InsertError::NoSpace(
+                first_unused_key,
+                String::from("rejected")
+            ))
+        );
+        assert_eq!(map.lookup(&first_unused_key), None);
+        assert_map_matches(&map, &expected_entries);
+    }
+
+    #[test]
+    fn test_resize() {
+        let mut map = new_test_map::<8, 2, 1>(1, [11]);
+        assert!(map.resize(0));
+        assert_eq!(map.subtables[0].buckets.len(), 2);
+        assert_eq!(map.subtables[1].buckets.len(), 1);
+        assert_eq!(map.seeds, [11]);
+        assert_map_matches(&map, &BTreeMap::new());
+    }
+
+    #[test]
+    fn test_resize_rejects_invalid_index_without_changes() {
+        let mut map = new_test_map::<8, 2, 1>(1, [11]);
+        assert_eq!(map.insert(42, String::from("original")), Ok(()));
+        for invalid_subtable_index in [2, usize::MAX] {
+            assert!(!map.resize(invalid_subtable_index));
+            assert_eq!(
+                map.subtables
+                    .each_ref()
+                    .map(|subtable| subtable.buckets.len()),
+                [1, 1]
+            );
+            assert_eq!(map.seeds, [11]);
+            assert_map_matches(&map, &BTreeMap::from([(42, String::from("original"))]));
+        }
+    }
+
+    #[test]
+    fn test_resize_splits_full_bucket_and_preserves_slot_indices() {
+        let mut map = new_test_map::<8, 2, 1>(1, [11]);
+        let mut expected_entries = BTreeMap::new();
+        let mut split_entries = Vec::new();
+        let mut first_unused_key = 0_u64;
+        for source_slot_index in 0..8 {
+            let expected_bucket_index = source_slot_index % 2;
+            let stored_key = (first_unused_key..first_unused_key + 100_000)
+                .find(|candidate_key| {
+                    let candidate_hash = xxh3_64_with_seed(&candidate_key.to_le_bytes(), 11);
+                    candidate_hash >> 63 == 0 && candidate_hash & 1 == expected_bucket_index as u64
+                })
+                .unwrap();
+            let stored_value = format!("source slot {source_slot_index}");
+            place_entry_in_candidate(
+                &mut map,
+                stored_key,
+                stored_value.clone(),
+                0,
+                source_slot_index,
+            );
+            expected_entries.insert(stored_key, stored_value);
+            split_entries.push((stored_key, expected_bucket_index, source_slot_index));
+            first_unused_key = stored_key + 1;
+        }
+        let untouched_key = find_key_with_candidate_buckets(&map, [(1, 0)], first_unused_key);
+        place_entry_in_candidate(&mut map, untouched_key, String::from("untouched"), 0, 7);
+        expected_entries.insert(untouched_key, String::from("untouched"));
+        let original_fingerprints = map.subtables[0].buckets[0].fingerprints;
+
+        assert!(map.resize(0));
+        for (stored_key, expected_bucket_index, original_slot_index) in split_entries {
+            let destination_bucket = &map.subtables[0].buckets[expected_bucket_index];
+            assert_eq!(
+                destination_bucket.slots[original_slot_index]
+                    .as_ref()
+                    .unwrap()
+                    .key,
+                stored_key
+            );
+            assert_eq!(
+                destination_bucket.fingerprints[original_slot_index],
+                original_fingerprints[original_slot_index]
+            );
+            assert!(
+                map.subtables[0].buckets[1 - expected_bucket_index].slots[original_slot_index]
+                    .is_none()
+            );
+        }
+        assert_eq!(map.subtables[1].buckets.len(), 1);
+        assert_eq!(
+            map.subtables[1].buckets[0].slots[7].as_ref().unwrap().key,
+            untouched_key
+        );
+        assert_map_matches(&map, &expected_entries);
+    }
+
+    #[test]
+    fn test_resize_uses_stored_fingerprint_to_select_candidate() {
+        let mut map = new_test_map::<1, 2, 2>(1, [11, 29]);
+        let stored_key = (0..100_000)
+            .find(|candidate_key| {
+                let candidate_hashes = RelocationMap::candidates(candidate_key, &map.seeds);
+                candidate_hashes.map(|candidate_hash| map.hash2bucket(candidate_hash))
+                    == [(0, 0); 2]
+                    && RelocationMap::fingerprint(candidate_hashes[0])
+                        != RelocationMap::fingerprint(candidate_hashes[1])
+                    && (candidate_hashes[0] ^ candidate_hashes[1]) & 1 != 0
+            })
+            .unwrap();
+        let stored_hashes = RelocationMap::candidates(&stored_key, &map.seeds);
+        let expected_bucket_index = (stored_hashes[1] & 1) as usize;
+        place_entry_in_candidate(
+            &mut map,
+            stored_key,
+            String::from("second fingerprint"),
+            1,
+            0,
+        );
+
+        assert!(map.resize(0));
+        assert_eq!(
+            map.subtables[0].buckets[expected_bucket_index].slots[0]
+                .as_ref()
+                .unwrap()
+                .key,
+            stored_key
+        );
+        assert!(map.subtables[0].buckets[1 - expected_bucket_index].slots[0].is_none());
+        assert_map_matches(
+            &map,
+            &BTreeMap::from([(stored_key, String::from("second fingerprint"))]),
+        );
+    }
+
+    #[test]
+    fn test_resize_multiple_subtables_with_existing_entries() {
+        let mut map = new_test_map::<4, 4, 1>(2, [11]);
+        let mut expected_entries = BTreeMap::new();
+        let mut first_unused_key = 0_u64;
+        for subtable_index in 0..4 {
+            for bucket_index in 0..2 {
+                for slot_index in [0, 3] {
+                    let stored_key = find_key_with_candidate_buckets(
+                        &map,
+                        [(subtable_index, bucket_index)],
+                        first_unused_key,
+                    );
+                    let stored_value = format!("value {stored_key}");
+                    place_entry_in_candidate(
+                        &mut map,
+                        stored_key,
+                        stored_value.clone(),
+                        0,
+                        slot_index,
+                    );
+                    expected_entries.insert(stored_key, stored_value);
+                    first_unused_key = stored_key + 1;
+                }
+            }
+        }
+
+        let mut expected_bucket_counts = [2; 4];
+        for selected_subtable_index in [3, 1, 3, 0, 2] {
+            assert!(map.resize(selected_subtable_index));
+            expected_bucket_counts[selected_subtable_index] *= 2;
+            assert_eq!(
+                map.subtables
+                    .each_ref()
+                    .map(|subtable| subtable.buckets.len()),
+                expected_bucket_counts
+            );
+            assert_eq!(map.seeds, [11]);
+            assert_map_matches(&map, &expected_entries);
+        }
+    }
+
+    #[test]
+    fn test_resize_preserves_value_ownership() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+
+        struct TrackedValue {
+            drop_count: Rc<Cell<usize>>,
+        }
+
+        impl Drop for TrackedValue {
+            fn drop(&mut self) {
+                self.drop_count.set(self.drop_count.get() + 1);
+            }
+        }
+
+        let drop_count = Rc::new(Cell::new(0));
+        let mut map = HashMap::<u64, TrackedValue, 8, 2, 1>::new(1);
+        map.seeds = [11];
+        for inserted_key in [0, 1, 2] {
+            assert!(
+                map.insert(
+                    inserted_key,
+                    TrackedValue {
+                        drop_count: Rc::clone(&drop_count)
+                    }
+                )
+                .is_ok()
+            );
+        }
+
+        for selected_subtable_index in [0, 1, 0, 1] {
+            assert!(map.resize(selected_subtable_index));
+            assert_eq!(drop_count.get(), 0);
+            for stored_key in [0, 1, 2] {
+                let stored_value = map.lookup(&stored_key).unwrap();
+                assert!(Rc::ptr_eq(&stored_value.drop_count, &drop_count));
+            }
+        }
+        drop(map);
+        assert_eq!(drop_count.get(), 3);
+    }
+
+    #[test]
+    fn test_insert_and_lookup_read_heavy_workload() {
+        let mut map = new_test_map::<8, 4, 3>(32, [11, 29, 47]);
+        let mut expected_entries = BTreeMap::new();
+        let mut write_count = 0;
+        let mut read_count = 0;
+
+        for inserted_key in 0_u64..64 {
+            let inserted_value = format!("value {inserted_key}");
+            assert_eq!(map.insert(inserted_key, inserted_value.clone()), Ok(()));
+            expected_entries.insert(inserted_key, inserted_value);
+            write_count += 1;
+
+            for read_index in 0..10 {
+                let existing_key = (inserted_key + read_index) % (inserted_key + 1);
+                assert_eq!(
+                    map.lookup(&existing_key),
+                    expected_entries.get(&existing_key)
+                );
+                read_count += 1;
+            }
+            for missing_key in [inserted_key + 1, u64::MAX] {
+                assert_eq!(map.lookup(&missing_key), None);
+                read_count += 1;
+            }
+        }
+
+        assert_eq!(read_count, write_count * 12);
+        assert!(
+            map.subtables
+                .iter()
+                .all(|subtable| subtable.buckets.len() == 32)
+        );
+        assert_map_matches(&map, &expected_entries);
+    }
+
+    #[test]
+    fn test_insert_lookup_and_caller_scheduled_resize() {
+        let mut map = new_test_map::<2, 2, 1>(1, [11]);
+        let scheduled_keys: Vec<_> = (0_u64..10_000)
+            .filter(|candidate_key| xxh3_64_with_seed(&candidate_key.to_le_bytes(), 11) >> 63 == 0)
+            .take(64)
+            .collect();
+        assert_eq!(scheduled_keys.len(), 64);
+        let mut expected_entries = BTreeMap::new();
+        let mut resize_count = 0;
+
+        for inserted_key in scheduled_keys {
+            let expected_value = format!("value {inserted_key}");
+            let mut pending_value = expected_value.clone();
+            loop {
+                let buckets_before_insert = map.subtables[0].buckets.len();
+                match map.insert(inserted_key, pending_value) {
+                    Ok(()) => break,
+                    Err(InsertError::NoSpace(returned_key, returned_value)) => {
+                        assert_eq!(returned_key, inserted_key);
+                        assert_eq!(returned_value, expected_value);
+                        assert_eq!(map.lookup(&inserted_key), None);
+                        assert_eq!(map.subtables[0].buckets.len(), buckets_before_insert);
+                        assert_map_matches(&map, &expected_entries);
+
+                        assert!(
+                            resize_count < 16,
+                            "insertion must succeed after bounded growth"
+                        );
+                        assert!(map.resize(0));
+                        resize_count += 1;
+                        assert_eq!(map.subtables[0].buckets.len(), buckets_before_insert * 2);
+                        assert_eq!(map.subtables[1].buckets.len(), 1);
+                        assert_map_matches(&map, &expected_entries);
+                        pending_value = returned_value;
+                    }
+                    Err(unexpected_error) => {
+                        panic!("unexpected insertion error: {unexpected_error:?}")
+                    }
+                }
+            }
+            expected_entries.insert(inserted_key, expected_value);
+            assert_map_matches(&map, &expected_entries);
+        }
+
+        assert!(resize_count > 1);
+        assert_eq!(map.lookup(&u64::MAX), None);
+        let (&duplicate_key, _) = expected_entries.first_key_value().unwrap();
+        assert_eq!(
+            map.insert(duplicate_key, String::from("rejected after resize")),
+            Err(InsertError::DuplicateKey(
+                duplicate_key,
+                String::from("rejected after resize")
+            ))
+        );
+        assert_map_matches(&map, &expected_entries);
+    }
+}
