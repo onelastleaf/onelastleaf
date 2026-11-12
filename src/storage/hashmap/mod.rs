@@ -9,9 +9,9 @@ const BFS_PROBE_BUDGET: usize = 256;
 
 /// K is the generic type used by callers for lookups.
 /// V is the value type that callers of this HashMap store and retrieve.
-/// B is the number of slots in each bucket. It should be the power of 2.
-/// S is the number of subtables in the HashMap. It should be the power of 2. For SIMD optimization,
+/// B is the number of slots in each bucket. It should be the power of 2. For SIMD optimization,
 /// it can only be one of 8, 16, 32, and 64.
+/// S is the number of subtables in the HashMap. It should be the power of 2.
 /// H is the number of candidates hash positions per key.
 // TODO: PartialEq has some problem about +0.0, -0.0 and NaN
 pub struct HashMap<
