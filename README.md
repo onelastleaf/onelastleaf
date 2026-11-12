@@ -12,7 +12,7 @@
 onelastleaf is a self-hosted, CRDT-powered document library for syncing
 documents across devices and extending document workflows with plugins.
 
-> [!INFO]
+> [!NOTE]
 > Under Huge Refactor now. Onelastleaf is pre-0.2 and under active development.
 
 
