@@ -1,1 +1,3 @@
-pub mod linux_fuse;
+pub fn mount() {
+    todo!()
+}
