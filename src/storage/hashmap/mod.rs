@@ -1,6 +1,6 @@
-mod tobytes;
+pub mod tobytes;
 
-pub use self::tobytes::ToBytes;
+use self::tobytes::ToBytes;
 use std::simd::{Simd, cmp::SimdPartialEq};
 use xxhash_rust::xxh3::xxh3_64_with_seed;
 
