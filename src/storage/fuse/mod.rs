@@ -11,6 +11,12 @@ pub trait Filesystem {
 
     /// Clean up filesystem.
     /// Corresponds to FUSE opcode 38.
+    fn destroy() {
+        todo!()
+    }
+
+    /// Clean up filesystem.
+    /// Corresponds to FUSE opcode 1.
     fn lookup() {
         todo!()
     }
