@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 const SLOTS_PER_BUCKET: usize = 8;
 const SUBTABLE_COUNT: usize = 256;
 const CANDIDATE_COUNT: usize = 3;
-const BUCKET_COUNTS: [usize; 6] = [1, 2, 4, 8, 16, 32];
+const BUCKET_COUNTS: [usize; 13] = [1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1024, 2048, 4096];
 const CHECKPOINT_PERCENTAGES: [usize; 5] = [50, 75, 90, 95, 98];
 const SUCCESSFUL_LOOKUPS_PER_GROUP: usize = 10;
 const LOOKUP_GROUP_COUNT: usize = 10_000;
