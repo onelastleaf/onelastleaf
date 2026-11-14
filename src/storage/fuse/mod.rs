@@ -1,7 +1,7 @@
 mod transport;
 
 // Because `Arc<Filesystem>` must be `Sync`, `Filesystem` must be `Send + Sync`.
-pub trait Filesystem: Send + Sync {
+pub trait FileSystem: Send + Sync {
     /// Initialize filesystem.
     /// Corresponds to FUSE opcode 26.
     fn init() {
