@@ -191,7 +191,3 @@ pub trait FileSystem: Send + Sync {
         todo!()
     }
 }
-
-pub fn mount() {
-    todo!()
-}
