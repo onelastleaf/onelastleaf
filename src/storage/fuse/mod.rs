@@ -1,3 +1,4 @@
+pub mod session;
 mod transport;
 
 // Because `Arc<Filesystem>` must be `Sync`, `Filesystem` must be `Send + Sync`.
