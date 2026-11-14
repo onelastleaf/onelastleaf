@@ -1,10 +1,7 @@
 mod transport;
 
-pub fn mount() {
-    todo!()
-}
-
-pub trait Filesystem {
+// Because `Arc<Filesystem>` must be `Sync`, `Filesystem` must be `Send + Sync`.
+pub trait Filesystem: Send + Sync {
     /// Initialize filesystem.
     /// Corresponds to FUSE opcode 26.
     fn init() {
@@ -193,4 +190,8 @@ pub trait Filesystem {
     fn poll() {
         todo!()
     }
+}
+
+pub fn mount() {
+    todo!()
 }
