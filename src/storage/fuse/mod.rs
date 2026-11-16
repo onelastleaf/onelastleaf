@@ -1,3 +1,4 @@
+mod requests;
 pub mod session;
 mod transport;
 

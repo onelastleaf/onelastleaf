@@ -1,3 +1,4 @@
+use super::requests;
 use nix::{
     mount::{MsFlags, mount},
     unistd::{Gid, Uid},
@@ -56,6 +57,15 @@ impl SessionError {
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue.".into(),
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub enum Request {
+    Init(requests::InitRequest),
+    Lookup,
+    Forget,
+    Getattr,
+    Setattr,
 }
 
 pub struct InitConfig {}
@@ -134,6 +144,10 @@ impl<FS: FileSystem> Session<FS> {
 
         todo!()
     }
+}
+
+fn parse_fuse_request(request: &[u8]) -> Request {
+    todo!()
 }
 
 impl HandleState {
