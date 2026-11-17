@@ -37,11 +37,18 @@ pub enum Status {
     Stopped,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub enum SessionError {
     NoFuseFile,
     MountFailed,
     CannotReadFuse,
+    CannotParseRequest,
+    UnknownError,
+}
+
+#[derive(Clone, Copy, Debug)]
+pub enum ParseError {
+    InsufficientLength,
 }
 
 impl SessionError {
@@ -55,17 +62,13 @@ impl SessionError {
 
             Self::CannotReadFuse =>
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue.".into(),
+
+            Self::CannotParseRequest =>
+                "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue.".into(),
+
+            Self::UnknownError => "The FUSE protocol stack failed to run because it encountered an unexpected error.".into(),
         }
     }
-}
-
-#[derive(Clone, Debug)]
-pub enum Request {
-    Init(requests::InitRequest),
-    Lookup,
-    Forget,
-    Getattr,
-    Setattr,
 }
 
 pub struct InitConfig {}
@@ -142,11 +145,32 @@ impl<FS: FileSystem> Session<FS> {
 
         buffer.truncate(size);
 
+        let request = match parse_fuse_request(&buffer) {
+            Ok(request) => request,
+            Err(error) => {
+                state
+                    .lock()
+                    .stop_with_error(SessionError::CannotParseRequest);
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("{error:?}"),
+                ));
+            }
+        };
+
         todo!()
     }
 }
 
-fn parse_fuse_request(request: &[u8]) -> Request {
+fn parse_fuse_request(request: &[u8]) -> Result<requests::Request, ParseError> {
+    let Some(header_bytes) = request.get(..40) else {
+        return Err(ParseError::InsufficientLength);
+    };
+    let header = parse_fuse_request_head(header_bytes);
+    todo!()
+}
+
+fn parse_fuse_request_head(request_head: &[u8]) -> requests::Header {
     todo!()
 }
 

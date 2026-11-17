@@ -1,4 +1,24 @@
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Request {
+    Init(InitRequest),
+    Lookup,
+    Forget,
+    Getattr,
+    Setattr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Header {
+    len: u32,
+    opcode: u32,
+    unique: u64,
+    nodeid: u64,
+    uid: u32,
+    gid: u32,
+    total_extlen: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitRequest {
     major: u32,
     minor: u32,
@@ -6,7 +26,7 @@ pub struct InitRequest {
     flags: Flags,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Flags {
     FUSE_ASYNC_READ,
     FUSE_POSIX_LOCKS,
