@@ -171,7 +171,7 @@ fn parse_fuse_request(request: &[u8]) -> Result<requests::Payload, ParseError> {
         return Err(ParseError::UnknownError);
     };
 
-    if header.total_extlen == 0 {
+    if header.total_extlen != 0 {
         let Some(ext_index) = request_remaining
             .len()
             .checked_sub(header.total_extlen as usize)
