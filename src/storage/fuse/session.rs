@@ -49,6 +49,7 @@ pub enum SessionError {
 #[derive(Clone, Copy, Debug)]
 pub enum ParseError {
     InsufficientLength,
+    UnknownError,
 }
 
 impl SessionError {
@@ -166,12 +167,27 @@ fn parse_fuse_request(request: &[u8]) -> Result<requests::Request, ParseError> {
     let Some(header_bytes) = request.get(..40) else {
         return Err(ParseError::InsufficientLength);
     };
-    let header = parse_fuse_request_head(header_bytes);
+    let Some(header) = parse_fuse_request_head(header_bytes) else {
+        return Err(ParseError::UnknownError);
+    };
+
     todo!()
 }
 
-fn parse_fuse_request_head(request_head: &[u8]) -> requests::Header {
-    todo!()
+fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
+    if request_head.len() != 40 {
+        return None;
+    };
+
+    Some(requests::Header {
+        len: u32::from_ne_bytes(request_head[0..4].try_into().unwrap()),
+        opcode: u32::from_ne_bytes(request_head[4..8].try_into().unwrap()),
+        unique: u64::from_ne_bytes(request_head[8..16].try_into().unwrap()),
+        nodeid: u64::from_ne_bytes(request_head[16..24].try_into().unwrap()),
+        uid: u32::from_ne_bytes(request_head[24..28].try_into().unwrap()),
+        gid: u32::from_ne_bytes(request_head[28..32].try_into().unwrap()),
+        total_extlen: u16::from_ne_bytes(request_head[36..38].try_into().unwrap()),
+    })
 }
 
 impl HandleState {
