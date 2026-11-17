@@ -175,7 +175,7 @@ fn parse_fuse_request(request: &[u8]) -> Result<requests::Request, ParseError> {
 }
 
 fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
-    if request_head.len() != 40 {
+    if request_head.len() > 40 {
         return None;
     };
 
