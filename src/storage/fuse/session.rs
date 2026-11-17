@@ -208,6 +208,11 @@ fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
     })
 }
 
+#[allow(dead_code, unused_variables)]
+fn parse_fuse_request_payload(opcode: u32, request_payload: &[u8]) {
+    todo!()
+}
+
 impl HandleState {
     fn stop_with_error(&mut self, error: SessionError) {
         self.status = Status::Stopped;
