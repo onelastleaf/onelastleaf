@@ -16,6 +16,23 @@ pub enum Payload {
     Forget(ForgetPayload),
     Getattr(GetattrPayload),
     Setattr(SetattrPayload),
+    Readlink,
+    Symlink,
+    Mknod(MknodPayload),
+    Unlink,
+    Rmdir,
+    Rename(RenamePayload),
+    Link(LinkPayload),
+    Open(OpenPayload),
+    Read(ReadPayload),
+    Write(WritePayload),
+    Statfs,
+    Release(ReleasePayload),
+    Fsync(FsyncPayload),
+    Setxattr(SetxattrPayload),
+    Getxattr(GetxattrPayload),
+    Listxattr,
+    Removexattr,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
