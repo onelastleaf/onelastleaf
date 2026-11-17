@@ -13,9 +13,9 @@ pub struct Header {
 pub enum Payload {
     Init(InitPayload),
     Lookup,
-    Forget,
-    Getattr,
-    Setattr,
+    Forget(ForgetPayload),
+    Getattr(GetattrPayload),
+    Setattr(SetattrPayload),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
