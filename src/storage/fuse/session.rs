@@ -50,6 +50,7 @@ pub enum SessionError {
 pub enum ParseError {
     InsufficientLength,
     UnknownError,
+    InvalidLength,
 }
 
 impl SessionError {
@@ -171,17 +172,18 @@ fn parse_fuse_request(request: &[u8]) -> Result<requests::Payload, ParseError> {
         return Err(ParseError::UnknownError);
     };
 
-    if header.total_extlen != 0 {
-        let Some(ext_index) = request_remaining
-            .len()
-            .checked_sub(header.total_extlen as usize)
-        else {
-            return Err(ParseError::InsufficientLength);
-        };
-        let (request_payload, request_extensions) = request_remaining.split_at(ext_index);
-    } else {
-        let request_payload = request_remaining;
-    };
+    if header.len as usize != request.len() {
+        return Err(ParseError::InvalidLength);
+    }
+
+    let ext_index = usize::from(header.total_extlen) * 8;
+
+    let payload_len = request_remaining
+        .len()
+        .checked_sub(ext_index)
+        .ok_or(ParseError::InsufficientLength)?;
+
+    let (request_payload, request_extensions) = request_remaining.split_at(payload_len);
 
     let payload = match header.opcode {
         1 => todo!(),
