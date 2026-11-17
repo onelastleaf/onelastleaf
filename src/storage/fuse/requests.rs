@@ -31,8 +31,36 @@ pub enum Payload {
     Fsync(FsyncPayload),
     Setxattr(SetxattrPayload),
     Getxattr(GetxattrPayload),
-    Listxattr,
+    Listxattr(GetxattrPayload),
     Removexattr,
+    Flush(FlushPayload),
+    Opendir(OpenPayload),
+    Readdir(ReadPayload),
+    Releasedir(ReleasePayload),
+    Fsyncdir(FsyncPayload),
+    Getlk(LockPayload),
+    Setlk(LockPayload),
+    Setlkw(LockPayload),
+    Access(AccessPayload),
+    Create(CreatePayload),
+    Interrupt(InterruptPayload),
+    Bmap(BmapPayload),
+    Destroy,
+    Ioctl(IoctlPayload),
+    Poll(PollPayload),
+    NotifyReply(NotifyRetrievePayload),
+    BatchForget(BatchForgetPayload),
+    Fallocate(FallocatePayload),
+    ReaddirPlus(ReadPayload),
+    Rename2(Rename2Payload),
+    Lseek(LseekPayload),
+    CopyFileRange(CopyFileRangePayload),
+    Setupmapping(SetupmappingPayload),
+    Removemapping(RemovemappingPayload),
+    Syncfs,
+    Tmpfile(CreatePayload),
+    Statx(StatxPayload),
+    CopyFileRange64(CopyFileRangePayload),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -180,10 +208,12 @@ pub struct LockPayload {
     padding: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPayload {
     mask: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreatePayload {
     flags: u32,
     mode: u32,
@@ -191,15 +221,18 @@ pub struct CreatePayload {
     open_flags: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptPayload {
     unique: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BmapPayload {
     block: u64,
     blocksize: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoctlPayload {
     fh: u64,
     flags: u32,
@@ -209,6 +242,7 @@ pub struct IoctlPayload {
     out_size: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PollPayload {
     fh: u64,
     kh: u64,
@@ -216,20 +250,24 @@ pub struct PollPayload {
     events: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotifyRetrievePayload {
     offset: u64,
     size: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchForgetPayload {
     count: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForgetOne {
     nodeid: u64,
     nlookup: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FallocatePayload {
     fh: u64,
     offset: u64,
@@ -243,12 +281,14 @@ pub struct Rename2Payload {
     flags: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LseekPayload {
     fh: u64,
     offset: u64,
     whence: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyFileRangePayload {
     fh_in: u64,
     off_in: u64,
@@ -259,6 +299,7 @@ pub struct CopyFileRangePayload {
     flags: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetupmappingPayload {
     fh: u64,
     foffset: u64,
@@ -267,17 +308,22 @@ pub struct SetupmappingPayload {
     moffset: u64,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovemappingPayload {
     count: u32,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovemappingOne {
     moffset: u64,
     len: u64,
 }
 
-// pub struct SyncfsPayload {}
+// pub struct SyncfsPayload {
+//     padding: u64,
+// }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatxPayload {
     getattr_flags: u32,
     reserved: u32,

@@ -171,13 +171,23 @@ fn parse_fuse_request(request: &[u8]) -> Result<requests::Payload, ParseError> {
         return Err(ParseError::UnknownError);
     };
 
-    let Some(ext_index) = request_remaining
-        .len()
-        .checked_sub(header.total_extlen as usize)
-    else {
-        return Err(ParseError::InsufficientLength);
+    if header.total_extlen == 0 {
+        let Some(ext_index) = request_remaining
+            .len()
+            .checked_sub(header.total_extlen as usize)
+        else {
+            return Err(ParseError::InsufficientLength);
+        };
+        let (request_payload, request_extensions) = request_remaining.split_at(ext_index);
+    } else {
+        let request_payload = request_remaining;
     };
-    let (request_payload, request_extensions) = request.split_at(ext_index);
+
+    let payload = match header.opcode {
+        1 => todo!(),
+        2 => todo!(),
+        _ => todo!(),
+    };
 
     todo!()
 }
