@@ -156,7 +156,7 @@ pub struct GetxattrPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FlashPayload {
+pub struct FlushPayload {
     fh: u64,
     unused: u32,
     padding: u32,
