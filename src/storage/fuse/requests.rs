@@ -79,7 +79,6 @@ pub struct ForgetPayload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetattrPayload {
     getattr_flags: u32,
-    dummy: u32,
     fh: u64,
 }
 
