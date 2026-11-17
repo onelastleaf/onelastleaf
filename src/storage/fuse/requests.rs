@@ -1,13 +1,4 @@
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Request {
-    Init(InitRequest),
-    Lookup,
-    Forget,
-    Getattr,
-    Setattr,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Header {
     pub(super) len: u32,
     pub(super) opcode: u32,
@@ -19,11 +10,263 @@ pub struct Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct InitRequest {
+pub enum Payload {
+    Init(InitPayload),
+    Lookup,
+    Forget,
+    Getattr,
+    Setattr,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InitPayload {
     major: u32,
     minor: u32,
     max_readahead: u32,
     flags: Flags,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForgetPayload {
+    nlookup: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetattrPayload {
+    getattr_flags: u32,
+    dummy: u32,
+    fh: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetattrPayload {
+    valid: u32,
+    padding: u32,
+    fh: u64,
+    size: u64,
+    lock_owner: u64,
+    atime: u64,
+    mtime: u64,
+    ctime: u64,
+    atimensec: u32,
+    mtimensec: u32,
+    ctimensec: u32,
+    mode: u32,
+    unused4: u32,
+    uid: u32,
+    gid: u32,
+    unused5: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MknodPayload {
+    mode: u32,
+    rdev: u32,
+    umask: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MkdirPayload {
+    mode: u32,
+    umask: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenamePayload {
+    newdir: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LinkPayload {
+    oldnodeid: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenPayload {
+    flags: u32,
+    open_flags: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadPayload {
+    fh: u64,
+    offset: u64,
+    size: u32,
+    read_flags: u32,
+    lock_owner: u64,
+    flags: u32,
+    padding: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WritePayload {
+    fh: u64,
+    offset: u64,
+    size: u32,
+    write_flags: u32,
+    lock_owner: u64,
+    flags: u32,
+    padding: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReleasePayload {
+    fh: u64,
+    flags: u32,
+    release_flags: u32,
+    lock_owner: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FsyncPayload {
+    fh: u64,
+    fsync_flags: u32,
+    padding: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SetxattrPayload {
+    size: u32,
+    flags: u32,
+    setxattr_flags: u32,
+    padding: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GetxattrPayload {
+    size: u32,
+    padding: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlashPayload {
+    fh: u64,
+    unused: u32,
+    padding: u32,
+    lock_owner: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileLock {
+    start: u64,
+    end: u64,
+    lock_type: u32,
+    pid: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LockPayload {
+    fh: u64,
+    owner: u64,
+    lk: FileLock,
+    lk_flags: u32,
+    padding: u32,
+}
+
+pub struct AccessPayload {
+    mask: u32,
+}
+
+pub struct CreatePayload {
+    flags: u32,
+    mode: u32,
+    umask: u32,
+    open_flags: u32,
+}
+
+pub struct InterruptPayload {
+    unique: u64,
+}
+
+pub struct BmapPayload {
+    block: u64,
+    blocksize: u32,
+}
+
+pub struct IoctlPayload {
+    fh: u64,
+    flags: u32,
+    cmd: u32,
+    arg: u64,
+    in_size: u32,
+    out_size: u32,
+}
+
+pub struct PollPayload {
+    fh: u64,
+    kh: u64,
+    flags: u32,
+    events: u32,
+}
+
+pub struct NotifyRetrievePayload {
+    offset: u64,
+    size: u32,
+}
+
+pub struct BatchForgetPayload {
+    count: u32,
+}
+
+pub struct ForgetOne {
+    nodeid: u64,
+    nlookup: u64,
+}
+
+pub struct FallocatePayload {
+    fh: u64,
+    offset: u64,
+    length: u64,
+    mode: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Rename2Payload {
+    newdir: u64,
+    flags: u32,
+}
+
+pub struct LseekPayload {
+    fh: u64,
+    offset: u64,
+    whence: u32,
+}
+
+pub struct CopyFileRangePayload {
+    fh_in: u64,
+    off_in: u64,
+    nodeid_out: u64,
+    fh_out: u64,
+    off_out: u64,
+    len: u64,
+    flags: u64,
+}
+
+pub struct SetupmappingPayload {
+    fh: u64,
+    foffset: u64,
+    len: u64,
+    flags: u64,
+    moffset: u64,
+}
+
+pub struct RemovemappingPayload {
+    count: u32,
+}
+
+pub struct RemovemappingOne {
+    moffset: u64,
+    len: u64,
+}
+
+// pub struct SyncfsPayload {}
+
+pub struct StatxPayload {
+    getattr_flags: u32,
+    reserved: u32,
+    fh: u64,
+    sx_flags: u32,
+    sx_mask: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

@@ -163,13 +163,21 @@ impl<FS: FileSystem> Session<FS> {
     }
 }
 
-fn parse_fuse_request(request: &[u8]) -> Result<requests::Request, ParseError> {
-    let Some(header_bytes) = request.get(..40) else {
+fn parse_fuse_request(request: &[u8]) -> Result<requests::Payload, ParseError> {
+    let Some((request_header, request_remaining)) = request.split_at_checked(40) else {
         return Err(ParseError::InsufficientLength);
     };
-    let Some(header) = parse_fuse_request_head(header_bytes) else {
+    let Some(header) = parse_fuse_request_head(request_header) else {
         return Err(ParseError::UnknownError);
     };
+
+    let Some(ext_index) = request_remaining
+        .len()
+        .checked_sub(header.total_extlen as usize)
+    else {
+        return Err(ParseError::InsufficientLength);
+    };
+    let (request_payload, request_extensions) = request.split_at(ext_index);
 
     todo!()
 }
