@@ -86,7 +86,6 @@ pub struct GetattrPayload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetattrPayload {
     valid: u32,
-    padding: u32,
     fh: u64,
     size: u64,
     lock_owner: u64,
@@ -140,7 +139,6 @@ pub struct ReadPayload {
     read_flags: u32,
     lock_owner: u64,
     flags: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -151,7 +149,6 @@ pub struct WritePayload {
     write_flags: u32,
     lock_owner: u64,
     flags: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -166,7 +163,6 @@ pub struct ReleasePayload {
 pub struct FsyncPayload {
     fh: u64,
     fsync_flags: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -174,20 +170,17 @@ pub struct SetxattrPayload {
     size: u32,
     flags: u32,
     setxattr_flags: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetxattrPayload {
     size: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlushPayload {
     fh: u64,
     unused: u32,
-    padding: u32,
     lock_owner: u64,
 }
 
@@ -205,7 +198,6 @@ pub struct LockPayload {
     owner: u64,
     lk: FileLock,
     lk_flags: u32,
-    padding: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
