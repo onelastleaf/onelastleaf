@@ -891,15 +891,22 @@ impl<'a> Payload<'a> {
         nlookup: u64,
     });
 
-    pub(super) fn parse_getattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
-
-        let getattr_flags = cursor.u32()?;
-
-        // skip the `uint32_t dummy`
-        cursor.skip(4)?;
-
-        let fh = cursor.u64()?;
+    pub(super) fn parse_getattr(
+        bytes: &'a [u8],
+        protocol_version: u32,
+    ) -> Result<Self, ParseError> {
+        let (getattr_flags, fh) = match bytes.len() {
+            0 | 16 if protocol_version < 9 => (0, 0),
+            16 => {
+                let mut cursor = Cursor::new(bytes);
+                let getattr_flags = cursor.u32()?;
+                cursor.skip(4)?; // dummy
+                let fh = cursor.u64()?;
+                (getattr_flags, fh)
+            }
+            0..=15 => return Err(ParseError::InsufficientLength),
+            _ => return Err(ParseError::ExcessiveLength),
+        };
 
         Ok(Self::Getattr(GetattrPayload { getattr_flags, fh }))
     }
