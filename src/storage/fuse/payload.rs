@@ -859,6 +859,41 @@ macro_rules! parse_struct_only_without_padding_payload  {
     };
 }
 
+macro_rules! parse_payload_with_trailing_names {
+    (
+        $function:ident => $variant:ident($payload:ident) {
+            fixed {
+                $($field:ident: $type:ident $(=> skip($padding:expr))?),+ $(,)?
+            }
+            names {
+                $($name:ident),+ $(,)?
+            }
+        }
+    ) => {
+        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+            let mut cursor = Cursor::new(bytes);
+
+            $(
+                let $field = cursor.$type()?;
+                $(cursor.skip($padding)?;)?
+            )+
+
+            $(
+                let $name = cursor.read_until_nul()?;
+            )+
+
+            if !cursor.finish() {
+                return Err(ParseError::ExcessiveLength);
+            }
+
+            Ok(Self::$variant($payload {
+                $($field,)+
+                $($name,)+
+            }))
+        }
+    };
+}
+
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = Cursor::new(bytes);
@@ -1018,36 +1053,15 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_rmdir => Rmdir(RmdirPayload) { name });
 
-    pub(super) fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+    parse_payload_with_trailing_names!(parse_rename => Rename(RenamePayload) {
+        fixed { new_dir: u64 }
+        names { old_name, new_name }
+    });
 
-        let new_dir = cursor.u64()?;
-        let old_name = cursor.read_until_nul()?;
-        let new_name = cursor.read_until_nul()?;
-
-        if !cursor.finish() {
-            return Err(ParseError::ExcessiveLength);
-        }
-
-        Ok(Self::Rename(RenamePayload {
-            new_dir,
-            old_name,
-            new_name,
-        }))
-    }
-
-    pub(super) fn parse_link(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
-
-        let old_nodeid = cursor.u64()?;
-        let name = cursor.read_until_nul()?;
-
-        if !cursor.finish() {
-            return Err(ParseError::ExcessiveLength);
-        }
-
-        Ok(Self::Link(LinkPayload { old_nodeid, name }))
-    }
+    parse_payload_with_trailing_names!(parse_link => Link(LinkPayload) {
+        fixed { old_nodeid: u64 }
+        names { name }
+    });
 
     pub(super) fn parse_open(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
@@ -1163,25 +1177,10 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
-    pub(super) fn parse_rename2(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
-
-        let new_dir = cursor.u64()?;
-        let flags = cursor.u32()?;
-        let old_name = cursor.read_until_nul()?;
-        let new_name = cursor.read_until_nul()?;
-
-        if !cursor.finish() {
-            return Err(ParseError::ExcessiveLength);
-        }
-
-        Ok(Self::Rename2(Rename2Payload {
-            new_dir,
-            flags,
-            old_name,
-            new_name,
-        }))
-    }
+    parse_payload_with_trailing_names!(parse_rename2 => Rename2(Rename2Payload) {
+        fixed { new_dir: u64, flags: u32 => skip(4) }
+        names { old_name, new_name }
+    });
 
     pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
