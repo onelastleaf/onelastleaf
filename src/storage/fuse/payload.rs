@@ -308,11 +308,10 @@ pub struct ReadPayload {
 pub struct WritePayload<'a> {
     fh: u64,
     offset: u64,
-    size: u32,
     write_flags: u32,
-    lock_owner: u64,
-    flags: u32,
-    data: &'a [u8],
+    lock_owner: Option<u64>,
+    flags: Option<u32>,
+    data: &'a [u8], // use `data.len()` instead of `size`
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1106,8 +1105,40 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_write(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_write(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
+
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let offset = cursor.u64()?;
+        let size = cursor.u32()?;
+        let write_flags = cursor.u32()?;
+
+        let (lock_owner, flags) = if protocol_version < 9 {
+            (None, None)
+        } else {
+            let raw_lock_owner = cursor.u64()?;
+            let lock_owner = (write_flags & FUSE_WRITE_LOCKOWNER != 0).then_some(raw_lock_owner);
+            let flags = Some(cursor.u32()?);
+            cursor.skip(4)?; // padding
+            (lock_owner, flags)
+        };
+
+        let data = cursor.take(size as usize)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Write(WritePayload {
+            fh,
+            offset,
+            write_flags,
+            lock_owner,
+            flags,
+            data,
+        }))
     }
 
     pub(super) fn parse_statfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
