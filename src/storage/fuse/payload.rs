@@ -1063,9 +1063,10 @@ impl<'a> Payload<'a> {
         names { name }
     });
 
-    pub(super) fn parse_open(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_struct_only_without_padding_payload!(parse_open => Open(OpenPayload) {
+        flags: u32,
+        open_flags: u32,
+    });
 
     pub(super) fn parse_read(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
