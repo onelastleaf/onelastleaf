@@ -1,4 +1,5 @@
-use super::session::{Flags, ParseError};
+use super::Flags;
+use super::session::ParseError;
 
 /// The definition of the corresponding C struct in C:
 /// ```c

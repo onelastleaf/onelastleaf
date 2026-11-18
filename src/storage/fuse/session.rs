@@ -1,5 +1,4 @@
-use super::payload;
-use bitflags::bitflags;
+use super::{Flags, payload};
 use nix::{
     mount::{MsFlags, mount},
     unistd::{Gid, Uid},
@@ -221,78 +220,5 @@ impl HandleState {
     fn stop_with_error(&mut self, error: SessionError) {
         self.status = Status::Stopped;
         self.error = Some(error);
-    }
-}
-
-bitflags::bitflags! {
-    /// FUSE capabilities negotiated with the Linux kernel during `INIT`.
-    ///
-    /// Use `HandleState::negotiated_config` to choose which protocol features
-    /// to use for this session. `None` means no negotiation result is available.
-    /// With `Some(flags)`, check the capability before using its feature.
-    ///
-    /// For example, use `splice` to send replies to `/dev/fuse` when
-    /// `SPLICE_WRITE` is set. Otherwise, send replies with a regular write.
-    ///
-    /// ```
-    /// use onelastleaf::storage::fuse::session::Flags;
-    ///
-    /// fn can_splice_replies(negotiated_config: Option<Flags>) -> bool {
-    ///     negotiated_config.is_some_and(|flags| flags.contains(Flags::SPLICE_WRITE))
-    /// }
-    /// ```
-    ///
-    /// Combine capabilities with `|`. Use [`contains`](Self::contains) to require
-    /// all of them or [`intersects`](Self::intersects) to require any of them.
-    /// For logging, use [`iter_names`](Self::iter_names) or [`bits`](Self::bits).
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub struct Flags: u64 {
-        const ASYNC_READ   = 1 << 0;
-        const POSIX_LOCKS = 1 << 1;
-        const FILE_OPS = 1 << 2;
-        const ATOMIC_O_TRUNC = 1 << 3;
-        const EXPORT_SUPPORT = 1 << 4;
-        const BIG_WRITES = 1 << 5;
-        const DONT_MASK = 1 << 6;
-        const SPLICE_WRITE = 1 << 7;
-        const SPLICE_MOVE = 1 << 8;
-        const SPLICE_READ = 1 << 9;
-        const FLOCK_LOCKS = 1 << 10;
-        const HAS_IOCTL_DIR = 1 << 11;
-        const AUTO_INVAL_DATA = 1 << 12;
-        const DO_READDIRPLUS = 1 << 13;
-        const READDIRPLUS_AUTO = 1 << 14;
-        const ASYNC_DIO = 1 << 15;
-        const WRITEBACK_CACHE = 1 << 16;
-        const NO_OPEN_SUPPORT = 1 << 17;
-        const PARALLEL_DIROPS = 1 << 18;
-        const HANDLE_KILLPRIV = 1 << 19;
-        const POSIX_ACL = 1 << 20;
-        const ABORT_ERROR = 1 << 21;
-        const MAX_PAGES = 1 << 22;
-        const CACHE_SYMLINKS = 1 << 23;
-        const NO_OPENDIR_SUPPORT = 1 << 24;
-        const EXPLICIT_INVAL_DATA = 1 << 25;
-        const MAP_ALIGNMENT = 1 << 26;
-        const SUBMOUNTS = 1 << 27;
-        const HANDLE_KILLPRIV_V2 = 1 << 28;
-        const SETXATTR_EXT = 1 << 29;
-        const INIT_EXT     = 1 << 30;
-        const INIT_RESERVED = 1 << 31;
-        const SECURITY_CTX = 1 << 32;
-        const HAS_INODE_DAX = 1 << 33;
-        const CREATE_SUPP_GROUP = 1 << 34;
-        const HAS_EXPIRE_ONLY = 1 << 35;
-        const DIRECT_IO_ALLOW_MMAP = 1 << 36;
-        const PASSTHROUGH = 1 << 37;
-        const NO_EXPORT_SUPPORT = 1 << 38;
-        const HAS_RESEND = 1 << 39;
-        const DIRECT_IO_RELAX = Self::DIRECT_IO_ALLOW_MMAP.bits();
-        const ALLOW_IDMAP = 1 << 40;
-        const OVER_IO_URING = 1 << 41;
-        const REQUEST_TIMEOUT = 1 << 42;
-        const HAS_IO_URING_BUFPOOL = 1 << 43;
-        const HAS_SYNCFS = 1 << 44;
-        const PASSTHROUGH_V2 = 1 << 45;
     }
 }
