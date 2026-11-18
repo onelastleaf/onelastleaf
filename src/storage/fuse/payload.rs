@@ -49,7 +49,7 @@ pub enum Payload<'a> {
     Fsync(FsyncPayload),
     Setxattr(SetxattrPayload<'a>),
     Getxattr(GetxattrPayload<'a>),
-    Listxattr(GetxattrPayload<'a>),
+    Listxattr(ListxattrPayload),
     Removexattr(RemovexattrPayload<'a>),
     Flush(FlushPayload),
     Opendir(OpenPayload),
@@ -379,6 +379,19 @@ pub struct SetxattrPayload<'a> {
 pub struct GetxattrPayload<'a> {
     size: u32,
     name: &'a [u8],
+}
+
+/// The definition of the corresponding C struct in C:
+/// ```c
+/// struct fuse_getxattr_in {
+///     uint32_t size;
+///     uint32_t padding;
+/// };
+/// ```
+/// It reuse `fuse_getxattr_in`, but without a trailing `name` + `\0`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ListxattrPayload {
+    size: u32,
 }
 
 /// The definition of the corresponding underlying C structure:
@@ -1236,7 +1249,14 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+        let size = cursor.u32()?;
+        cursor.skip(4)?; // padding
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+        Ok(Self::Listxattr(ListxattrPayload { size }))
     }
 
     parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
