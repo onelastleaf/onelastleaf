@@ -1182,7 +1182,16 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let fsync_flags = cursor.u32()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Fsync(FsyncPayload { fh, fsync_flags }))
     }
 
     pub(super) fn parse_setxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
