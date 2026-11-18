@@ -909,8 +909,58 @@ impl<'a> Payload<'a> {
         Ok(Self::Getattr(GetattrPayload { getattr_flags, fh }))
     }
 
-    pub(super) fn parse_setattr() {
-        todo!()
+    pub(super) fn parse_setattr(
+        bytes: &'a [u8],
+        procotol_version: u32,
+    ) -> Result<Self, ParseError> {
+        const FATTR_FH: u32 = 1 << 6;
+
+        let mut cursor = Cursor::new(bytes);
+
+        let mut valid = cursor.u32()?;
+        cursor.skip(4)?; // padding
+
+        let fh = if procotol_version == 2 {
+            valid &= !FATTR_FH;
+            cursor.skip(8)?; // legacy fuse_attr.ino
+            0
+        } else {
+            cursor.u64()?
+        };
+
+        let size = cursor.u64()?;
+        let lock_owner = cursor.u64()?;
+        let atime = cursor.u64()?;
+        let mtime = cursor.u64()?;
+        let ctime = cursor.u64()?;
+        let atimensec = cursor.u32()?;
+        let mtimensec = cursor.u32()?;
+        let ctimensec = cursor.u32()?;
+        let mode = cursor.u32()?;
+        cursor.skip(4)?; // unused4
+        let uid = cursor.u32()?;
+        let gid = cursor.u32()?;
+        cursor.skip(4)?; // unused5
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Setattr(SetattrPayload {
+            valid,
+            fh,
+            size,
+            lock_owner,
+            atime,
+            mtime,
+            ctime,
+            atimensec,
+            mtimensec,
+            ctimensec,
+            mode,
+            uid,
+            gid,
+        }))
     }
 
     pub(super) fn parse_readlink() {
