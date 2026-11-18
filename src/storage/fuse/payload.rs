@@ -856,6 +856,8 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
+    parse_string_only_payload!(parse_lookup => Lookup(LookupPayload) { name });
+
     pub(super) fn parse_forget() {
         todo!()
     }
@@ -872,9 +874,7 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
-    pub(super) fn parse_symlink() {
-        todo!()
-    }
+    parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
     pub(super) fn parse_mknod() {
         todo!()
