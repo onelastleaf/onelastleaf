@@ -250,7 +250,7 @@ pub struct RenamePayload<'a> {
 /// then, add `name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkPayload<'a> {
-    oldnodeid: u64,
+    old_nodeid: u64,
     name: &'a [u8],
 }
 
@@ -1037,7 +1037,16 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_link(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let old_nodeid = cursor.u64()?;
+        let name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Link(LinkPayload { old_nodeid, name }))
     }
 
     pub(super) fn parse_open(bytes: &'a [u8]) -> Result<Self, ParseError> {
