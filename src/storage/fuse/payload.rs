@@ -802,13 +802,13 @@ impl<'a> Cursor<'a> {
         Ok(())
     }
 
-    fn read_u32(&mut self) -> Result<u32, ParseError> {
+    fn u32(&mut self) -> Result<u32, ParseError> {
         let mut bytes = [0; 4];
         bytes.copy_from_slice(self.take(4)?);
         Ok(u32::from_ne_bytes(bytes))
     }
 
-    fn read_u64(&mut self) -> Result<u64, ParseError> {
+    fn u64(&mut self) -> Result<u64, ParseError> {
         let mut bytes = [0; 8];
         bytes.copy_from_slice(self.take(8)?);
         Ok(u64::from_ne_bytes(bytes))
