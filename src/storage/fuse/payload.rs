@@ -848,8 +848,16 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_lookup => Lookup(LookupPayload) { name });
 
-    pub(super) fn parse_forget() {
-        todo!()
+    pub(super) fn parse_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let nlookup = cursor.u64()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Forget(ForgetPayload { nlookup }))
     }
 
     pub(super) fn parse_getattr() {
