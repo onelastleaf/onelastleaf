@@ -1186,6 +1186,7 @@ impl<'a> Payload<'a> {
 
         let fh = cursor.u64()?;
         let fsync_flags = cursor.u32()?;
+        cursor.skip(4)?;
 
         if !cursor.finish() {
             return Err(ParseError::ExcessiveLength);
