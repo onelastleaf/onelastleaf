@@ -853,6 +853,15 @@ macro_rules! parse_string_only_payload {
 
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let major = cursor.u32()?;
+        let minor = cursor.u32()?;
+        let max_readahead = cursor.u32()?;
+
+        // what about `flags`?
+        let low_flags = cursor.u32()?;
+
         todo!()
     }
 
