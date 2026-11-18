@@ -884,13 +884,9 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
-    pub(super) fn parse_unlink() {
-        todo!()
-    }
+    parse_string_only_payload!(parse_unlink => Unlink(UnlinkPayload) { name });
 
-    pub(super) fn parse_rmdir() {
-        todo!()
-    }
+    parse_string_only_payload!(parse_rmdir => Rmdir(RmdirPayload) { name });
 
     pub(super) fn parse_rename() {
         todo!()
@@ -936,9 +932,7 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
-    pub(super) fn parse_removexattr() {
-        todo!()
-    }
+    parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
 
     pub(super) fn parse_flush() {
         todo!()
