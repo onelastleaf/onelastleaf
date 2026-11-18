@@ -822,6 +822,22 @@ macro_rules! parse_string_only_payload {
     };
 }
 
+macro_rules! parse_struct_only_payload  {
+    ($function:ident => $variant:ident($payload:ident) {
+        $($field:ident: $type:ty),+ $(,)?
+    }) => {
+        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+            let mut cursor = Cursor::new(bytes);
+
+            $(
+                let $field = cursor.$type()?;
+            )+
+
+            Ok(Self::$variant($payload { $($field),+ }))
+        }
+    };
+}
+
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = Cursor::new(bytes);
