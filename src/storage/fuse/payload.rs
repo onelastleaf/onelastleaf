@@ -1223,7 +1223,16 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+        let size = cursor.u32()?;
+        cursor.skip(4)?; // padding
+        let name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Getxattr(GetxattrPayload { size, name }))
     }
 
     pub(super) fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
