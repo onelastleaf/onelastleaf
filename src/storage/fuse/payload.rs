@@ -1141,10 +1141,6 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_statfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
-
     pub(super) fn parse_release(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
