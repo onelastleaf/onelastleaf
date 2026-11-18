@@ -840,7 +840,7 @@ macro_rules! parse_string_only_payload {
 ///     Ok(Self::Forget(ForgetPayload { nlookup }))
 /// }
 /// ```
-macro_rules! parse_struct_only_payload  {
+macro_rules! parse_struct_only_without_padding_payload  {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident: $type:ident),+ $(,)?
     }) => {
@@ -887,7 +887,7 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_lookup => Lookup(LookupPayload) { name });
 
-    parse_struct_only_payload!(parse_forget => Forget(ForgetPayload) {
+    parse_struct_only_without_padding_payload!(parse_forget => Forget(ForgetPayload) {
         nlookup: u64,
     });
 
