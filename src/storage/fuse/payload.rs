@@ -784,6 +784,24 @@ impl<'a> Cursor<'a> {
     }
 }
 
+/// Generates a parser that reads one NUL-terminated byte slice per field,
+/// in the order listed, and rejects trailing bytes.
+///
+/// For example, the `parse_lookup` invocation expands to this method inside
+/// `impl<'a> Payload<'a>`.
+///
+/// ```rust,ignore
+/// pub(super) fn parse_lookup(bytes: &'a [u8]) -> Result<Self, ParseError> {
+///     let mut cursor = Cursor::new(bytes);
+///     let name = cursor.read_until_nul()?;
+///
+///     if !cursor.finish() {
+///         return Err(ParseError::ExcessiveLength);
+///     }
+///
+///     Ok(Self::Lookup(LookupPayload { name }))
+/// }
+/// ```
 macro_rules! parse_string_only_payload {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident),+ $(,)?
