@@ -831,7 +831,7 @@ impl<'a> Cursor<'a> {
     }
 }
 
-macro_rules! parse_nul_payload {
+macro_rules! parse_string_only_payload {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident),+ $(,)?
     }) => {
