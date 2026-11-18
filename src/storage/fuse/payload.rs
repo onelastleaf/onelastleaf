@@ -1,3 +1,5 @@
+use super::session::ParseError;
+
 /// The definition of the corresponding C struct in C:
 /// ```c
 /// struct fuse_in_header {
@@ -772,4 +774,208 @@ pub enum Flags {
     OverIoUring,
     RequestTimeout,
     HasIoUringBufpool,
+}
+
+// Now I will implementing some functions, for payload parsing
+
+impl<'a> Payload<'a> {
+    pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        todo!()
+    }
+
+    pub(super) fn parse_forget() {
+        todo!()
+    }
+
+    pub(super) fn parse_getattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_setattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_readlink() {
+        todo!()
+    }
+
+    pub(super) fn parse_symlink() {
+        todo!()
+    }
+
+    pub(super) fn parse_mknod() {
+        todo!()
+    }
+
+    pub(super) fn parse_mkdir() {
+        todo!()
+    }
+
+    pub(super) fn parse_unlink() {
+        todo!()
+    }
+
+    pub(super) fn parse_rmdir() {
+        todo!()
+    }
+
+    pub(super) fn parse_rename() {
+        todo!()
+    }
+
+    pub(super) fn parse_link() {
+        todo!()
+    }
+
+    pub(super) fn parse_open() {
+        todo!()
+    }
+
+    pub(super) fn parse_read() {
+        todo!()
+    }
+
+    pub(super) fn parse_write() {
+        todo!()
+    }
+
+    pub(super) fn parse_statfs() {
+        todo!()
+    }
+
+    pub(super) fn parse_release() {
+        todo!()
+    }
+
+    pub(super) fn parse_fsync() {
+        todo!()
+    }
+
+    pub(super) fn parse_setxattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_getxattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_listxattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_removexattr() {
+        todo!()
+    }
+
+    pub(super) fn parse_flush() {
+        todo!()
+    }
+
+    pub(super) fn parse_opendir() {
+        todo!()
+    }
+
+    pub(super) fn parse_readdir() {
+        todo!()
+    }
+
+    pub(super) fn parse_releasedir() {
+        todo!()
+    }
+
+    pub(super) fn parse_fsyncdir() {
+        todo!()
+    }
+
+    pub(super) fn parse_getlk() {
+        todo!()
+    }
+
+    pub(super) fn parse_setlk() {
+        todo!()
+    }
+
+    pub(super) fn parse_setlkw() {
+        todo!()
+    }
+
+    pub(super) fn parse_access() {
+        todo!()
+    }
+
+    pub(super) fn parse_create() {
+        todo!()
+    }
+
+    pub(super) fn parse_interrupt() {
+        todo!()
+    }
+
+    pub(super) fn parse_bmap() {
+        todo!()
+    }
+
+    pub(super) fn parse_destroy() {
+        todo!()
+    }
+
+    pub(super) fn parse_ioctl() {
+        todo!()
+    }
+
+    pub(super) fn parse_poll() {
+        todo!()
+    }
+
+    pub(super) fn parse_notify_reply() {
+        todo!()
+    }
+
+    pub(super) fn parse_batch_forget() {
+        todo!()
+    }
+
+    pub(super) fn parse_fallocate() {
+        todo!()
+    }
+
+    pub(super) fn parse_readdir_plus() {
+        todo!()
+    }
+
+    pub(super) fn parse_rename2() {
+        todo!()
+    }
+
+    pub(super) fn parse_lseek() {
+        todo!()
+    }
+
+    pub(super) fn parse_copy_file_range() {
+        todo!()
+    }
+
+    pub(super) fn parse_setupmapping() {
+        todo!()
+    }
+
+    pub(super) fn parse_removemapping() {
+        todo!()
+    }
+
+    pub(super) fn parse_syncfs() {
+        todo!()
+    }
+
+    pub(super) fn parse_tmpfile() {
+        todo!()
+    }
+
+    pub(super) fn parse_statx() {
+        todo!()
+    }
+
+    pub(super) fn parse_copy_file_range64() {
+        todo!()
+    }
 }
