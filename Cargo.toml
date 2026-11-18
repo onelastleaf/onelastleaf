@@ -18,6 +18,7 @@ path = "src/main.rs"
 [dependencies]
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
 nix = { version = "0.32", features = ["mount", "user"] }
+bitflags = { version = "2.13" }
 
 [dev-dependencies]
 comfy-table = "8.0"

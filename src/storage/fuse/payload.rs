@@ -1,4 +1,4 @@
-use super::session::ParseError;
+use super::session::{Flags, ParseError};
 
 /// The definition of the corresponding C struct in C:
 /// ```c
@@ -726,54 +726,6 @@ pub struct StatxPayload {
     fh: u64,
     sx_flags: u32,
     sx_mask: u32,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Flags {
-    AsyncRead,
-    PosixLocks,
-    FileOps,
-    AtomicOTrunc,
-    ExportSupport,
-    BigWrites,
-    DontMask,
-    SpliceWrite,
-    SpliceMove,
-    SpliceRead,
-    FlockLocks,
-    HasIoctlDir,
-    AutoInvalData,
-    DoReaddirplus,
-    ReaddirplusAuto,
-    AsyncDio,
-    WritebackCache,
-    NoOpenSupport,
-    ParallelDirops,
-    HandleKillpriv,
-    PosixAcl,
-    AbortError,
-    MaxPages,
-    CacheSymlinks,
-    NoOpendirSupport,
-    ExplicitInvalData,
-    MapAlignment,
-    Submounts,
-    HandleKillprivV2,
-    SetxattrExt,
-    InitExt,
-    InitReserved,
-    SecurityCtx,
-    HasInodeDax,
-    CreateSuppGroup,
-    HasExpireOnly,
-    DirectIoAllowMmap,
-    Passthrough,
-    NoExportSupport,
-    HasResend,
-    AllowIdmap,
-    OverIoUring,
-    RequestTimeout,
-    HasIoUringBufpool,
 }
 
 // Now I will implementing some functions, for payload parsing

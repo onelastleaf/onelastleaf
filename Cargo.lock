@@ -116,6 +116,7 @@ dependencies = [
 name = "onelastleaf"
 version = "0.2.0"
 dependencies = [
+ "bitflags",
  "comfy-table",
  "nix",
  "xxhash-rust",
