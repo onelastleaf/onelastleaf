@@ -236,7 +236,7 @@ pub struct RmdirPayload<'a> {
 /// then, add `old_name` + \0 + `new_name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenamePayload<'a> {
-    newdir: u64,
+    new_dir: u64,
     old_name: &'a [u8],
     new_name: &'a [u8],
 }
@@ -1018,161 +1018,175 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_rmdir => Rmdir(RmdirPayload) { name });
 
-    pub(super) fn parse_rename() {
+    pub(super) fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let new_dir = cursor.u64()?;
+        let old_name = cursor.read_until_nul()?;
+        let new_name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Rename(RenamePayload {
+            new_dir,
+            old_name,
+            new_name,
+        }))
+    }
+
+    pub(super) fn parse_link(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_link() {
+    pub(super) fn parse_open(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_open() {
+    pub(super) fn parse_read(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_read() {
+    pub(super) fn parse_write(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_write() {
+    pub(super) fn parse_statfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_statfs() {
+    pub(super) fn parse_release(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_release() {
+    pub(super) fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_fsync() {
+    pub(super) fn parse_setxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_setxattr() {
+    pub(super) fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_getxattr() {
-        todo!()
-    }
-
-    pub(super) fn parse_listxattr() {
+    pub(super) fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
     parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
 
-    pub(super) fn parse_flush() {
+    pub(super) fn parse_flush(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_opendir() {
+    pub(super) fn parse_opendir(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_readdir() {
+    pub(super) fn parse_readdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_releasedir() {
+    pub(super) fn parse_releasedir(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_fsyncdir() {
+    pub(super) fn parse_fsyncdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_getlk() {
+    pub(super) fn parse_getlk(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_setlk() {
+    pub(super) fn parse_setlk(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_setlkw() {
+    pub(super) fn parse_setlkw(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_access() {
+    pub(super) fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_create() {
+    pub(super) fn parse_create(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_interrupt() {
+    pub(super) fn parse_interrupt(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_bmap() {
+    pub(super) fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_destroy() {
+    pub(super) fn parse_destroy(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_ioctl() {
+    pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_poll() {
+    pub(super) fn parse_poll(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_notify_reply() {
+    pub(super) fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_batch_forget() {
+    pub(super) fn parse_batch_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_fallocate() {
+    pub(super) fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_readdir_plus() {
+    pub(super) fn parse_readdir_plus(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_rename2() {
+    pub(super) fn parse_rename2(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_lseek() {
+    pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_copy_file_range() {
+    pub(super) fn parse_copy_file_range(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_setupmapping() {
+    pub(super) fn parse_setupmapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_removemapping() {
+    pub(super) fn parse_removemapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_syncfs() {
+    pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_tmpfile() {
+    pub(super) fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_statx() {
+    pub(super) fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 
-    pub(super) fn parse_copy_file_range64() {
+    pub(super) fn parse_copy_file_range64(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
 }
