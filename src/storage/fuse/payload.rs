@@ -778,6 +778,59 @@ pub enum Flags {
 
 // Now I will implementing some functions, for payload parsing
 
+struct Cursor<'a> {
+    bytes: &'a [u8],
+}
+
+impl<'a> Cursor<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes }
+    }
+
+    fn take(&mut self, number: usize) -> Result<&'a [u8], ParseError> {
+        let (taken, remaining) = self
+            .bytes
+            .split_at_checked(number)
+            .ok_or(ParseError::InsufficientLength)?;
+
+        self.bytes = remaining;
+        Ok(taken)
+    }
+
+    fn skip(&mut self, number: usize) -> Result<(), ParseError> {
+        self.take(number)?;
+        Ok(())
+    }
+
+    fn read_u32(&mut self) -> Result<u32, ParseError> {
+        let mut bytes = [0; 4];
+        bytes.copy_from_slice(self.take(4)?);
+        Ok(u32::from_ne_bytes(bytes))
+    }
+
+    fn read_u64(&mut self) -> Result<u64, ParseError> {
+        let mut bytes = [0; 8];
+        bytes.copy_from_slice(self.take(8)?);
+        Ok(u64::from_ne_bytes(bytes))
+    }
+
+    fn read_until_nul(&mut self) -> Result<&'a [u8], ParseError> {
+        let end = self
+            .bytes
+            .iter()
+            .position(|&byte| byte == 0)
+            .ok_or(ParseError::InsufficientLength)?;
+
+        let field = &self.bytes[..end];
+        self.bytes = &self.bytes[end + 1..];
+        Ok(field)
+    }
+
+    fn finish(&self) -> bool {
+        self.bytes.is_empty()
+    }
+}
+
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
