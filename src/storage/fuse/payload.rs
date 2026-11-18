@@ -193,7 +193,7 @@ pub struct SymlinkPayload<'a> {
 pub struct MknodPayload<'a> {
     mode: u32,
     rdev: u32,
-    umask: u32,
+    umask: Option<u32>,
     name: &'a [u8],
 }
 
@@ -965,8 +965,32 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
-    pub(super) fn parse_mknod() {
-        todo!()
+    pub(super) fn parse_mknod(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let mode = cursor.u32()?;
+        let rdev = cursor.u32()?;
+
+        let umask = if protocol_version >= 12 {
+            let umask = cursor.u32()?;
+            cursor.skip(4)?; // padding
+            Some(umask)
+        } else {
+            None
+        };
+
+        let name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Mknod(MknodPayload {
+            mode,
+            rdev,
+            umask,
+            name,
+        }))
     }
 
     pub(super) fn parse_mkdir() {
