@@ -287,8 +287,8 @@ pub struct ReadPayload {
     offset: u64,
     size: u32,
     read_flags: u32,
-    lock_owner: u64,
-    flags: u32,
+    lock_owner: Option<u64>,
+    flags: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1068,8 +1068,42 @@ impl<'a> Payload<'a> {
         open_flags: u32,
     });
 
-    pub(super) fn parse_read(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_read(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        match bytes.len() {
+            24 if protocol_version < 9 => {}
+            40 => {}
+            0..=39 => return Err(ParseError::InsufficientLength),
+            _ => return Err(ParseError::ExcessiveLength),
+        }
+
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let offset = cursor.u64()?;
+        let size = cursor.u32()?;
+
+        let (read_flags, lock_owner, flags) = if protocol_version < 9 {
+            cursor.skip(bytes.len() - 20)?;
+            (0, None, None)
+        } else {
+            const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
+
+            let read_flags = cursor.u32()?;
+            let raw_lock_owner = cursor.u64()?;
+            let lock_owner = (read_flags & FUSE_READ_LOCKOWNER != 0).then_some(raw_lock_owner);
+            let flags = Some(cursor.u32()?);
+            cursor.skip(4)?; // padding
+            (read_flags, lock_owner, flags)
+        };
+
+        Ok(Self::Read(ReadPayload {
+            fh,
+            offset,
+            size,
+            read_flags,
+            lock_owner,
+            flags,
+        }))
     }
 
     pub(super) fn parse_write(bytes: &'a [u8]) -> Result<Self, ParseError> {
