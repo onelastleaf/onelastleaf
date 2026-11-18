@@ -177,7 +177,7 @@ pub struct SetattrPayload {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymlinkPayload<'a> {
     name: &'a [u8],
-    taregt: &'a [u8],
+    target: &'a [u8],
 }
 
 /// ```c
