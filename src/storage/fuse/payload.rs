@@ -615,7 +615,7 @@ pub struct FallocatePayload {
 /// then, add `old_name` + \0 + `new_name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rename2Payload<'a> {
-    newdir: u64,
+    new_dir: u64,
     flags: u32,
     old_name: &'a [u8],
     new_name: &'a [u8],
@@ -1164,7 +1164,23 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_rename2(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let new_dir = cursor.u64()?;
+        let flags = cursor.u32()?;
+        let old_name = cursor.read_until_nul()?;
+        let new_name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Rename2(Rename2Payload {
+            new_dir,
+            flags,
+            old_name,
+            new_name,
+        }))
     }
 
     pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
