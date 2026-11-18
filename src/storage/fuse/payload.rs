@@ -209,7 +209,7 @@ pub struct MknodPayload<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MkdirPayload<'a> {
     mode: u32,
-    umask: u32,
+    umask: Option<u32>,
     name: &'a [u8],
 }
 
@@ -993,8 +993,25 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_mkdir() {
-        todo!()
+    pub(super) fn parse_mkdir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let mode = cursor.u32()?;
+
+        let umask = if protocol_version >= 12 {
+            let umask = cursor.u32()?;
+            Some(umask)
+        } else {
+            None
+        };
+
+        let name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Mkdir(MkdirPayload { mode, umask, name }))
     }
 
     parse_string_only_payload!(parse_unlink => Unlink(UnlinkPayload) { name });
