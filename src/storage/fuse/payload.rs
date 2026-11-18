@@ -963,10 +963,6 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_readlink() {
-        todo!()
-    }
-
     parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
     pub(super) fn parse_mknod() {
