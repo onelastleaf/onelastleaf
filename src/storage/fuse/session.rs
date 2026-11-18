@@ -17,6 +17,8 @@ use super::FileSystem;
 pub struct Session<FS: FileSystem> {
     filesystem: FS,
     mount_point: PathBuf,
+    protocol_version: Option<u32>,
+    capabilities: Option<u64>,
 }
 
 pub struct Handle {
@@ -80,6 +82,8 @@ impl<FS: FileSystem> Session<FS> {
         Self {
             filesystem,
             mount_point: mount_point.into(),
+            protocol_version: None,
+            capabilities: None,
         }
     }
 
