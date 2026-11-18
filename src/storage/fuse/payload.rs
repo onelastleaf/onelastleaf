@@ -831,6 +831,26 @@ impl<'a> Cursor<'a> {
     }
 }
 
+macro_rules! parse_nul_payload {
+    ($function:ident => $variant:ident($payload:ident) {
+        $($field:ident),+ $(,)?
+    }) => {
+        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+            let mut cursor = Cursor::new(bytes);
+
+            $(
+                let $field = cursor.read_until_nul()?;
+            )+
+
+            if !cursor.finish() {
+                return Err(ParseError::ExcessiveLength);
+            }
+
+            Ok(Self::$variant($payload { $($field),+ }))
+        }
+    };
+}
+
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
