@@ -360,11 +360,10 @@ pub struct FsyncPayload {
 /// Without `FUSE_SETXATTR_EXT`, only the first two fields of the C struct are sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetxattrPayload<'a> {
-    size: u32,
     flags: u32,
-    setxattr_flags: u32,
+    setxattr_flags: Option<u32>,
     name: &'a [u8],
-    value: &'a [u8],
+    value: &'a [u8], // use `value.len()` instead of `size`
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1195,8 +1194,32 @@ impl<'a> Payload<'a> {
         Ok(Self::Fsync(FsyncPayload { fh, fsync_flags }))
     }
 
-    pub(super) fn parse_setxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_setxattr(bytes: &'a [u8], capabilities: Flags) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+        let size = cursor.u32()?;
+        let flags = cursor.u32()?;
+
+        let setxattr_flags = if capabilities.contains(Flags::SETXATTR_EXT) {
+            let extra_flags = cursor.u32()?;
+            cursor.skip(4)?; // padding
+            Some(extra_flags)
+        } else {
+            None
+        };
+
+        let name = cursor.read_until_nul()?;
+        let value = cursor.take(size as usize)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Setxattr(SetxattrPayload {
+            flags,
+            setxattr_flags,
+            name,
+            value,
+        }))
     }
 
     pub(super) fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
