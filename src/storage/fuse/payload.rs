@@ -813,9 +813,19 @@ impl<'a> Payload<'a> {
         let max_readahead = cursor.u32()?;
 
         // what about `flags`?
-        let low_flags = cursor.u32()?;
+        let mut flags = Flags::from_bits_retain(u64::from(cursor.u32()?));
+        if flags.contains(Flags::INIT_EXT) {
+            let high = Flags::from_bits_retain(u64::from(cursor.u32()?) << 32);
+            cursor.skip(11 * 4)?; // unused[11]
+            flags.insert(high);
+        }
 
-        todo!()
+        Ok(Self::Init(InitPayload {
+            major,
+            minor,
+            max_readahead,
+            flags,
+        }))
     }
 
     parse_string_only_payload!(parse_lookup => Lookup(LookupPayload) { name });
