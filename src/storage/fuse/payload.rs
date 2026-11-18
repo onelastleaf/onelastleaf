@@ -1068,6 +1068,8 @@ impl<'a> Payload<'a> {
     });
 
     pub(super) fn parse_read(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
+
         match bytes.len() {
             24 if protocol_version < 9 => {}
             40 => {}
@@ -1085,8 +1087,6 @@ impl<'a> Payload<'a> {
             cursor.skip(bytes.len() - 20)?;
             (0, None, None)
         } else {
-            const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
-
             let read_flags = cursor.u32()?;
             let raw_lock_owner = cursor.u64()?;
             let lock_owner = (read_flags & FUSE_READ_LOCKOWNER != 0).then_some(raw_lock_owner);
