@@ -10,29 +10,30 @@ pub struct Header {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Payload {
+pub enum Payload<'a> {
     Init(InitPayload),
-    Lookup,
+    Lookup(LookupPayload<'a>),
     Forget(ForgetPayload),
     Getattr(GetattrPayload),
     Setattr(SetattrPayload),
     Readlink,
-    Symlink,
-    Mknod(MknodPayload),
-    Unlink,
-    Rmdir,
-    Rename(RenamePayload),
-    Link(LinkPayload),
+    Symlink(SymlinkPayload<'a>),
+    Mknod(MknodPayload<'a>),
+    Mkdir(MkdirPayload<'a>),
+    Unlink(UnlinkPayload<'a>),
+    Rmdir(RmdirPayload<'a>),
+    Rename(RenamePayload<'a>),
+    Link(LinkPayload<'a>),
     Open(OpenPayload),
     Read(ReadPayload),
-    Write(WritePayload),
+    Write(WritePayload<'a>),
     Statfs,
     Release(ReleasePayload),
     Fsync(FsyncPayload),
-    Setxattr(SetxattrPayload),
-    Getxattr(GetxattrPayload),
-    Listxattr(GetxattrPayload),
-    Removexattr,
+    Setxattr(SetxattrPayload<'a>),
+    Getxattr(GetxattrPayload<'a>),
+    Listxattr(GetxattrPayload<'a>),
+    Removexattr(RemovexattrPayload<'a>),
     Flush(FlushPayload),
     Opendir(OpenPayload),
     Readdir(ReadPayload),
@@ -101,27 +102,49 @@ pub struct SetattrPayload {
     unused5: u32,
 }
 
+// `FUSE_READLINK` haven't request payload
+
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MknodPayload {
+pub struct SymlinkPayload<'a> {
+    name: &'a [u8],
+    taregt: &'a [u8],
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MknodPayload<'a> {
     mode: u32,
     rdev: u32,
     umask: u32,
+    name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MkdirPayload {
+pub struct MkdirPayload<'a> {
     mode: u32,
     umask: u32,
+    name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct RenamePayload {
+pub struct UnlinkPayload<'a> {
+    name: &'a [u8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RmdirPayload<'a> {
+    name: &'a [u8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RenamePayload<'a> {
     newdir: u64,
+    old_name: &'a [u8],
+    new_name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct LinkPayload {
+pub struct LinkPayload<'a> {
     oldnodeid: u64,
+    name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -141,13 +164,14 @@ pub struct ReadPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct WritePayload {
+pub struct WritePayload<'a> {
     fh: u64,
     offset: u64,
     size: u32,
     write_flags: u32,
     lock_owner: u64,
     flags: u32,
+    data: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -165,15 +189,23 @@ pub struct FsyncPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SetxattrPayload {
+pub struct SetxattrPayload<'a> {
     size: u32,
     flags: u32,
     setxattr_flags: u32,
+    name: &'a [u8],
+    value: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct GetxattrPayload {
+pub struct GetxattrPayload<'a> {
     size: u32,
+    name: &'a [u8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RemovexattrPayload<'a> {
+    name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -181,14 +213,6 @@ pub struct FlushPayload {
     fh: u64,
     unused: u32,
     lock_owner: u64,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileLock {
-    start: u64,
-    end: u64,
-    lock_type: u32,
-    pid: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -200,16 +224,25 @@ pub struct LockPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileLock {
+    start: u64,
+    end: u64,
+    lock_type: u32,
+    pid: u32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPayload {
     mask: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct CreatePayload {
+pub struct CreatePayload<'a> {
     flags: u32,
     mode: u32,
     umask: u32,
     open_flags: u32,
+    name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -224,13 +257,14 @@ pub struct BmapPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct IoctlPayload {
+pub struct IoctlPayload<'a> {
     fh: u64,
     flags: u32,
     cmd: u32,
     arg: u64,
     in_size: u32,
     out_size: u32,
+    input: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -242,14 +276,14 @@ pub struct PollPayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct NotifyRetrievePayload {
+pub struct NotifyReplyPayload<'a> {
     offset: u64,
-    size: u32,
+    data: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchForgetPayload {
-    count: u32,
+    entries: Vec<ForgetOne>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -267,9 +301,11 @@ pub struct FallocatePayload {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Rename2Payload {
+pub struct Rename2Payload<'a> {
     newdir: u64,
     flags: u32,
+    old_name: &'a [u8],
+    new_name: &'a [u8],
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -301,7 +337,7 @@ pub struct SetupmappingPayload {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovemappingPayload {
-    count: u32,
+    entries: Vec<RemovemappingOne>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -317,7 +353,6 @@ pub struct RemovemappingOne {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatxPayload {
     getattr_flags: u32,
-    reserved: u32,
     fh: u64,
     sx_flags: u32,
     sx_mask: u32,
