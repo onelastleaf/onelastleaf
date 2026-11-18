@@ -151,7 +151,7 @@ impl<FS: FileSystem> Session<FS> {
 
         buffer.truncate(size);
 
-        let request = match parse_fuse_request(&buffer) {
+        let request = match Self::parse_fuse_request(&buffer) {
             Ok(request) => request,
             Err(error) => {
                 state
@@ -166,57 +166,55 @@ impl<FS: FileSystem> Session<FS> {
 
         todo!()
     }
-}
 
-fn parse_fuse_request(request: &[u8]) -> Result<requests::Payload, ParseError> {
-    let Some((request_header, request_remaining)) = request.split_at_checked(40) else {
-        return Err(ParseError::InsufficientLength);
-    };
-    let Some(header) = parse_fuse_request_head(request_header) else {
-        return Err(ParseError::UnknownError);
-    };
+    fn parse_fuse_request<'a>(request: &[u8]) -> Result<requests::Payload<'a>, ParseError> {
+        let Some((request_header, request_remaining)) = request.split_at_checked(40) else {
+            return Err(ParseError::InsufficientLength);
+        };
+        let Some(header) = Self::parse_fuse_request_head(request_header) else {
+            return Err(ParseError::UnknownError);
+        };
 
-    if header.len as usize != request.len() {
-        return Err(ParseError::InvalidLength);
+        if header.len as usize != request.len() {
+            return Err(ParseError::InvalidLength);
+        }
+
+        let ext_index = usize::from(header.total_extlen) * 8;
+
+        let payload_len = request_remaining
+            .len()
+            .checked_sub(ext_index)
+            .ok_or(ParseError::InsufficientLength)?;
+
+        let (request_payload, request_extensions) = request_remaining.split_at(payload_len);
+
+        todo!()
     }
 
-    let ext_index = usize::from(header.total_extlen) * 8;
+    fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
+        if request_head.len() != 40 {
+            return None;
+        };
 
-    let payload_len = request_remaining
-        .len()
-        .checked_sub(ext_index)
-        .ok_or(ParseError::InsufficientLength)?;
+        Some(requests::Header {
+            len: u32::from_ne_bytes(request_head[0..4].try_into().unwrap()),
+            opcode: u32::from_ne_bytes(request_head[4..8].try_into().unwrap()),
+            unique: u64::from_ne_bytes(request_head[8..16].try_into().unwrap()),
+            nodeid: u64::from_ne_bytes(request_head[16..24].try_into().unwrap()),
+            uid: u32::from_ne_bytes(request_head[24..28].try_into().unwrap()),
+            gid: u32::from_ne_bytes(request_head[28..32].try_into().unwrap()),
+            total_extlen: u16::from_ne_bytes(request_head[36..38].try_into().unwrap()),
+        })
+    }
 
-    let (request_payload, request_extensions) = request_remaining.split_at(payload_len);
-
-    let payload = match header.opcode {
-        1 => todo!(),
-        2 => todo!(),
-        _ => todo!(),
-    };
-
-    todo!()
-}
-
-fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
-    if request_head.len() != 40 {
-        return None;
-    };
-
-    Some(requests::Header {
-        len: u32::from_ne_bytes(request_head[0..4].try_into().unwrap()),
-        opcode: u32::from_ne_bytes(request_head[4..8].try_into().unwrap()),
-        unique: u64::from_ne_bytes(request_head[8..16].try_into().unwrap()),
-        nodeid: u64::from_ne_bytes(request_head[16..24].try_into().unwrap()),
-        uid: u32::from_ne_bytes(request_head[24..28].try_into().unwrap()),
-        gid: u32::from_ne_bytes(request_head[28..32].try_into().unwrap()),
-        total_extlen: u16::from_ne_bytes(request_head[36..38].try_into().unwrap()),
-    })
-}
-
-#[allow(dead_code, unused_variables)]
-fn parse_fuse_request_payload(opcode: u32, request_payload: &[u8]) {
-    todo!()
+    #[allow(dead_code, unused_variables)]
+    fn parse_fuse_request_payload<'a>(
+        &self,
+        opcode: u32,
+        request_payload: &'a [u8],
+    ) -> Result<requests::Payload<'a>, ParseError> {
+        todo!()
+    }
 }
 
 impl HandleState {
