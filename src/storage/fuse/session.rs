@@ -225,6 +225,26 @@ impl HandleState {
 }
 
 bitflags::bitflags! {
+    /// FUSE capabilities negotiated with the Linux kernel during `INIT`.
+    ///
+    /// Use `HandleState::negotiated_config` to choose which protocol features
+    /// to use for this session. `None` means no negotiation result is available.
+    /// With `Some(flags)`, check the capability before using its feature.
+    ///
+    /// For example, use `splice` to send replies to `/dev/fuse` when
+    /// `SPLICE_WRITE` is set. Otherwise, send replies with a regular write.
+    ///
+    /// ```
+    /// use onelastleaf::storage::fuse::session::Flags;
+    ///
+    /// fn can_splice_replies(negotiated_config: Option<Flags>) -> bool {
+    ///     negotiated_config.is_some_and(|flags| flags.contains(Flags::SPLICE_WRITE))
+    /// }
+    /// ```
+    ///
+    /// Combine capabilities with `|`. Use [`contains`](Self::contains) to require
+    /// all of them or [`intersects`](Self::intersects) to require any of them.
+    /// For logging, use [`iter_names`](Self::iter_names) or [`bits`](Self::bits).
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct Flags: u64 {
         const ASYNC_READ   = 1 << 0;
