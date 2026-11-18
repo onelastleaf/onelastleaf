@@ -51,6 +51,7 @@ pub enum SessionError {
 #[derive(Clone, Copy, Debug)]
 pub enum ParseError {
     InsufficientLength,
+    ExcessiveLength,
     UnknownError,
     InvalidLength,
 }
