@@ -327,9 +327,9 @@ pub struct WritePayload<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleasePayload {
     fh: u64,
-    flags: u32,
-    release_flags: u32,
-    lock_owner: u64,
+    flags: Option<u32>,
+    release_flags: Option<u32>,
+    lock_owner: Option<u64>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1141,8 +1141,44 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_release(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_release(
+        bytes: &'a [u8],
+        protocol_version: u32,
+    ) -> Result<Self, ParseError> {
+        const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
+
+        let mut cursor = Cursor::new(bytes);
+        let fh = cursor.u64()?;
+        let flags = Some(cursor.u32()?);
+
+        let (release_flags, lock_owner) = if protocol_version < 8 {
+            cursor.skip(4)?; // padding in the legacy layout
+
+            if bytes.len() == 24 {
+                cursor.skip(8)?; // modern kernel using an older negotiated version
+            }
+
+            (None, None)
+        } else {
+            let release_flags = cursor.u32()?;
+            let lock_owner = cursor.u64()?;
+
+            (
+                Some(release_flags),
+                (release_flags & FUSE_RELEASE_FLOCK_UNLOCK != 0).then_some(lock_owner),
+            )
+        };
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Release(ReleasePayload {
+            fh,
+            flags,
+            release_flags,
+            lock_owner,
+        }))
     }
 
     pub(super) fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
