@@ -824,7 +824,7 @@ macro_rules! parse_string_only_payload {
 
 macro_rules! parse_struct_only_payload  {
     ($function:ident => $variant:ident($payload:ident) {
-        $($field:ident: $type:ty),+ $(,)?
+        $($field:ident: $type:ident),+ $(,)?
     }) => {
         pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
             let mut cursor = Cursor::new(bytes);
@@ -832,6 +832,11 @@ macro_rules! parse_struct_only_payload  {
             $(
                 let $field = cursor.$type()?;
             )+
+
+            if !cursor.finish() {
+                return Err(ParseError::ExcessiveLength);
+            }
+
 
             Ok(Self::$variant($payload { $($field),+ }))
         }
