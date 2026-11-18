@@ -165,10 +165,8 @@ pub struct SetattrPayload {
     mtimensec: u32,
     ctimensec: u32,
     mode: u32,
-    unused4: u32,
     uid: u32,
     gid: u32,
-    unused5: u32,
 }
 
 // `FUSE_READLINK` haven't request payload
