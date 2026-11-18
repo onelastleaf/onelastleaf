@@ -822,6 +822,24 @@ macro_rules! parse_string_only_payload {
     };
 }
 
+/// Generates a parser that reads fields in the order listed and rejects
+/// trailing bytes. Each `field: reader` entry calls `cursor.reader()`.
+///
+/// For example, the `parse_forget` invocation expands to this method inside
+/// `impl<'a> Payload<'a>`.
+///
+/// ```rust,ignore
+/// pub(super) fn parse_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
+///     let mut cursor = Cursor::new(bytes);
+///     let nlookup = cursor.u64()?;
+///
+///     if !cursor.finish() {
+///         return Err(ParseError::ExcessiveLength);
+///     }
+///
+///     Ok(Self::Forget(ForgetPayload { nlookup }))
+/// }
+/// ```
 macro_rules! parse_struct_only_payload  {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident: $type:ident),+ $(,)?
