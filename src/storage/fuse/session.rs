@@ -1,4 +1,4 @@
-use super::requests;
+use super::payload;
 use nix::{
     mount::{MsFlags, mount},
     unistd::{Gid, Uid},
@@ -191,12 +191,12 @@ impl<FS: FileSystem> Session<FS> {
         todo!()
     }
 
-    fn parse_fuse_request_head(request_head: &[u8]) -> Option<requests::Header> {
+    fn parse_fuse_request_head(request_head: &[u8]) -> Option<payload::Header> {
         if request_head.len() != 40 {
             return None;
         };
 
-        Some(requests::Header {
+        Some(payload::Header {
             len: u32::from_ne_bytes(request_head[0..4].try_into().unwrap()),
             opcode: u32::from_ne_bytes(request_head[4..8].try_into().unwrap()),
             unique: u64::from_ne_bytes(request_head[8..16].try_into().unwrap()),
@@ -212,7 +212,7 @@ impl<FS: FileSystem> Session<FS> {
         &self,
         opcode: u32,
         request_payload: &'a [u8],
-    ) -> Result<requests::Payload<'a>, ParseError> {
+    ) -> Result<payload::Payload<'a>, ParseError> {
         todo!()
     }
 }
