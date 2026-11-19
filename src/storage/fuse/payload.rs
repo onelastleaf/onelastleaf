@@ -1582,16 +1582,51 @@ impl<'a> Payload<'a> {
         Ok(Self::Lseek(LseekPayload { fh, offset, whence }))
     }
 
-    pub(super) fn parse_copy_file_range(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_struct_only_without_padding_payload!(parse_copy_file_range => CopyFileRange(CopyFileRangePayload) {
+        fh_in: u64,
+        off_in: u64,
+        nodeid_out: u64,
+        fh_out: u64,
+        off_out: u64,
+        len: u64,
+        flags: u64,
+    });
 
-    pub(super) fn parse_setupmapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_struct_only_without_padding_payload!(parse_setupmapping => Setupmapping(SetupmappingPayload) {
+        fh: u64,
+        foffset: u64,
+        len: u64,
+        flags: u64,
+        moffset: u64,
+    });
 
     pub(super) fn parse_removemapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        const HEADER_SIZE: usize = 4;
+        const ENTRY_SIZE: usize = 16;
+
+        let mut cursor = Cursor::new(bytes);
+        let count = cursor.u32()? as usize;
+
+        let expected = count
+            .checked_mul(ENTRY_SIZE)
+            .ok_or(ParseError::InsufficientLength)?;
+        let remaining = bytes.len() - HEADER_SIZE;
+
+        match remaining.cmp(&expected) {
+            std::cmp::Ordering::Less => return Err(ParseError::InsufficientLength),
+            std::cmp::Ordering::Greater => return Err(ParseError::ExcessiveLength),
+            std::cmp::Ordering::Equal => {}
+        }
+
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(RemovemappingOne {
+                moffset: cursor.u64()?,
+                len: cursor.u64()?,
+            });
+        }
+
+        Ok(Self::Removemapping(RemovemappingPayload { entries }))
     }
 
     pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
@@ -1606,7 +1641,13 @@ impl<'a> Payload<'a> {
         todo!()
     }
 
-    pub(super) fn parse_copy_file_range64(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_struct_only_without_padding_payload!(parse_copy_file_range64 => CopyFileRange64(CopyFileRangePayload) {
+        fh_in: u64,
+        off_in: u64,
+        nodeid_out: u64,
+        fh_out: u64,
+        off_out: u64,
+        len: u64,
+        flags: u64,
+    });
 }
