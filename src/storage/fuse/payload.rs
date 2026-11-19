@@ -936,6 +936,20 @@ impl<'a> Payload<'a> {
 
         let major = cursor.u32()?;
         let minor = cursor.u32()?;
+
+        if major == 7 && minor < 6 {
+            if !cursor.finish() {
+                return Err(ParseError::ExcessiveLength);
+            }
+
+            return Ok(Self::Init(InitPayload {
+                major,
+                minor,
+                max_readahead: 0,
+                flags: Flags::empty(),
+            }));
+        }
+
         let max_readahead = cursor.u32()?;
 
         // what about `flags`?
