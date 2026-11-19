@@ -226,7 +226,7 @@ impl<FS: FileSystem> Session<FS> {
             nodeid: u64::from_ne_bytes(request_head[16..24].try_into().unwrap()),
             uid: u32::from_ne_bytes(request_head[24..28].try_into().unwrap()),
             gid: u32::from_ne_bytes(request_head[28..32].try_into().unwrap()),
-            pid: u32::from_ne_bytes(request_head[33..36].try_into().unwrap()),
+            pid: u32::from_ne_bytes(request_head[32..36].try_into().unwrap()),
             total_extlen: u16::from_ne_bytes(request_head[36..38].try_into().unwrap()),
         })
     }
