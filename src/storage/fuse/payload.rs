@@ -1553,7 +1553,13 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_readdir_plus(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        const READDIRPLUS_MIN_MINOR: u32 = 21;
+
+        let Self::Read(payload) = Self::parse_read(bytes, READDIRPLUS_MIN_MINOR)? else {
+            unreachable!("parse_read must return Self::Read");
+        };
+
+        Ok(Self::ReaddirPlus(payload))
     }
 
     parse_payload_with_trailing_names!(parse_rename2 => Rename2(Rename2Payload) {
