@@ -1532,7 +1532,24 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let offset = cursor.u64()?;
+        let length = cursor.u64()?;
+        let mode = cursor.u32()?;
+        cursor.skip(4)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Fallocate(FallocatePayload {
+            fh,
+            offset,
+            length,
+            mode,
+        }))
     }
 
     pub(super) fn parse_readdir_plus(bytes: &'a [u8]) -> Result<Self, ParseError> {
