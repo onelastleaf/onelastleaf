@@ -869,6 +869,31 @@ macro_rules! parse_struct_only_without_padding_payload  {
     };
 }
 
+/// Generates a parser that reads the fixed fields in order, skips any
+/// specified padding, then reads one NUL-terminated byte slice per name.
+/// The parser rejects bytes left over after the last name.
+///
+/// For example, the `parse_rename` invocation expands to this method inside
+/// `impl<'a> Payload<'a>`.
+///
+/// ```rust,ignore
+/// pub(super) fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
+///     let mut cursor = Cursor::new(bytes);
+///     let new_dir = cursor.u64()?;
+///     let old_name = cursor.read_until_nul()?;
+///     let new_name = cursor.read_until_nul()?;
+///
+///     if !cursor.finish() {
+///         return Err(ParseError::ExcessiveLength);
+///     }
+///
+///     Ok(Self::Rename(RenamePayload {
+///         new_dir,
+///         old_name,
+///         new_name,
+///     }))
+/// }
+/// ```
 macro_rules! parse_payload_with_trailing_names {
     (
         $function:ident => $variant:ident($payload:ident) {
