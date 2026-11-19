@@ -1433,7 +1433,17 @@ impl<'a> Payload<'a> {
     });
 
     pub(super) fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let block = cursor.u64()?;
+        let blocksize = cursor.u32()?;
+        cursor.skip(4)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Bmap(BmapPayload { block, blocksize }))
     }
 
     pub(super) fn parse_destroy(bytes: &'a [u8]) -> Result<Self, ParseError> {
