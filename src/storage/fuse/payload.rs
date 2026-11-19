@@ -1383,7 +1383,16 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let mask = cursor.u32()?;
+        cursor.skip(4)?; // padding
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Access(AccessPayload { mask }))
     }
 
     pub(super) fn parse_create(bytes: &'a [u8]) -> Result<Self, ParseError> {
