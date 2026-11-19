@@ -1446,9 +1446,17 @@ impl<'a> Payload<'a> {
         Ok(Self::Bmap(BmapPayload { block, blocksize }))
     }
 
-    pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_payload_with_trailing_names!(parse_ioctl => Ioctl(IoctlPayload) {
+        fixed {
+            fh: u64,
+            flags: u32,
+            cmd: u32,
+            arg: u64,
+            in_size: u32,
+            out_size: u32
+        }
+        names { input }
+    });
 
     pub(super) fn parse_poll(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
