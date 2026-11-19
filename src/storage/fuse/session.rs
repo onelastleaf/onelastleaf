@@ -158,11 +158,14 @@ impl<FS: FileSystem> Session<FS> {
         // 3. Receive the INIT packet from the Linux kernel.
         let mut buffer = vec![0u8; 8192];
 
-        let size = match fuse_file.read(&mut buffer) {
-            Ok(size) => size,
-            Err(error) => {
-                state.lock().stop_with_error(SessionError::CannotReadFuse);
-                return Err(self.rollback_mount(fuse_file, error));
+        let size = loop {
+            match fuse_file.read(&mut buffer) {
+                Ok(size) => break size,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => {
+                    state.lock().stop_with_error(SessionError::CannotReadFuse);
+                    return Err(self.rollback_mount(fuse_file, error));
+                }
             }
         };
 
