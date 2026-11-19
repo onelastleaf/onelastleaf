@@ -981,7 +981,7 @@ impl<'a> Payload<'a> {
 
     pub(super) fn parse_setattr(
         bytes: &'a [u8],
-        procotol_version: u32,
+        protocol_version: u32,
     ) -> Result<Self, ParseError> {
         const FATTR_FH: u32 = 1 << 6;
 
@@ -990,7 +990,7 @@ impl<'a> Payload<'a> {
         let mut valid = cursor.u32()?;
         cursor.skip(4)?; // padding
 
-        let fh = if procotol_version == 2 {
+        let fh = if protocol_version == 2 {
             valid &= !FATTR_FH;
             cursor.skip(8)?; // legacy fuse_attr.ino
             0
