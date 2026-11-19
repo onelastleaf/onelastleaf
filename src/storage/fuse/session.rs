@@ -50,13 +50,35 @@ pub enum SessionError {
 
 #[derive(Clone, Copy, Debug)]
 pub enum ParseError {
+    // The request length is too short
     InsufficientLength,
+
+    // The request length is too long
     ExcessiveLength,
-    UnknownError,
+
+    // The request length can't be this length, no matter long or short
     InvalidLength,
+
+    // It's pretty self-explanatory. Its name bro
     RequestBeforeInit,
-    InconsistentInitState,
+
+    // Some internal invariants have been violated
+    InvariantViolation,
+
+    // Maybe this opcode is used in newer kernel, but we haven't support yet
     UnsupportedOpcode(u32),
+
+    // This opcode is totally unexpected, it shouldn't appear in such place
+    UnexpectedOpcode(u32),
+
+    // We just can't decode the extensions bytes in request
+    InvalidExtensions,
+
+    // We can decode the extensions bytes, but its parse result doesn't make sense
+    UnexpectedExtensions,
+
+    // We don't know what happen
+    UnknownError,
 }
 
 impl SessionError {
@@ -247,12 +269,53 @@ impl<FS: FileSystem> Session<FS> {
 
         let (request_payload, request_extensions) = request_remaining.split_at(payload_len);
 
-        let payload: payload::Payload =
-            self.parse_fuse_request_payload(header.opcode, request_payload)?;
+        let has_security_ctx: bool = self
+            .capabilities
+            .is_some_and(|flags| flags.contains(Flags::SECURITY_CTX));
 
-        let extensions = Self::parse_fuse_request_extensions(request_extensions);
+        if matches!(
+            (self.protocol_version, header.opcode),
+            (Some(36 | 37), 6 | 8 | 9 | 35) | (Some(37), 51)
+        ) && has_security_ctx
+            && header.total_extlen == 0
+        {
+            // The legacy layout places the security context after the fixed fields
+            // and NUL-terminated strings of the request body.
+            let (jumped_len, string_count) = match header.opcode {
+                6 => (0, 2),            // SYMLINK has a link name and target.
+                8 | 35 | 51 => (16, 1), // MKNOD, CREATE, and TMPFILE each have one name.
+                9 => (8, 1),            // MKDIR has one name.
+                opcode => return Err(ParseError::UnexpectedOpcode(opcode)),
+            };
 
-        todo!()
+            // Find the end of the request payload.
+            let mut cursor = helper::Cursor::new(request_payload);
+            cursor.skip(jumped_len)?;
+            for _ in 0..string_count {
+                cursor.read_until_nul()?;
+            }
+
+            // Remaining bytes have security contexts.
+            let payload_end = request_payload.len() - cursor.bytes.len();
+            let (body, extension_bytes) = request_payload.split_at(payload_end);
+
+            let payload = self.parse_fuse_request_payload(header.opcode, body)?;
+            let extensions = Self::parse_fuse_request_extensions(extension_bytes)
+                .ok_or(ParseError::InvalidExtensions)?;
+
+            // This layout requires a security context block and permits zero entries.
+            if extensions.security_contexts.is_none() || extensions.supplementary_groups.is_some() {
+                return Err(ParseError::UnexpectedExtensions);
+            }
+
+            todo!()
+        } else {
+            let payload: payload::Payload =
+                self.parse_fuse_request_payload(header.opcode, request_payload)?;
+
+            let extensions = Self::parse_fuse_request_extensions(request_extensions);
+            todo!()
+        }
     }
 
     fn parse_fuse_request_head(request_head: &[u8]) -> Option<Header> {
@@ -291,7 +354,7 @@ impl<FS: FileSystem> Session<FS> {
 
                 (Some(version), Some(flags)) => (version, flags),
 
-                _ => return Err(ParseError::InconsistentInitState),
+                _ => return Err(ParseError::InvariantViolation),
             };
 
         match opcode {
