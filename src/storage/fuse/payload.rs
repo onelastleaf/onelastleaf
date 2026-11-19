@@ -1629,10 +1629,6 @@ impl<'a> Payload<'a> {
         Ok(Self::Removemapping(RemovemappingPayload { entries }))
     }
 
-    pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
-
     pub(super) fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
