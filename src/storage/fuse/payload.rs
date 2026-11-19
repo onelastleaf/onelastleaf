@@ -1641,7 +1641,13 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        const TMPFILE_MIN_MINOR: u32 = 37;
+
+        let Self::Create(payload) = Self::parse_create(bytes, TMPFILE_MIN_MINOR)? else {
+            unreachable!("parse_create must return Self::Create");
+        };
+
+        Ok(Self::Tmpfile(payload))
     }
 
     pub(super) fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
