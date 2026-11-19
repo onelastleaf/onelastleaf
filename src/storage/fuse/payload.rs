@@ -413,8 +413,7 @@ pub struct RemovexattrPayload<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlushPayload {
     fh: u64,
-    unused: u32,
-    lock_owner: u64,
+    lock_owner: Option<u64>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1261,8 +1260,22 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
 
-    pub(super) fn parse_flush(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_flush(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+        let fh = cursor.u64()?;
+        cursor.skip(8)?; // flush_flags / unused, then padding
+
+        let lock_owner = if protocol_version < 7 && bytes.len() == 16 {
+            None
+        } else {
+            Some(cursor.u64()?)
+        };
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Flush(FlushPayload { fh, lock_owner }))
     }
 
     pub(super) fn parse_opendir(bytes: &'a [u8]) -> Result<Self, ParseError> {
