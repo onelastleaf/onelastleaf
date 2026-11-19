@@ -1651,7 +1651,24 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let getattr_flags = cursor.u32()?;
+        cursor.skip(4)?; // reserved
+        let fh = cursor.u64()?;
+        let sx_flags = cursor.u32()?;
+        let sx_mask = cursor.u32()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Statx(StatxPayload {
+            getattr_flags,
+            fh,
+            sx_flags,
+            sx_mask,
+        }))
     }
 
     parse_struct_only_without_padding_payload!(parse_copy_file_range64 => CopyFileRange64(CopyFileRangePayload) {
