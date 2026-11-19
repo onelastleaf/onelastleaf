@@ -1278,20 +1278,36 @@ impl<'a> Payload<'a> {
         Ok(Self::Flush(FlushPayload { fh, lock_owner }))
     }
 
-    pub(super) fn parse_opendir(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    parse_struct_only_without_padding_payload!(parse_opendir => Opendir(OpenPayload) {
+        flags: u32,
+        open_flags: u32,
+    });
+
+    pub(super) fn parse_readdir(
+        bytes: &'a [u8],
+        protocol_version: u32,
+    ) -> Result<Self, ParseError> {
+        let Self::Read(payload) = Self::parse_read(bytes, protocol_version)? else {
+            unreachable!("parse_read must return Self::Read");
+        };
+        Ok(Self::Readdir(payload))
     }
 
-    pub(super) fn parse_readdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
-
-    pub(super) fn parse_releasedir(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_releasedir(
+        bytes: &'a [u8],
+        protocol_version: u32,
+    ) -> Result<Self, ParseError> {
+        let Self::Release(payload) = Self::parse_release(bytes, protocol_version)? else {
+            unreachable!("parse_release must return Self::Release");
+        };
+        Ok(Self::Releasedir(payload))
     }
 
     pub(super) fn parse_fsyncdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let Self::Fsync(payload) = Self::parse_fsync(bytes)? else {
+            unreachable!("parse_fsync must return Self::Fsync");
+        };
+        Ok(Self::Fsyncdir(payload))
     }
 
     pub(super) fn parse_getlk(bytes: &'a [u8]) -> Result<Self, ParseError> {
