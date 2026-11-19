@@ -1428,9 +1428,9 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_interrupt(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
+    parse_struct_only_without_padding_payload!(parse_interrupt => Interrupt(InterruptPayload) {
+        unique: u64,
+    });
 
     pub(super) fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
