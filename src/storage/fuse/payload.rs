@@ -432,7 +432,7 @@ pub struct LockPayload {
     fh: u64,
     owner: u64,
     lk: FileLock,
-    lk_flags: u32,
+    lk_flags: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1310,16 +1310,51 @@ impl<'a> Payload<'a> {
         Ok(Self::Fsyncdir(payload))
     }
 
-    pub(super) fn parse_getlk(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_getlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let payload = Self::parse_lk_payload(bytes, protocol_version)?;
+        Ok(Self::Getlk(payload))
     }
 
-    pub(super) fn parse_setlk(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_setlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let payload = Self::parse_lk_payload(bytes, protocol_version)?;
+        Ok(Self::Setlk(payload))
     }
 
-    pub(super) fn parse_setlkw(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_setlkw(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let payload = Self::parse_lk_payload(bytes, protocol_version)?;
+        Ok(Self::Setlkw(payload))
+    }
+
+    fn parse_lk_payload(bytes: &'a [u8], protocol_version: u32) -> Result<LockPayload, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+        let fh = cursor.u64()?;
+        let owner = cursor.u64()?;
+
+        let lk = FileLock {
+            start: cursor.u64()?,
+            end: cursor.u64()?,
+            lock_type: cursor.u32()?,
+            pid: cursor.u32()?,
+        };
+
+        let lk_flags = if protocol_version < 9 && bytes.len() == 40 {
+            None
+        } else {
+            let flags = cursor.u32()?;
+            cursor.skip(4)?; // padding
+            Some(flags)
+        };
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(LockPayload {
+            fh,
+            owner,
+            lk,
+            lk_flags,
+        })
     }
 
     pub(super) fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
