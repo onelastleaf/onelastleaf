@@ -1446,10 +1446,6 @@ impl<'a> Payload<'a> {
         Ok(Self::Bmap(BmapPayload { block, blocksize }))
     }
 
-    pub(super) fn parse_destroy(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
-    }
-
     pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
