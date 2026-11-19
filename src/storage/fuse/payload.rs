@@ -1485,7 +1485,20 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        cursor.skip(8)?; // dummy1
+        let offset = cursor.u64()?;
+        let size = cursor.u32()?;
+        cursor.skip(20)?; // dummy2, dummy3, dummy4
+
+        let data = cursor.take(size as usize)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::NotifyReply(NotifyReplyPayload { offset, data }))
     }
 
     pub(super) fn parse_batch_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
