@@ -23,6 +23,7 @@ pub struct Header {
     pub(super) nodeid: u64,
     pub(super) uid: u32,
     pub(super) gid: u32,
+    pub(super) pid: u32,
     pub(super) total_extlen: u16,
 }
 
