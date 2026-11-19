@@ -237,6 +237,7 @@ impl<FS: FileSystem> Session<FS> {
             };
 
         match opcode {
+            5 | 17 | 38 if !request_payload.is_empty() => Err(ParseError::ExcessiveLength),
             1 => payload::Payload::parse_lookup(request_payload),
             2 => payload::Payload::parse_forget(request_payload),
             3 => payload::Payload::parse_getattr(request_payload, protocol_version),
