@@ -54,6 +54,9 @@ pub enum ParseError {
     ExcessiveLength,
     UnknownError,
     InvalidLength,
+    RequestBeforeInit,
+    InconsistentInitState,
+    UnsupportedOpcode(u32),
 }
 
 impl SessionError {
@@ -224,13 +227,13 @@ impl<FS: FileSystem> Session<FS> {
                     if opcode == 26 {
                         return payload::Payload::parse_init(request_payload);
                     } else {
-                        return Err(ParseError::UnknownError);
+                        return Err(ParseError::RequestBeforeInit);
                     }
                 }
 
                 (Some(version), Some(flags)) => (version, flags),
 
-                _ => return Err(ParseError::UnknownError),
+                _ => return Err(ParseError::InconsistentInitState),
             };
 
         match opcode {
@@ -284,7 +287,7 @@ impl<FS: FileSystem> Session<FS> {
             51 => payload::Payload::parse_tmpfile(request_payload),
             52 => payload::Payload::parse_statx(request_payload),
             53 => payload::Payload::parse_copy_file_range64(request_payload),
-            _ => Err(ParseError::UnknownError),
+            _ => Err(ParseError::UnsupportedOpcode(opcode)),
         }
     }
 }
