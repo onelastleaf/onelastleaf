@@ -1,4 +1,5 @@
 use super::Flags;
+use super::helper;
 use super::session::ParseError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -714,59 +715,6 @@ pub struct StatxPayload {
 
 // Now I will implementing some functions, for payload parsing
 
-struct Cursor<'a> {
-    bytes: &'a [u8],
-}
-
-impl<'a> Cursor<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
-        Self { bytes }
-    }
-
-    fn take(&mut self, number: usize) -> Result<&'a [u8], ParseError> {
-        let (taken, remaining) = self
-            .bytes
-            .split_at_checked(number)
-            .ok_or(ParseError::InsufficientLength)?;
-
-        self.bytes = remaining;
-        Ok(taken)
-    }
-
-    fn skip(&mut self, number: usize) -> Result<(), ParseError> {
-        self.take(number)?;
-        Ok(())
-    }
-
-    fn u32(&mut self) -> Result<u32, ParseError> {
-        let mut bytes = [0; 4];
-        bytes.copy_from_slice(self.take(4)?);
-        Ok(u32::from_ne_bytes(bytes))
-    }
-
-    fn u64(&mut self) -> Result<u64, ParseError> {
-        let mut bytes = [0; 8];
-        bytes.copy_from_slice(self.take(8)?);
-        Ok(u64::from_ne_bytes(bytes))
-    }
-
-    fn read_until_nul(&mut self) -> Result<&'a [u8], ParseError> {
-        let end = self
-            .bytes
-            .iter()
-            .position(|&byte| byte == 0)
-            .ok_or(ParseError::InsufficientLength)?;
-
-        let field = &self.bytes[..end];
-        self.bytes = &self.bytes[end + 1..];
-        Ok(field)
-    }
-
-    fn finish(&self) -> bool {
-        self.bytes.is_empty()
-    }
-}
-
 /// Generates a parser that reads one NUL-terminated byte slice per field,
 /// in the order listed, and rejects trailing bytes.
 ///
@@ -775,7 +723,7 @@ impl<'a> Cursor<'a> {
 ///
 /// ```rust,ignore
 /// pub(super) fn parse_lookup(bytes: &'a [u8]) -> Result<Self, ParseError> {
-///     let mut cursor = Cursor::new(bytes);
+///     let mut cursor = helper::Cursor::new(bytes);
 ///     let name = cursor.read_until_nul()?;
 ///
 ///     if !cursor.finish() {
@@ -790,7 +738,7 @@ macro_rules! parse_string_only_payload {
         $($field:ident),+ $(,)?
     }) => {
         pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
-            let mut cursor = Cursor::new(bytes);
+            let mut cursor = helper::Cursor::new(bytes);
 
             $(
                 let $field = cursor.read_until_nul()?;
@@ -813,7 +761,7 @@ macro_rules! parse_string_only_payload {
 ///
 /// ```rust,ignore
 /// pub(super) fn parse_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
-///     let mut cursor = Cursor::new(bytes);
+///     let mut cursor = helper::Cursor::new(bytes);
 ///     let nlookup = cursor.u64()?;
 ///
 ///     if !cursor.finish() {
@@ -828,7 +776,7 @@ macro_rules! parse_struct_only_without_padding_payload  {
         $($field:ident: $type:ident),+ $(,)?
     }) => {
         pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
-            let mut cursor = Cursor::new(bytes);
+            let mut cursor = helper::Cursor::new(bytes);
 
             $(
                 let $field = cursor.$type()?;
@@ -853,7 +801,7 @@ macro_rules! parse_struct_only_without_padding_payload  {
 ///
 /// ```rust,ignore
 /// pub(super) fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
-///     let mut cursor = Cursor::new(bytes);
+///     let mut cursor = helper::Cursor::new(bytes);
 ///     let new_dir = cursor.u64()?;
 ///     let old_name = cursor.read_until_nul()?;
 ///     let new_name = cursor.read_until_nul()?;
@@ -881,7 +829,7 @@ macro_rules! parse_payload_with_trailing_names {
         }
     ) => {
         pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
-            let mut cursor = Cursor::new(bytes);
+            let mut cursor = helper::Cursor::new(bytes);
 
             $(
                 let $field = cursor.$type()?;
@@ -906,7 +854,7 @@ macro_rules! parse_payload_with_trailing_names {
 
 impl<'a> Payload<'a> {
     pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let major = cursor.u32()?;
         let minor = cursor.u32()?;
@@ -955,7 +903,7 @@ impl<'a> Payload<'a> {
         let (getattr_flags, fh) = match bytes.len() {
             0 | 16 if protocol_version < 9 => (0, 0),
             16 => {
-                let mut cursor = Cursor::new(bytes);
+                let mut cursor = helper::Cursor::new(bytes);
                 let getattr_flags = cursor.u32()?;
                 cursor.skip(4)?; // dummy
                 let fh = cursor.u64()?;
@@ -974,7 +922,7 @@ impl<'a> Payload<'a> {
     ) -> Result<Self, ParseError> {
         const FATTR_FH: u32 = 1 << 6;
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let mut valid = cursor.u32()?;
         cursor.skip(4)?; // padding
@@ -1029,7 +977,7 @@ impl<'a> Payload<'a> {
     parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
     pub(super) fn parse_mknod(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let mode = cursor.u32()?;
         let rdev = cursor.u32()?;
@@ -1057,7 +1005,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_mkdir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let mode = cursor.u32()?;
 
@@ -1106,7 +1054,7 @@ impl<'a> Payload<'a> {
             _ => return Err(ParseError::ExcessiveLength),
         }
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let offset = cursor.u64()?;
@@ -1137,7 +1085,7 @@ impl<'a> Payload<'a> {
     pub(super) fn parse_write(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let offset = cursor.u64()?;
@@ -1180,7 +1128,7 @@ impl<'a> Payload<'a> {
     ) -> Result<Self, ParseError> {
         const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let fh = cursor.u64()?;
         let flags = Some(cursor.u32()?);
 
@@ -1215,7 +1163,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let fsync_flags = cursor.u32()?;
@@ -1229,7 +1177,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_setxattr(bytes: &'a [u8], capabilities: Flags) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         let flags = cursor.u32()?;
 
@@ -1257,7 +1205,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         cursor.skip(4)?; // padding
         let name = cursor.read_until_nul()?;
@@ -1270,7 +1218,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         cursor.skip(4)?; // padding
 
@@ -1283,7 +1231,7 @@ impl<'a> Payload<'a> {
     parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
 
     pub(super) fn parse_flush(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let fh = cursor.u64()?;
         cursor.skip(8)?; // flush_flags / unused, then padding
 
@@ -1348,7 +1296,7 @@ impl<'a> Payload<'a> {
     }
 
     fn parse_lk_payload(bytes: &'a [u8], protocol_version: u32) -> Result<LockPayload, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let fh = cursor.u64()?;
         let owner = cursor.u64()?;
 
@@ -1380,7 +1328,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let mask = cursor.u32()?;
         cursor.skip(4)?; // padding
@@ -1393,7 +1341,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_create(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let flags = cursor.u32()?;
         let mode = cursor.u32()?;
 
@@ -1430,7 +1378,7 @@ impl<'a> Payload<'a> {
     });
 
     pub(super) fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let block = cursor.u64()?;
         let blocksize = cursor.u32()?;
@@ -1448,7 +1396,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let flags = cursor.u32()?;
@@ -1474,7 +1422,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_poll(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let kh = cursor.u64()?;
@@ -1500,7 +1448,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         cursor.skip(8)?; // dummy1
         let offset = cursor.u64()?;
@@ -1520,7 +1468,7 @@ impl<'a> Payload<'a> {
         const HEADER_SIZE: usize = 8;
         const ENTRY_SIZE: usize = 16;
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let count = cursor.u32()? as usize;
         cursor.skip(4)?; // dummy
 
@@ -1547,7 +1495,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let offset = cursor.u64()?;
@@ -1583,7 +1531,7 @@ impl<'a> Payload<'a> {
     });
 
     pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
         let offset = cursor.u64()?;
@@ -1619,7 +1567,7 @@ impl<'a> Payload<'a> {
         const HEADER_SIZE: usize = 4;
         const ENTRY_SIZE: usize = 16;
 
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         let count = cursor.u32()? as usize;
 
         let expected = count
@@ -1645,7 +1593,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
         cursor.skip(8)?; // padding
 
         if !cursor.finish() {
@@ -1666,7 +1614,7 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        let mut cursor = Cursor::new(bytes);
+        let mut cursor = helper::Cursor::new(bytes);
 
         let getattr_flags = cursor.u32()?;
         cursor.skip(4)?; // reserved

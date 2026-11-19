@@ -1,4 +1,4 @@
-use super::{Flags, payload};
+use super::{Flags, helper, payload};
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
@@ -103,6 +103,18 @@ pub struct Header {
     pub(super) gid: u32,
     pub(super) pid: u32,
     pub(super) total_extlen: u16,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Extensions<'a> {
+    security_contexts: Option<Vec<SecurityContext<'a>>>,
+    supplementary_groups: Option<Vec<u32>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SecurityContext<'a> {
+    name: &'a [u8],
+    label: &'a [u8],
 }
 
 impl<FS: FileSystem> Session<FS> {
@@ -235,7 +247,10 @@ impl<FS: FileSystem> Session<FS> {
 
         let (request_payload, request_extensions) = request_remaining.split_at(payload_len);
 
-        let payload = self.parse_fuse_request_payload(header.opcode, request_payload)?;
+        let payload: payload::Payload =
+            self.parse_fuse_request_payload(header.opcode, request_payload)?;
+
+        let extensions = Self::parse_fuse_request_extensions(request_extensions);
 
         todo!()
     }
@@ -333,6 +348,65 @@ impl<FS: FileSystem> Session<FS> {
             53 => payload::Payload::parse_copy_file_range64(request_payload),
             _ => Err(ParseError::UnsupportedOpcode(opcode)),
         }
+    }
+
+    fn parse_fuse_request_extensions<'a>(request_extensions: &'a [u8]) -> Option<Extensions<'a>> {
+        const FUSE_MAX_NR_SECCTX: u32 = 31;
+        const FUSE_EXT_GROUPS: u32 = 32;
+
+        let mut cursor = helper::Cursor::new(request_extensions);
+        let mut extensions = Extensions {
+            security_contexts: None,
+            supplementary_groups: None,
+        };
+
+        while !cursor.finish() {
+            let size = cursor.u32().ok()? as usize;
+            let kind = cursor.u32().ok()?;
+            if !size.is_multiple_of(8) {
+                return None;
+            }
+            let mut extension = helper::Cursor::new(cursor.take(size.checked_sub(8)?).ok()?);
+
+            match kind {
+                0..=FUSE_MAX_NR_SECCTX if extensions.security_contexts.is_none() => {
+                    let mut contexts = Vec::with_capacity(kind as usize);
+                    for _ in 0..kind {
+                        let label_len = extension.u32().ok()? as usize;
+                        extension.skip(4).ok()?;
+                        let name = extension.read_until_nul().ok()?;
+                        let label = extension.take(label_len).ok()?;
+
+                        let entry_len = 8 + name.len() + 1 + label_len;
+                        extension
+                            .skip(entry_len.next_multiple_of(8) - entry_len)
+                            .ok()?;
+                        contexts.push(SecurityContext { name, label });
+                    }
+                    extensions.security_contexts = Some(contexts);
+                }
+                FUSE_EXT_GROUPS if extensions.supplementary_groups.is_none() => {
+                    let group_count = extension.u32().ok()? as usize;
+                    let groups_len = group_count.checked_mul(4)?;
+                    let groups = extension.take(groups_len).ok()?;
+                    let data_len = 4 + groups_len;
+                    extension
+                        .skip(data_len.next_multiple_of(8) - data_len)
+                        .ok()?;
+
+                    let (groups, _) = groups.as_chunks::<4>();
+                    extensions.supplementary_groups =
+                        Some(groups.iter().copied().map(u32::from_ne_bytes).collect());
+                }
+                _ => return None,
+            }
+
+            if !extension.finish() {
+                return None;
+            }
+        }
+
+        Some(extensions)
     }
 }
 
