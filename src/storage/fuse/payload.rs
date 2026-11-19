@@ -548,7 +548,7 @@ pub struct PollPayload {
     fh: u64,
     kh: u64,
     flags: u32,
-    events: u32,
+    events: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -1458,8 +1458,30 @@ impl<'a> Payload<'a> {
         names { input }
     });
 
-    pub(super) fn parse_poll(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_poll(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let kh = cursor.u64()?;
+        let flags = cursor.u32()?;
+
+        let events = if protocol_version < 21 {
+            cursor.skip(4)?;
+            None
+        } else {
+            Some(cursor.u32()?)
+        };
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Poll(PollPayload {
+            fh,
+            kh,
+            flags,
+            events,
+        }))
     }
 
     pub(super) fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
