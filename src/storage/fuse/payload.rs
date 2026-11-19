@@ -1033,6 +1033,10 @@ impl<'a> Payload<'a> {
         }))
     }
 
+    pub(super) fn parse_readlink() -> Result<Self, ParseError> {
+        Ok(Self::Readlink)
+    }
+
     parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
     pub(super) fn parse_mknod(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
@@ -1175,6 +1179,10 @@ impl<'a> Payload<'a> {
             flags,
             data,
         }))
+    }
+
+    pub(super) fn parse_statfs() -> Result<Self, ParseError> {
+        Ok(Self::Statfs)
     }
 
     pub(super) fn parse_release(
@@ -1444,6 +1452,10 @@ impl<'a> Payload<'a> {
         }
 
         Ok(Self::Bmap(BmapPayload { block, blocksize }))
+    }
+
+    pub(super) fn parse_destroy() -> Result<Self, ParseError> {
+        Ok(Self::Destroy)
     }
 
     parse_payload_with_trailing_names!(parse_ioctl => Ioctl(IoctlPayload) {
