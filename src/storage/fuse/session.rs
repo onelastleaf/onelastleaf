@@ -101,7 +101,7 @@ impl<FS: FileSystem> Session<FS> {
 
         let state_in_thread = Arc::clone(&state);
 
-        let thread = thread::spawn(move || self.run(&state_in_thread));
+        let thread = thread::Builder::new().spawn(move || self.run(&state_in_thread))?;
 
         Ok(Handle { thread, state })
     }
