@@ -1629,6 +1629,17 @@ impl<'a> Payload<'a> {
         Ok(Self::Removemapping(RemovemappingPayload { entries }))
     }
 
+    pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+        cursor.skip(8)?; // padding
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Syncfs)
+    }
+
     pub(super) fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
         todo!()
     }
