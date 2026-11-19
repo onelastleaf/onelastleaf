@@ -1502,7 +1502,33 @@ impl<'a> Payload<'a> {
     }
 
     pub(super) fn parse_batch_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        const HEADER_SIZE: usize = 8;
+        const ENTRY_SIZE: usize = 16;
+
+        let mut cursor = Cursor::new(bytes);
+        let count = cursor.u32()? as usize;
+        cursor.skip(4)?; // dummy
+
+        let expected = count
+            .checked_mul(ENTRY_SIZE)
+            .ok_or(ParseError::InsufficientLength)?;
+        let remaining = bytes.len() - HEADER_SIZE;
+
+        match remaining.cmp(&expected) {
+            std::cmp::Ordering::Less => return Err(ParseError::InsufficientLength),
+            std::cmp::Ordering::Greater => return Err(ParseError::ExcessiveLength),
+            std::cmp::Ordering::Equal => {}
+        }
+
+        let mut entries = Vec::with_capacity(count);
+        for _ in 0..count {
+            entries.push(ForgetOne {
+                nodeid: cursor.u64()?,
+                nlookup: cursor.u64()?,
+            });
+        }
+
+        Ok(Self::BatchForget(BatchForgetPayload { entries }))
     }
 
     pub(super) fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
