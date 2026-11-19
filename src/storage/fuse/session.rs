@@ -1,6 +1,6 @@
 use super::{Flags, payload};
 use nix::{
-    mount::{MsFlags, mount},
+    mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
 };
 use std::{
@@ -110,6 +110,21 @@ impl<FS: FileSystem> Session<FS> {
         OpenOptions::new().read(true).write(true).open("/dev/fuse")
     }
 
+    fn rollback_mount(&self, fuse_file: File, init_error: io::Error) -> io::Error {
+        drop(fuse_file);
+
+        match umount2(&self.mount_point, MntFlags::MNT_DETACH) {
+            Ok(()) => init_error,
+            Err(unmount_error) => io::Error::new(
+                init_error.kind(),
+                format!(
+                    "{init_error}. Failed to unmount {}: {unmount_error}",
+                    self.mount_point.display(),
+                ),
+            ),
+        }
+    }
+
     fn run(self, state: &Mutex<HandleState>) -> io::Result<()> {
         // 1. Open /dev/fuse, and get the fd
         let mut fuse_file = match Self::open_fuse_file() {
@@ -147,7 +162,7 @@ impl<FS: FileSystem> Session<FS> {
             Ok(size) => size,
             Err(error) => {
                 state.lock().stop_with_error(SessionError::CannotReadFuse);
-                return Err(error);
+                return Err(self.rollback_mount(fuse_file, error));
             }
         };
 
@@ -159,10 +174,8 @@ impl<FS: FileSystem> Session<FS> {
                 state
                     .lock()
                     .stop_with_error(SessionError::CannotParseRequest);
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("{error:?}"),
-                ));
+                let error = io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"));
+                return Err(self.rollback_mount(fuse_file, error));
             }
         };
 
