@@ -481,8 +481,8 @@ pub struct AccessPayload {
 pub struct CreatePayload<'a> {
     flags: u32,
     mode: u32,
-    umask: u32,
-    open_flags: u32,
+    umask: Option<u32>,
+    open_flags: Option<u32>,
     name: &'a [u8],
 }
 
@@ -1395,8 +1395,37 @@ impl<'a> Payload<'a> {
         Ok(Self::Access(AccessPayload { mask }))
     }
 
-    pub(super) fn parse_create(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+    pub(super) fn parse_create(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+        let flags = cursor.u32()?;
+        let mode = cursor.u32()?;
+
+        let (umask, open_flags) = if protocol_version < 12 {
+            (None, None)
+        } else {
+            let umask = cursor.u32()?;
+            let open_flags = if protocol_version < 33 {
+                cursor.skip(4)?; // padding
+                None
+            } else {
+                Some(cursor.u32()?)
+            };
+            (Some(umask), open_flags)
+        };
+
+        let name = cursor.read_until_nul()?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Create(CreatePayload {
+            flags,
+            mode,
+            umask,
+            open_flags,
+            name,
+        }))
     }
 
     pub(super) fn parse_interrupt(bytes: &'a [u8]) -> Result<Self, ParseError> {
