@@ -1568,7 +1568,18 @@ impl<'a> Payload<'a> {
     });
 
     pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
-        todo!()
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let offset = cursor.u64()?;
+        let whence = cursor.u32()?;
+        cursor.skip(4)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
+        }
+
+        Ok(Self::Lseek(LseekPayload { fh, offset, whence }))
     }
 
     pub(super) fn parse_copy_file_range(bytes: &'a [u8]) -> Result<Self, ParseError> {
