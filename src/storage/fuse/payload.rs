@@ -1458,17 +1458,31 @@ impl<'a> Payload<'a> {
         Ok(Self::Destroy)
     }
 
-    parse_payload_with_trailing_names!(parse_ioctl => Ioctl(IoctlPayload) {
-        fixed {
-            fh: u64,
-            flags: u32,
-            cmd: u32,
-            arg: u64,
-            in_size: u32,
-            out_size: u32
+    pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        let mut cursor = Cursor::new(bytes);
+
+        let fh = cursor.u64()?;
+        let flags = cursor.u32()?;
+        let cmd = cursor.u32()?;
+        let arg = cursor.u64()?;
+        let in_size = cursor.u32()?;
+        let out_size = cursor.u32()?;
+        let input = cursor.take(in_size as usize)?;
+
+        if !cursor.finish() {
+            return Err(ParseError::ExcessiveLength);
         }
-        names { input }
-    });
+
+        Ok(Self::Ioctl(IoctlPayload {
+            fh,
+            flags,
+            cmd,
+            arg,
+            in_size,
+            out_size,
+            input,
+        }))
+    }
 
     pub(super) fn parse_poll(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = Cursor::new(bytes);
