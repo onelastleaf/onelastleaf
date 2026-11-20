@@ -1,3 +1,5 @@
+use super::payload;
+
 /// The definition of the corresponding C struct in C:
 /// ```c
 /// struct fuse_in_header {
@@ -34,4 +36,11 @@ pub struct Extensions<'a> {
 pub(super) struct SecurityContext<'a> {
     pub(super) name: &'a [u8],
     pub(super) label: &'a [u8],
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Request<'a> {
+    pub header: Header,
+    pub payload: payload::Payload<'a>,
+    pub extensions: Option<Extensions<'a>>,
 }

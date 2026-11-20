@@ -210,7 +210,7 @@ impl<FS: FileSystem> Session<FS> {
     fn parse_fuse_request<'a>(
         &self,
         request: &'a [u8],
-    ) -> Result<payload::Payload<'a>, ParseError> {
+    ) -> Result<request::Request<'a>, ParseError> {
         let Some((request_header, request_remaining)) = request.split_at_checked(40) else {
             return Err(ParseError::InsufficientLength);
         };
@@ -270,13 +270,29 @@ impl<FS: FileSystem> Session<FS> {
                 return Err(ParseError::UnexpectedExtensions);
             }
 
-            todo!()
+            Ok(request::Request {
+                header,
+                payload,
+                extensions: Some(extensions),
+            })
         } else {
             let payload: payload::Payload =
                 self.parse_fuse_request_payload(header.opcode, request_payload)?;
 
-            let extensions = Self::parse_fuse_request_extensions(request_extensions);
-            todo!()
+            let extensions = if request_extensions.is_empty() {
+                None
+            } else {
+                Some(
+                    Self::parse_fuse_request_extensions(request_extensions)
+                        .ok_or(ParseError::InvalidExtensions)?,
+                )
+            };
+
+            Ok(request::Request {
+                header,
+                payload,
+                extensions,
+            })
         }
     }
 
