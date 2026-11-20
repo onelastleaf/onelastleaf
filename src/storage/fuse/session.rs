@@ -63,7 +63,7 @@ pub enum ParseError {
     RequestBeforeInit,
 
     // Some internal invariants have been violated
-    InvariantViolation,
+    InvalidState,
 
     // Maybe this opcode is used in newer kernel, but we haven't support yet
     UnsupportedOpcode(u32),
@@ -354,7 +354,7 @@ impl<FS: FileSystem> Session<FS> {
 
                 (Some(version), Some(flags)) => (version, flags),
 
-                _ => return Err(ParseError::InvariantViolation),
+                _ => return Err(ParseError::InvalidState),
             };
 
         match opcode {
