@@ -1,4 +1,4 @@
-use super::{Flags, helper, payload};
+use super::{Flags, helper, payload, request};
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
@@ -99,44 +99,6 @@ impl SessionError {
             Self::UnknownError => "The FUSE protocol stack failed to run because it encountered an unexpected error.".into(),
         }
     }
-}
-
-/// The definition of the corresponding C struct in C:
-/// ```c
-/// struct fuse_in_header {
-///     uint32_t len;
-///     uint32_t opcode;
-///     uint64_t unique;
-///     uint64_t nodeid;
-///     uint32_t uid;
-///     uint32_t gid;
-///     uint32_t pid;
-///     uint16_t total_extlen;
-///     uint16_t padding;
-/// };
-/// ```
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Header {
-    pub(super) len: u32,
-    pub(super) opcode: u32,
-    pub(super) unique: u64,
-    pub(super) nodeid: u64,
-    pub(super) uid: u32,
-    pub(super) gid: u32,
-    pub(super) pid: u32,
-    pub(super) total_extlen: u16,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Extensions<'a> {
-    security_contexts: Option<Vec<SecurityContext<'a>>>,
-    supplementary_groups: Option<Vec<u32>>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct SecurityContext<'a> {
-    name: &'a [u8],
-    label: &'a [u8],
 }
 
 impl<FS: FileSystem> Session<FS> {
@@ -318,12 +280,12 @@ impl<FS: FileSystem> Session<FS> {
         }
     }
 
-    fn parse_fuse_request_head(request_head: &[u8]) -> Option<Header> {
+    fn parse_fuse_request_head(request_head: &[u8]) -> Option<request::Header> {
         if request_head.len() != 40 {
             return None;
         };
 
-        Some(Header {
+        Some(request::Header {
             len: u32::from_ne_bytes(request_head[0..4].try_into().unwrap()),
             opcode: u32::from_ne_bytes(request_head[4..8].try_into().unwrap()),
             unique: u64::from_ne_bytes(request_head[8..16].try_into().unwrap()),
@@ -413,12 +375,14 @@ impl<FS: FileSystem> Session<FS> {
         }
     }
 
-    fn parse_fuse_request_extensions<'a>(request_extensions: &'a [u8]) -> Option<Extensions<'a>> {
+    fn parse_fuse_request_extensions<'a>(
+        request_extensions: &'a [u8],
+    ) -> Option<request::Extensions<'a>> {
         const FUSE_MAX_NR_SECCTX: u32 = 31;
         const FUSE_EXT_GROUPS: u32 = 32;
 
         let mut cursor = helper::Cursor::new(request_extensions);
-        let mut extensions = Extensions {
+        let mut extensions = request::Extensions {
             security_contexts: None,
             supplementary_groups: None,
         };
@@ -444,7 +408,7 @@ impl<FS: FileSystem> Session<FS> {
                         extension
                             .skip(entry_len.next_multiple_of(8) - entry_len)
                             .ok()?;
-                        contexts.push(SecurityContext { name, label });
+                        contexts.push(request::SecurityContext { name, label });
                     }
                     extensions.security_contexts = Some(contexts);
                 }
