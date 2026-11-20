@@ -199,7 +199,7 @@ pub trait FileSystem: Send + Sync + 'static {
 
     // Other util function
     fn get_name(&self) -> String {
-        todo!()
+        String::from("fuse_fs")
     }
 }
 
