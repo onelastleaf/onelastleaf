@@ -1,5 +1,4 @@
 mod helper;
-mod payload;
 mod request;
 pub mod session;
 mod transport;

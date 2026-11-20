@@ -1,4 +1,4 @@
-use super::{Flags, helper, payload, request};
+use super::{Flags, helper, request};
 use nix::{
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
@@ -276,7 +276,7 @@ impl<FS: FileSystem> Session<FS> {
                 extensions: Some(extensions),
             })
         } else {
-            let payload: payload::Payload =
+            let payload: request::Payload =
                 self.parse_fuse_request_payload(header.opcode, request_payload)?;
 
             let extensions = if request_extensions.is_empty() {
@@ -317,14 +317,14 @@ impl<FS: FileSystem> Session<FS> {
         &self,
         opcode: u32,
         request_payload: &'a [u8],
-    ) -> Result<payload::Payload<'a>, ParseError> {
+    ) -> Result<request::Payload<'a>, ParseError> {
         let (protocol_version, capabilities) =
             match (self.protocol_version, self.capabilities.as_ref()) {
                 // If protocol_version and capabilities all None, so it must before initialized
                 (None, None) => {
                     // FUSE_INIT is 26
                     if opcode == 26 {
-                        return payload::Payload::parse_init(request_payload);
+                        return request::Payload::parse_init(request_payload);
                     } else {
                         return Err(ParseError::RequestBeforeInit);
                     }
@@ -337,56 +337,56 @@ impl<FS: FileSystem> Session<FS> {
 
         match opcode {
             5 | 17 | 38 if !request_payload.is_empty() => Err(ParseError::ExcessiveLength),
-            1 => payload::Payload::parse_lookup(request_payload),
-            2 => payload::Payload::parse_forget(request_payload),
-            3 => payload::Payload::parse_getattr(request_payload, protocol_version),
-            4 => payload::Payload::parse_setattr(request_payload, protocol_version),
-            5 => payload::Payload::parse_readlink(),
-            6 => payload::Payload::parse_symlink(request_payload),
-            8 => payload::Payload::parse_mknod(request_payload, protocol_version),
-            9 => payload::Payload::parse_mkdir(request_payload, protocol_version),
-            10 => payload::Payload::parse_unlink(request_payload),
-            11 => payload::Payload::parse_rmdir(request_payload),
-            12 => payload::Payload::parse_rename(request_payload),
-            13 => payload::Payload::parse_link(request_payload),
-            14 => payload::Payload::parse_open(request_payload),
-            15 => payload::Payload::parse_read(request_payload, protocol_version),
-            16 => payload::Payload::parse_write(request_payload, protocol_version),
-            17 => payload::Payload::parse_statfs(),
-            18 => payload::Payload::parse_release(request_payload, protocol_version),
-            20 => payload::Payload::parse_fsync(request_payload),
-            21 => payload::Payload::parse_setxattr(request_payload, *capabilities),
-            22 => payload::Payload::parse_getxattr(request_payload),
-            23 => payload::Payload::parse_listxattr(request_payload),
-            24 => payload::Payload::parse_removexattr(request_payload),
-            25 => payload::Payload::parse_flush(request_payload, protocol_version),
-            27 => payload::Payload::parse_opendir(request_payload),
-            28 => payload::Payload::parse_readdir(request_payload, protocol_version),
-            29 => payload::Payload::parse_releasedir(request_payload, protocol_version),
-            30 => payload::Payload::parse_fsyncdir(request_payload),
-            31 => payload::Payload::parse_getlk(request_payload, protocol_version),
-            32 => payload::Payload::parse_setlk(request_payload, protocol_version),
-            33 => payload::Payload::parse_setlkw(request_payload, protocol_version),
-            34 => payload::Payload::parse_access(request_payload),
-            35 => payload::Payload::parse_create(request_payload, protocol_version),
-            36 => payload::Payload::parse_interrupt(request_payload),
-            37 => payload::Payload::parse_bmap(request_payload),
-            38 => payload::Payload::parse_destroy(),
-            39 => payload::Payload::parse_ioctl(request_payload),
-            40 => payload::Payload::parse_poll(request_payload, protocol_version),
-            41 => payload::Payload::parse_notify_reply(request_payload),
-            42 => payload::Payload::parse_batch_forget(request_payload),
-            43 => payload::Payload::parse_fallocate(request_payload),
-            44 => payload::Payload::parse_readdir_plus(request_payload),
-            45 => payload::Payload::parse_rename2(request_payload),
-            46 => payload::Payload::parse_lseek(request_payload),
-            47 => payload::Payload::parse_copy_file_range(request_payload),
-            48 => payload::Payload::parse_setupmapping(request_payload),
-            49 => payload::Payload::parse_removemapping(request_payload),
-            50 => payload::Payload::parse_syncfs(request_payload),
-            51 => payload::Payload::parse_tmpfile(request_payload),
-            52 => payload::Payload::parse_statx(request_payload),
-            53 => payload::Payload::parse_copy_file_range64(request_payload),
+            1 => request::Payload::parse_lookup(request_payload),
+            2 => request::Payload::parse_forget(request_payload),
+            3 => request::Payload::parse_getattr(request_payload, protocol_version),
+            4 => request::Payload::parse_setattr(request_payload, protocol_version),
+            5 => request::Payload::parse_readlink(),
+            6 => request::Payload::parse_symlink(request_payload),
+            8 => request::Payload::parse_mknod(request_payload, protocol_version),
+            9 => request::Payload::parse_mkdir(request_payload, protocol_version),
+            10 => request::Payload::parse_unlink(request_payload),
+            11 => request::Payload::parse_rmdir(request_payload),
+            12 => request::Payload::parse_rename(request_payload),
+            13 => request::Payload::parse_link(request_payload),
+            14 => request::Payload::parse_open(request_payload),
+            15 => request::Payload::parse_read(request_payload, protocol_version),
+            16 => request::Payload::parse_write(request_payload, protocol_version),
+            17 => request::Payload::parse_statfs(),
+            18 => request::Payload::parse_release(request_payload, protocol_version),
+            20 => request::Payload::parse_fsync(request_payload),
+            21 => request::Payload::parse_setxattr(request_payload, *capabilities),
+            22 => request::Payload::parse_getxattr(request_payload),
+            23 => request::Payload::parse_listxattr(request_payload),
+            24 => request::Payload::parse_removexattr(request_payload),
+            25 => request::Payload::parse_flush(request_payload, protocol_version),
+            27 => request::Payload::parse_opendir(request_payload),
+            28 => request::Payload::parse_readdir(request_payload, protocol_version),
+            29 => request::Payload::parse_releasedir(request_payload, protocol_version),
+            30 => request::Payload::parse_fsyncdir(request_payload),
+            31 => request::Payload::parse_getlk(request_payload, protocol_version),
+            32 => request::Payload::parse_setlk(request_payload, protocol_version),
+            33 => request::Payload::parse_setlkw(request_payload, protocol_version),
+            34 => request::Payload::parse_access(request_payload),
+            35 => request::Payload::parse_create(request_payload, protocol_version),
+            36 => request::Payload::parse_interrupt(request_payload),
+            37 => request::Payload::parse_bmap(request_payload),
+            38 => request::Payload::parse_destroy(),
+            39 => request::Payload::parse_ioctl(request_payload),
+            40 => request::Payload::parse_poll(request_payload, protocol_version),
+            41 => request::Payload::parse_notify_reply(request_payload),
+            42 => request::Payload::parse_batch_forget(request_payload),
+            43 => request::Payload::parse_fallocate(request_payload),
+            44 => request::Payload::parse_readdir_plus(request_payload),
+            45 => request::Payload::parse_rename2(request_payload),
+            46 => request::Payload::parse_lseek(request_payload),
+            47 => request::Payload::parse_copy_file_range(request_payload),
+            48 => request::Payload::parse_setupmapping(request_payload),
+            49 => request::Payload::parse_removemapping(request_payload),
+            50 => request::Payload::parse_syncfs(request_payload),
+            51 => request::Payload::parse_tmpfile(request_payload),
+            52 => request::Payload::parse_statx(request_payload),
+            53 => request::Payload::parse_copy_file_range64(request_payload),
             _ => Err(ParseError::UnsupportedOpcode(opcode)),
         }
     }

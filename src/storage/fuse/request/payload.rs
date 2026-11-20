@@ -1,6 +1,6 @@
-use super::Flags;
-use super::helper;
-use super::session::ParseError;
+use super::super::Flags;
+use super::super::helper;
+use super::super::session::ParseError;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload<'a> {
@@ -722,7 +722,7 @@ pub struct StatxPayload {
 /// `impl<'a> Payload<'a>`.
 ///
 /// ```rust,ignore
-/// pub(super) fn parse_lookup(bytes: &'a [u8]) -> Result<Self, ParseError> {
+/// pub fn parse_lookup(bytes: &'a [u8]) -> Result<Self, ParseError> {
 ///     let mut cursor = helper::Cursor::new(bytes);
 ///     let name = cursor.read_until_nul()?;
 ///
@@ -737,7 +737,7 @@ macro_rules! parse_string_only_payload {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident),+ $(,)?
     }) => {
-        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        pub fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
             let mut cursor = helper::Cursor::new(bytes);
 
             $(
@@ -760,7 +760,7 @@ macro_rules! parse_string_only_payload {
 /// `impl<'a> Payload<'a>`.
 ///
 /// ```rust,ignore
-/// pub(super) fn parse_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
+/// pub fn parse_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
 ///     let mut cursor = helper::Cursor::new(bytes);
 ///     let nlookup = cursor.u64()?;
 ///
@@ -775,7 +775,7 @@ macro_rules! parse_struct_only_without_padding_payload  {
     ($function:ident => $variant:ident($payload:ident) {
         $($field:ident: $type:ident),+ $(,)?
     }) => {
-        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        pub fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
             let mut cursor = helper::Cursor::new(bytes);
 
             $(
@@ -800,7 +800,7 @@ macro_rules! parse_struct_only_without_padding_payload  {
 /// `impl<'a> Payload<'a>`.
 ///
 /// ```rust,ignore
-/// pub(super) fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
+/// pub fn parse_rename(bytes: &'a [u8]) -> Result<Self, ParseError> {
 ///     let mut cursor = helper::Cursor::new(bytes);
 ///     let new_dir = cursor.u64()?;
 ///     let old_name = cursor.read_until_nul()?;
@@ -828,7 +828,7 @@ macro_rules! parse_payload_with_trailing_names {
             }
         }
     ) => {
-        pub(super) fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
+        pub fn $function(bytes: &'a [u8]) -> Result<Self, ParseError> {
             let mut cursor = helper::Cursor::new(bytes);
 
             $(
@@ -853,7 +853,7 @@ macro_rules! parse_payload_with_trailing_names {
 }
 
 impl<'a> Payload<'a> {
-    pub(super) fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_init(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let major = cursor.u32()?;
@@ -896,10 +896,7 @@ impl<'a> Payload<'a> {
         nlookup: u64,
     });
 
-    pub(super) fn parse_getattr(
-        bytes: &'a [u8],
-        protocol_version: u32,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_getattr(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let (getattr_flags, fh) = match bytes.len() {
             0 | 16 if protocol_version < 9 => (0, 0),
             16 => {
@@ -916,10 +913,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Getattr(GetattrPayload { getattr_flags, fh }))
     }
 
-    pub(super) fn parse_setattr(
-        bytes: &'a [u8],
-        protocol_version: u32,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_setattr(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         const FATTR_FH: u32 = 1 << 6;
 
         let mut cursor = helper::Cursor::new(bytes);
@@ -970,13 +964,13 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_readlink() -> Result<Self, ParseError> {
+    pub fn parse_readlink() -> Result<Self, ParseError> {
         Ok(Self::Readlink)
     }
 
     parse_string_only_payload!(parse_symlink => Symlink(SymlinkPayload) { name, target });
 
-    pub(super) fn parse_mknod(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_mknod(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let mode = cursor.u32()?;
@@ -1004,7 +998,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_mkdir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_mkdir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let mode = cursor.u32()?;
@@ -1044,7 +1038,7 @@ impl<'a> Payload<'a> {
         open_flags: u32,
     });
 
-    pub(super) fn parse_read(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_read(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         const FUSE_READ_LOCKOWNER: u32 = 1 << 1;
 
         match bytes.len() {
@@ -1082,7 +1076,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_write(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_write(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         const FUSE_WRITE_LOCKOWNER: u32 = 1 << 1;
 
         let mut cursor = helper::Cursor::new(bytes);
@@ -1118,14 +1112,11 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_statfs() -> Result<Self, ParseError> {
+    pub fn parse_statfs() -> Result<Self, ParseError> {
         Ok(Self::Statfs)
     }
 
-    pub(super) fn parse_release(
-        bytes: &'a [u8],
-        protocol_version: u32,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_release(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         const FUSE_RELEASE_FLOCK_UNLOCK: u32 = 1 << 1;
 
         let mut cursor = helper::Cursor::new(bytes);
@@ -1162,7 +1153,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_fsync(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
@@ -1176,7 +1167,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Fsync(FsyncPayload { fh, fsync_flags }))
     }
 
-    pub(super) fn parse_setxattr(bytes: &'a [u8], capabilities: Flags) -> Result<Self, ParseError> {
+    pub fn parse_setxattr(bytes: &'a [u8], capabilities: Flags) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         let flags = cursor.u32()?;
@@ -1204,7 +1195,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_getxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         cursor.skip(4)?; // padding
@@ -1217,7 +1208,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Getxattr(GetxattrPayload { size, name }))
     }
 
-    pub(super) fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_listxattr(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         let size = cursor.u32()?;
         cursor.skip(4)?; // padding
@@ -1230,7 +1221,7 @@ impl<'a> Payload<'a> {
 
     parse_string_only_payload!(parse_removexattr => Removexattr(RemovexattrPayload) { name });
 
-    pub(super) fn parse_flush(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_flush(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         let fh = cursor.u64()?;
         cursor.skip(8)?; // flush_flags / unused, then padding
@@ -1253,44 +1244,38 @@ impl<'a> Payload<'a> {
         open_flags: u32,
     });
 
-    pub(super) fn parse_readdir(
-        bytes: &'a [u8],
-        protocol_version: u32,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_readdir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let Self::Read(payload) = Self::parse_read(bytes, protocol_version)? else {
             unreachable!("parse_read must return Self::Read");
         };
         Ok(Self::Readdir(payload))
     }
 
-    pub(super) fn parse_releasedir(
-        bytes: &'a [u8],
-        protocol_version: u32,
-    ) -> Result<Self, ParseError> {
+    pub fn parse_releasedir(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let Self::Release(payload) = Self::parse_release(bytes, protocol_version)? else {
             unreachable!("parse_release must return Self::Release");
         };
         Ok(Self::Releasedir(payload))
     }
 
-    pub(super) fn parse_fsyncdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_fsyncdir(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let Self::Fsync(payload) = Self::parse_fsync(bytes)? else {
             unreachable!("parse_fsync must return Self::Fsync");
         };
         Ok(Self::Fsyncdir(payload))
     }
 
-    pub(super) fn parse_getlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_getlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let payload = Self::parse_lk_payload(bytes, protocol_version)?;
         Ok(Self::Getlk(payload))
     }
 
-    pub(super) fn parse_setlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_setlk(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let payload = Self::parse_lk_payload(bytes, protocol_version)?;
         Ok(Self::Setlk(payload))
     }
 
-    pub(super) fn parse_setlkw(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_setlkw(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let payload = Self::parse_lk_payload(bytes, protocol_version)?;
         Ok(Self::Setlkw(payload))
     }
@@ -1327,7 +1312,7 @@ impl<'a> Payload<'a> {
         })
     }
 
-    pub(super) fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_access(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let mask = cursor.u32()?;
@@ -1340,7 +1325,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Access(AccessPayload { mask }))
     }
 
-    pub(super) fn parse_create(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_create(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         let flags = cursor.u32()?;
         let mode = cursor.u32()?;
@@ -1377,7 +1362,7 @@ impl<'a> Payload<'a> {
         unique: u64,
     });
 
-    pub(super) fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_bmap(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let block = cursor.u64()?;
@@ -1391,11 +1376,11 @@ impl<'a> Payload<'a> {
         Ok(Self::Bmap(BmapPayload { block, blocksize }))
     }
 
-    pub(super) fn parse_destroy() -> Result<Self, ParseError> {
+    pub fn parse_destroy() -> Result<Self, ParseError> {
         Ok(Self::Destroy)
     }
 
-    pub(super) fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_ioctl(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
@@ -1421,7 +1406,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_poll(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
+    pub fn parse_poll(bytes: &'a [u8], protocol_version: u32) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
@@ -1447,7 +1432,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_notify_reply(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         cursor.skip(8)?; // dummy1
@@ -1464,7 +1449,7 @@ impl<'a> Payload<'a> {
         Ok(Self::NotifyReply(NotifyReplyPayload { offset, data }))
     }
 
-    pub(super) fn parse_batch_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_batch_forget(bytes: &'a [u8]) -> Result<Self, ParseError> {
         const HEADER_SIZE: usize = 8;
         const ENTRY_SIZE: usize = 16;
 
@@ -1494,7 +1479,7 @@ impl<'a> Payload<'a> {
         Ok(Self::BatchForget(BatchForgetPayload { entries }))
     }
 
-    pub(super) fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_fallocate(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
@@ -1515,7 +1500,7 @@ impl<'a> Payload<'a> {
         }))
     }
 
-    pub(super) fn parse_readdir_plus(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_readdir_plus(bytes: &'a [u8]) -> Result<Self, ParseError> {
         const READDIRPLUS_MIN_MINOR: u32 = 21;
 
         let Self::Read(payload) = Self::parse_read(bytes, READDIRPLUS_MIN_MINOR)? else {
@@ -1530,7 +1515,7 @@ impl<'a> Payload<'a> {
         names { old_name, new_name }
     });
 
-    pub(super) fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_lseek(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let fh = cursor.u64()?;
@@ -1563,7 +1548,7 @@ impl<'a> Payload<'a> {
         moffset: u64,
     });
 
-    pub(super) fn parse_removemapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_removemapping(bytes: &'a [u8]) -> Result<Self, ParseError> {
         const HEADER_SIZE: usize = 4;
         const ENTRY_SIZE: usize = 16;
 
@@ -1592,7 +1577,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Removemapping(RemovemappingPayload { entries }))
     }
 
-    pub(super) fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_syncfs(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
         cursor.skip(8)?; // padding
 
@@ -1603,7 +1588,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Syncfs)
     }
 
-    pub(super) fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_tmpfile(bytes: &'a [u8]) -> Result<Self, ParseError> {
         const TMPFILE_MIN_MINOR: u32 = 37;
 
         let Self::Create(payload) = Self::parse_create(bytes, TMPFILE_MIN_MINOR)? else {
@@ -1613,7 +1598,7 @@ impl<'a> Payload<'a> {
         Ok(Self::Tmpfile(payload))
     }
 
-    pub(super) fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
+    pub fn parse_statx(bytes: &'a [u8]) -> Result<Self, ParseError> {
         let mut cursor = helper::Cursor::new(bytes);
 
         let getattr_flags = cursor.u32()?;
