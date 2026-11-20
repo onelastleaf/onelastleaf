@@ -167,9 +167,9 @@ impl<FS: FileSystem> Session<FS> {
         );
 
         if let Err(error) = mount(
-            Some("ollfs"),     // Filesystem name
-            &self.mount_point, // Mount point
-            Some("fuse"),      // Filesystem type
+            Some(self.filesystem.get_name().as_str()), // Filesystem name
+            &self.mount_point,                         // Mount point
+            Some("fuse"),                              // Filesystem type
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
             Some(mount_options.as_str()), // FUSE mount options
         ) {

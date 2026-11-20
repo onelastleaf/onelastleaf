@@ -196,6 +196,11 @@ pub trait FileSystem: Send + Sync + 'static {
     fn poll() {
         todo!()
     }
+
+    // Other util function
+    fn get_name(&self) -> String {
+        todo!()
+    }
 }
 
 bitflags::bitflags! {
