@@ -71,6 +71,9 @@ pub enum ParseError {
     // This opcode is totally unexpected, it shouldn't appear in such place
     UnexpectedOpcode(u32),
 
+    // There is never this LockType: not F_RDLCK, F_WRLCK or F_UNLCK
+    InvalidLockType(u32),
+
     // We just can't decode the extensions bytes in request
     InvalidExtensions,
 

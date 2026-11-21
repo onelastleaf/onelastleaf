@@ -1,6 +1,6 @@
-use super::super::Flags;
 use super::super::helper;
 use super::super::session::ParseError;
+use super::super::{FileLock, Flags, LockType};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Payload<'a> {
@@ -1267,10 +1267,10 @@ impl<'a> Payload<'a> {
         let fh = cursor.u64()?;
         let owner = cursor.u64()?;
 
-        let lk = super::super::FileLock {
+        let lk = FileLock {
             start: cursor.u64()?,
             end: cursor.u64()?,
-            lock_type: cursor.u32()?,
+            lock_type: LockType::try_from(cursor.u32()?)?,
             pid: cursor.u32()?,
         };
 

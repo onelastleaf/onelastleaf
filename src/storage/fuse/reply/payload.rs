@@ -162,8 +162,8 @@ pub struct DirEntry {
 ///     struct fuse_file_lock lk;
 /// };
 /// ```
-/// Used by `FUSE_GETLK`. Return the conflicting lock, or set `lock_type` to `F_UNLCK` when there is
-/// no conflict.
+/// Used by `FUSE_GETLK`. Return the conflicting lock, or use
+/// [`LockType::Unlock`](super::super::LockType::Unlock) when there is no conflict.
 pub struct LockResult {
     pub lock: super::super::FileLock,
 }

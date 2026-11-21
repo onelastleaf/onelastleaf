@@ -5,7 +5,7 @@ pub mod session;
 mod transport;
 
 use bitflags;
-use nix::errno::Errno;
+use nix::{errno::Errno, libc};
 
 use reply::Reply;
 
@@ -569,8 +569,30 @@ impl Default for InitConfig {
 pub struct FileLock {
     pub start: u64,
     pub end: u64,
-    pub lock_type: u32,
+    pub lock_type: LockType,
     pub pid: u32,
+}
+
+/// The lock type carried in the `type` field of `fuse_file_lock`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
+pub enum LockType {
+    Read = libc::F_RDLCK as u32,
+    Write = libc::F_WRLCK as u32,
+    Unlock = libc::F_UNLCK as u32,
+}
+
+impl TryFrom<u32> for LockType {
+    type Error = session::ParseError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value as libc::c_int {
+            libc::F_RDLCK => Ok(Self::Read),
+            libc::F_WRLCK => Ok(Self::Write),
+            libc::F_UNLCK => Ok(Self::Unlock),
+            _ => Err(session::ParseError::InvalidLockType(value)),
+        }
+    }
 }
 
 bitflags::bitflags! {
