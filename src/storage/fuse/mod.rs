@@ -4,13 +4,16 @@ pub mod session;
 mod transport;
 
 use bitflags;
+use nix::errno::Errno;
+
+const SUPPORTED_PROTOCOL_MINOR: u32 = 46;
 
 // Because `Arc<Filesystem>` must be `Sync`, `Filesystem` must be `Send + Sync`.
 pub trait FileSystem: Send + Sync + 'static {
     /// Initialize filesystem.
     /// Corresponds to FUSE opcode 26.
-    fn init() {
-        todo!()
+    fn init(&self) -> Result<InitConfig, Errno> {
+        Ok(InitConfig::default())
     }
 
     /// Clean up filesystem.
@@ -284,6 +287,24 @@ pub struct InitConfig {
     // However, if you enable `PASSTHROUGH` or `PASSTHROUGH_V2` while setting `max_stack_depth` to
     // 0, that is an error, and we return `Errno::EINVAL`.
     pub max_stack_depth: u32,
+}
+
+impl Default for InitConfig {
+    fn default() -> Self {
+        Self {
+            protocol_version: SUPPORTED_PROTOCOL_MINOR,
+            flags: Flags::empty(),
+            max_readahead: 0,
+            time_gran: 1,
+            max_write: 0,
+            max_pages: 0,
+            max_background: 0,
+            congestion_threshold: 0,
+            request_timeout: 0,
+            map_alignment: 0,
+            max_stack_depth: 0,
+        }
+    }
 }
 
 bitflags::bitflags! {
