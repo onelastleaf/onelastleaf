@@ -289,6 +289,18 @@ pub struct InitConfig {
     pub max_stack_depth: u32,
 }
 
+impl InitConfig {
+    pub fn new(protocol_version: u32, flags: Flags, max_readahead: u32, time_gran: u32) -> Self {
+        Self {
+            protocol_version,
+            flags,
+            max_readahead,
+            time_gran,
+            ..Self::default()
+        }
+    }
+}
+
 impl Default for InitConfig {
     fn default() -> Self {
         Self {
