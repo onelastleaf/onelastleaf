@@ -1,3 +1,5 @@
+use nix::libc;
+
 pub struct EntryResult {
     pub nodeid: u64,
     pub generation: u64,
@@ -226,9 +228,33 @@ pub struct IoctlIovec {
 ///     uint32_t revents, padding;
 /// };
 /// ```
-/// `revents` is the mask of reported events, such as `POLLIN`. Encode `padding` as zero.
+/// Encode `revents` as the bitmask returned by [`PollEvents::bits`] and set `padding` to zero.
 pub struct PollResult {
-    pub revents: u32,
+    pub revents: PollEvents,
+}
+
+bitflags::bitflags! {
+    /// Linux `POLL*` event bits that can be returned by `FUSE_POLL`.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub struct PollEvents: u32 {
+        const POLLIN = libc::POLLIN as u32;
+        const POLLPRI = libc::POLLPRI as u32;
+        const POLLOUT = libc::POLLOUT as u32;
+        const POLLERR = libc::POLLERR as u32;
+        const POLLHUP = libc::POLLHUP as u32;
+        const POLLNVAL = libc::POLLNVAL as u32;
+        const POLLRDNORM = libc::POLLRDNORM as u32;
+        const POLLRDBAND = libc::POLLRDBAND as u32;
+        const POLLWRNORM = libc::POLLWRNORM as u32;
+        const POLLWRBAND = libc::POLLWRBAND as u32;
+        // Linux defines POLLMSG in the UAPI with a different bit on SPARC.
+        const POLLMSG = if cfg!(any(target_arch = "sparc", target_arch = "sparc64")) {
+            0x0200
+        } else {
+            0x0400
+        };
+        const POLLRDHUP = libc::POLLRDHUP as u32;
+    }
 }
 
 pub struct ReaddirPlusResult {
