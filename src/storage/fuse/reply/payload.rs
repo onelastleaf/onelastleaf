@@ -66,14 +66,41 @@ pub struct ReadResult {
     pub data: Vec<u8>,
 }
 
+/// The corresponding C structure is `fuse_write_out`.
+/// ```c
+/// struct fuse_write_out {
+///     uint32_t size;
+///     uint32_t padding;
+/// };
+/// ```
+/// Used by `FUSE_WRITE` and `FUSE_COPY_FILE_RANGE`. `size` is the number of bytes written or
+/// copied. Encode `padding` as zero.
 pub struct WriteResult {
     pub size: u32,
 }
 
+/// The corresponding C structure is `fuse_statfs_out`.
+/// ```c
+/// struct fuse_statfs_out {
+///     struct fuse_kstatfs st;
+/// };
+/// ```
+/// Used by `FUSE_STATFS`. The wire field `st` is represented by `stats`. Protocol versions before
+/// 7.4 use the first 48 bytes of the 80-byte payload.
 pub struct StatfsResult {
     pub stats: KernelStatfs,
 }
 
+/// The corresponding C structure is `fuse_kstatfs`.
+/// ```c
+/// struct fuse_kstatfs {
+///     uint64_t blocks, bfree, bavail, files, ffree;
+///     uint32_t bsize, namelen, frsize, padding;
+///     uint32_t spare[6];
+/// };
+/// ```
+/// `free_blocks` counts all free blocks. `available_blocks` counts those available to unprivileged
+/// users. Encode `padding` and `spare` as zero.
 pub struct KernelStatfs {
     pub blocks: u64,
     pub free_blocks: u64,
@@ -85,8 +112,23 @@ pub struct KernelStatfs {
     pub fragment_size: u32,
 }
 
+/// Used by `FUSE_GETXATTR` and `FUSE_LISTXATTR`.
+/// When the request's `size` is zero, encode `Size` as `fuse_getxattr_out`.
+/// ```c
+/// struct fuse_getxattr_out {
+///     uint32_t size;
+///     uint32_t padding;
+/// };
+/// ```
+/// Encode `padding` as zero.
+/// If request size > 0, send `Data` as the reply payload if it fits in the requested buffer.
+/// Reply with `ERANGE` if the buffer is too small.
 pub enum XattrResult {
+    /// The minimum buffer size, in bytes, needed to read the full result.
+    /// For `FUSE_LISTXATTR`, count one terminating NUL byte per name.
     Size(u32),
+    /// Raw value bytes for `FUSE_GETXATTR` or concatenated NUL-terminated attribute names for
+    /// `FUSE_LISTXATTR`.
     Data(Vec<u8>),
 }
 
