@@ -18,184 +18,184 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Clean up filesystem.
     /// Corresponds to FUSE opcode 38.
-    fn destroy() {
+    fn destroy(&self) {
         todo!()
     }
 
     /// Clean up filesystem.
     /// Corresponds to FUSE opcode 1.
-    fn lookup() {
+    fn lookup(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 2.
-    fn forget() {
+    fn forget(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 3.
-    fn getattr() {
+    fn getattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 4.
-    fn setattr() {
+    fn setattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 5.
-    fn readlink() {
+    fn readlink(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 6.
-    fn symlink() {
+    fn symlink(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 8.
-    fn mknod() {
+    fn mknod(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 9.
-    fn mkdir() {
+    fn mkdir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 10.
-    fn unlink() {
+    fn unlink(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 11.
-    fn rmdir() {
+    fn rmdir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 12.
-    fn rename() {
+    fn rename(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 13.
-    fn link() {
+    fn link(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 14.
-    fn open() {
+    fn open(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 15.
-    fn read() {
+    fn read(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 16.
-    fn write() {
+    fn write(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 17.
-    fn statfs() {
+    fn statfs(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 18.
-    fn release() {
+    fn release(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 20.
-    fn fsync() {
+    fn fsync(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 21.
-    fn setxattr() {
+    fn setxattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 22.
-    fn getxattr() {
+    fn getxattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 23.
-    fn listxattr() {
+    fn listxattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 24.
-    fn removexattr() {
+    fn removexattr(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 25.
-    fn flush() {
+    fn flush(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 27. (26 is INIT)
-    fn opendir() {
+    fn opendir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 28.
-    fn readdir() {
+    fn readdir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 29.
-    fn releasedir() {
+    fn releasedir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 30.
-    fn fsyncdir() {
+    fn fsyncdir(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 31.
-    fn getlk() {
+    fn getlk(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 32.
-    fn setlk() {
+    fn setlk(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 33.
-    fn setlkw() {
+    fn setlkw(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 34.
-    fn access() {
+    fn access(&self) {
         todo!()
     }
 
     /// Atomically create and open a regular file.
     /// Corresponds to FUSE opcode 35.
-    fn create() {
+    fn create(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 36.
-    fn interrupt() {
+    fn interrupt(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 39.
-    fn ioctl() {
+    fn ioctl(&self) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 40.
-    fn poll() {
+    fn poll(&self) {
         todo!()
     }
 
