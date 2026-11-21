@@ -33,9 +33,39 @@ pub struct Attr {
     pub flags: u32,
 }
 
-pub struct ReadlinkResult;
-pub struct OpenResult;
-pub struct ReadResult;
+/// The reply payload of `FUSE_READLINK` is `target` as a byte sequence.
+/// The kernel adds the terminating NUL after it receives the payload.
+/// You needn't add `\0` at end.
+pub struct ReadlinkResult {
+    pub target: Vec<u8>,
+}
+
+/// The corresponding C structure is `fuse_open_out`.
+/// ```c
+/// struct fuse_open_out {
+///     uint64_t fh;
+///     uint32_t open_flags;
+///     int32_t backing_id;
+///     uint64_t backing_id_64;
+/// };
+/// ```
+/// Used by `FUSE_OPEN` and `FUSE_OPENDIR`.
+/// Protocol versions before 7.47 use only the first 16 bytes. Before 7.40, the `backing_id` slot is
+/// padding.
+pub struct OpenResult {
+    pub fh: u64,
+    pub open_flags: u32,
+    pub backing_id: i32,
+    pub backing_id_64: u64,
+}
+
+/// The reply payload of `FUSE_READ` is `data` exactly as read, up to the `size` requested in
+/// `fuse_read_in`. The reply header carries the total length.
+/// You needn't add `\0` at end, as well.
+pub struct ReadResult {
+    pub data: Vec<u8>,
+}
+
 pub struct WriteResult;
 pub struct StatfsResult;
 pub struct XattrResult;
