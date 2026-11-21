@@ -1,11 +1,13 @@
 mod helper;
-mod reply;
-mod request;
+pub mod reply;
+pub mod request;
 pub mod session;
 mod transport;
 
 use bitflags;
 use nix::errno::Errno;
+
+use reply::Reply;
 
 const SUPPORTED_PROTOCOL_MINOR: u32 = 46;
 
@@ -316,6 +318,24 @@ impl Default for InitConfig {
             max_stack_depth: 0,
         }
     }
+}
+
+/// The definition of the corresponding C struct in C:
+/// ```c
+/// struct fuse_file_lock {
+///     uint64_t start;
+///     uint64_t end;
+///     uint32_t type;
+///     uint32_t pid;
+/// };
+/// ```
+/// The C field `type` is represented by `lock_type`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FileLock {
+    pub start: u64,
+    pub end: u64,
+    pub lock_type: u32,
+    pub pid: u32,
 }
 
 bitflags::bitflags! {

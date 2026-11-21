@@ -1267,7 +1267,7 @@ impl<'a> Payload<'a> {
         let fh = cursor.u64()?;
         let owner = cursor.u64()?;
 
-        let lk = FileLock {
+        let lk = super::super::FileLock {
             start: cursor.u64()?,
             end: cursor.u64()?,
             lock_type: cursor.u32()?,

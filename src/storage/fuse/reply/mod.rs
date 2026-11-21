@@ -1,4 +1,7 @@
 mod header;
 mod payload;
 
-pub(super) use header::Header;
+pub use header::Header;
+pub use payload::*;
+
+pub struct Reply<T>(std::marker::PhantomData<T>);
