@@ -319,6 +319,122 @@ pub trait FileSystem: Send + Sync + 'static {
         todo!()
     }
 
+    /// Corresponds to FUSE opcode 41.
+    fn notify_reply(&self, header: request::Header, payload: request::NotifyReplyPayload<'_>) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 42.
+    fn batch_forget(&self, header: request::Header, payload: request::BatchForgetPayload) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 43.
+    fn fallocate(
+        &self,
+        header: request::Header,
+        payload: request::FallocatePayload,
+        reply: Reply<()>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 44.
+    fn readdir_plus(
+        &self,
+        header: request::Header,
+        payload: request::ReadPayload,
+        reply: Reply<reply::ReaddirPlusResult>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 45.
+    fn rename2(
+        &self,
+        header: request::Header,
+        payload: request::Rename2Payload<'_>,
+        reply: Reply<()>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 46.
+    fn lseek(
+        &self,
+        header: request::Header,
+        payload: request::LseekPayload,
+        reply: Reply<reply::LseekResult>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 47.
+    fn copy_file_range(
+        &self,
+        header: request::Header,
+        payload: request::CopyFileRangePayload,
+        reply: Reply<reply::WriteResult>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 48.
+    fn setupmapping(
+        &self,
+        header: request::Header,
+        payload: request::SetupmappingPayload,
+        reply: Reply<()>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 49.
+    fn removemapping(
+        &self,
+        header: request::Header,
+        payload: request::RemovemappingPayload,
+        reply: Reply<()>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 50.
+    fn syncfs(&self, header: request::Header, reply: Reply<()>) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 51.
+    fn tmpfile(
+        &self,
+        header: request::Header,
+        payload: request::CreatePayload<'_>,
+        extensions: Option<request::Extensions<'_>>,
+        reply: Reply<reply::CreateResult>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 52.
+    fn statx(
+        &self,
+        header: request::Header,
+        payload: request::StatxPayload,
+        reply: Reply<reply::StatxResult>,
+    ) {
+        todo!()
+    }
+
+    /// Corresponds to FUSE opcode 53.
+    fn copy_file_range64(
+        &self,
+        header: request::Header,
+        payload: request::CopyFileRangePayload,
+        reply: Reply<reply::CopyFileRangeResult>,
+    ) {
+        todo!()
+    }
+
     // Other util function
     fn get_name(&self) -> String {
         String::from("fuse_fs")

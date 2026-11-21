@@ -15,6 +15,9 @@ pub struct CreateResult;
 pub struct BmapResult;
 pub struct IoctlResult;
 pub struct PollResult;
+pub struct ReaddirPlusResult {
+    pub data: Vec<DirEntryPlus>,
+}
 pub struct DirEntryPlus;
 pub struct LseekResult;
 pub struct StatxResult;
