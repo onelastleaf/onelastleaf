@@ -202,6 +202,90 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InitConfig {
+    // Version of protocol, only minor, the major is 7
+    pub protocol_version: u32,
+
+    // The INIT flags, contains `flag` and `flag2` in C.
+    // Implemented by Rust crate `bitflags`. It can store a capabilities set by a u64.
+    pub flags: Flags,
+
+    // Config the readahead window per file, For example, if set to 128 KB, up to 128 KB may be
+    // read ahead from the file each time, even if that part has not been read yet.
+    pub max_readahead: u32,
+
+    // You know, per file need save timestamp.What granularity do you store timestamps at? 100 ns?
+    // 1 μs? 100 μs? Or 1 ms? You need tell kernel this.
+    pub time_gran: u32,
+
+    // A single write request can carry at most `max_write` bytes of data. If set to 0, the default
+    // is used, which is 4 KiB (4096 bytes).
+    pub max_write: u32,
+
+    // A single write request can carry at most the number of bytes corresponding to `max_pages`,
+    // which depends on the operating system. For example, assuming a Linux memory page is 4 KiB,
+    // if `max_pages = 32`, the maximum amount of data in a single request is 32 * 4 KiB = 128 KiB.
+    //
+    // Of course, `max_write` also sets a maximum amount of data, and that limit applies as well;
+    // the effective limit is the minimum of the two.
+    //
+    // This takes effect if and only if `FUSE_MAX_PAGES` is enabled.
+    //
+    // If `FUSE_MAX_PAGES` is not enabled, the limit still exists; the default value is 0, which is
+    // actually set to 32 pages.
+    //
+    // If `FUSE_MAX_PAGES` is enabled and the value is 0, the Linux kernel treats it as 1 page.
+    //
+    // In this Rust implementation, if you set it to a meaningful value `value != 0` but do not
+    // enable `MAX_PAGES` in the flags, the value will be ignored. It will be set to 0.
+    //
+    // If you enable `MAX_PAGES` in the flags and still set the value to `0`, we interpret
+    // that as you wanting to use the kernel's default behavior. We won't stop you; this value will
+    // be passed to the kernel exactly as is.
+    pub max_pages: u16,
+
+    // The maximum number of background requests that can be in progress at once.
+    // Once this limit is reached, new background requests wait until one finishes.
+    //
+    // A value of 0 means the kernel default (12).
+    pub max_background: u16,
+
+    // The number of in-progress background requests at which the kernel treats the filesystem as
+    // congested. It then skips asynchronous readahead and delays non-synchronous writeback.
+    //
+    // A value of 0 means the kernel default (9). This default stays 9 even if `max_background`
+    // changes.
+    pub congestion_threshold: u16,
+
+    // How long (in seconds) a request may take to complete. If a request times out, the kernel may
+    // abort the FUSE connection.
+    //
+    // Used when `REQUEST_TIMEOUT` is enabled. A value of 0 lets the kernel choose the timeout.
+    pub request_timeout: u16,
+
+    // The alignment (as a power of 2) for file and memory offsets in DAX mapping requests. For
+    // example, 12 means 4 KiB alignment, and 0 means byte alignment.
+    //
+    // This is often needed for DAX mappings between a host and a guest, whose page sizes may
+    // differ. For example, the host may use 4 KiB pages while the guest uses 1 KiB pages. A
+    // write may then fall on a guest-side boundary, such as 1024 bytes, that is not aligned
+    // on the host, which can cause problems.
+    //
+    // Used when `MAP_ALIGNMENT` is enabled.
+    pub map_alignment: u16,
+
+    // The maximum stacking depth for passthrough, counting this FUSE mount as one layer. A value
+    // of 1 allows backing files on filesystems with no stacking. A value of 2 also allows backing
+    // files on filesystems with one layer of stacking, such as overlayfs.
+    //
+    // Used when `PASSTHROUGH` or `PASSTHROUGH_V2` is enabled. If it's 0, passthrough is off.
+    //
+    // However, if you enable `PASSTHROUGH` or `PASSTHROUGH_V2` while setting `max_stack_depth` to
+    // 0, that is an error, and we return `Errno::EINVAL`.
+    pub max_stack_depth: u32,
+}
+
 bitflags::bitflags! {
     /// FUSE capabilities negotiated with the Linux kernel during `INIT`.
     ///
