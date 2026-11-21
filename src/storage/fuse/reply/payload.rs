@@ -108,7 +108,7 @@ pub struct KernelStatfs {
     pub files: u64,
     pub free_inodes: u64,
     pub block_size: u32,
-    pub max_name_length: u32,
+    pub namelen: u32,
     pub fragment_size: u32,
 }
 
@@ -132,18 +132,109 @@ pub enum XattrResult {
     Data(Vec<u8>),
 }
 
+/// The reply payload of `FUSE_READDIR` is a sequence of `fuse_dirent` records. The encoded entries
+/// must fit within the `size` requested in `fuse_read_in`.
 pub struct ReaddirResult {
-    pub data: Vec<DirEntry>,
+    pub entries: Vec<DirEntry>,
 }
-pub struct DirEntry;
-pub struct LockResult;
-pub struct CreateResult;
-pub struct BmapResult;
-pub struct IoctlResult;
-pub struct PollResult;
+
+/// The corresponding C structure is `fuse_dirent`.
+/// ```c
+/// struct fuse_dirent {
+///     uint64_t ino, off;
+///     uint32_t namelen, type;
+///     char name[];
+/// };
+/// ```
+/// The wire field `off` holds the position to resume reading after this entry. Encode `namelen`
+/// from `name.len()`, then write the name bytes and pad the record with zeroes to an 8-byte
+/// boundary. `file_type` is a `DT_*` value.
+pub struct DirEntry {
+    pub ino: u64,
+    pub offset: u64,
+    pub file_type: u32,
+    pub name: Vec<u8>,
+}
+
+/// The corresponding C structure is `fuse_lk_out`.
+/// ```c
+/// struct fuse_lk_out {
+///     struct fuse_file_lock lk;
+/// };
+/// ```
+/// Used by `FUSE_GETLK`. Return the conflicting lock, or set `lock_type` to `F_UNLCK` when there is
+/// no conflict.
+pub struct LockResult {
+    pub lock: super::super::FileLock,
+}
+
+/// Used by `FUSE_CREATE` and `FUSE_TMPFILE`. Encode `entry` as `fuse_entry_out`, followed
+/// immediately by `open` as `fuse_open_out`. Use the negotiated protocol version for both parts.
+pub struct CreateResult {
+    pub entry: EntryResult,
+    pub open: OpenResult,
+}
+
+/// The corresponding C structure is `fuse_bmap_out`.
+/// ```c
+/// struct fuse_bmap_out {
+///     uint64_t block;
+/// };
+/// ```
+/// `block` is the mapped device block number in units of the requested block size.
+pub struct BmapResult {
+    pub block: u64,
+}
+
+/// The reply payload of `FUSE_IOCTL` starts with `fuse_ioctl_out`.
+/// ```c
+/// struct fuse_ioctl_out {
+///     int32_t result;
+///     uint32_t flags, in_iovs, out_iovs;
+/// };
+/// ```
+pub enum IoctlResult {
+    /// Return the ioctl result and up to `out_size` bytes of output. Encode zero flags and counts,
+    /// then append `data` after the header.
+    Complete { result: i32, data: Vec<u8> },
+    /// Ask the kernel to retry with the specified caller buffers. Set `FUSE_IOCTL_RETRY`, derive
+    /// the counts from the vectors, and append the input descriptors followed by the output
+    /// descriptors. The request must have `FUSE_IOCTL_UNRESTRICTED`, and the two lists together may
+    /// contain up to `FUSE_IOCTL_MAX_IOV` entries.
+    Retry {
+        input_iovecs: Vec<IoctlIovec>,
+        output_iovecs: Vec<IoctlIovec>,
+    },
+}
+
+/// The corresponding C structure is `fuse_ioctl_iovec`.
+/// ```c
+/// struct fuse_ioctl_iovec {
+///     uint64_t base, len;
+/// };
+/// ```
+/// `base` is an address in the calling process, and `len` is the buffer's length in bytes. This
+/// fixed-width layout applies from FUSE 7.16 onward.
+pub struct IoctlIovec {
+    pub base: u64,
+    pub len: u64,
+}
+
+/// The corresponding C structure is `fuse_poll_out`.
+/// ```c
+/// struct fuse_poll_out {
+///     uint32_t revents, padding;
+/// };
+/// ```
+/// `revents` is the mask of reported events, such as `POLLIN`. Encode `padding` as zero.
+pub struct PollResult {
+    pub revents: u32,
+}
+
 pub struct ReaddirPlusResult {
-    pub data: Vec<DirEntryPlus>,
+    pub entries: Vec<DirEntryPlus>,
 }
+
 pub struct DirEntryPlus;
 pub struct LseekResult;
 pub struct StatxResult;

@@ -393,9 +393,9 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                         &self.subtables[target_subtable_index].buckets[target_bucket_index];
 
                     // First, the bucket being traversed must not be the "current bucket", since
-                    // each KV has H candidate positions, and this position may naturally be one of them.
-                    // Second, we also don't want the current bucket to have already been searched
-                    // earlier, so we need to prune it.
+                    // each KV has H candidate positions, and this position may naturally be one of
+                    // them. Second, we also don't want the current bucket to have already been
+                    // searched earlier, so we need to prune it.
                     if target_bucket_pos == current_bucketpos
                         || bfs_queue[..tail]
                             .iter()
@@ -406,8 +406,8 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
                     }
 
                     // Build a BfsNode first so it can be used either way: if an empty slot is found
-                    // in this bucket, construct `found` and return; otherwise, push the BfsNode into
-                    // `bfs_queue`
+                    // in this bucket, construct `found` and return; otherwise, push the BfsNode
+                    // into `bfs_queue`
                     let next = BfsNode {
                         bucket: target_bucket_pos,
                         parent_node: Some(head),
@@ -486,7 +486,8 @@ impl<K: ToBytes + PartialEq + Copy, V, const B: usize, const S: usize, const H: 
         loop {
             match (current_relocation.source_node, current_relocation.source) {
                 (Some(next_bfsnode_index), Some(source)) => {
-                    // Maybe the parent bfsnode is `None`? If happened, it must covered before relocation.
+                    // Maybe the parent bfsnode is `None`? If happened, it must covered before
+                    // relocation.
                     let Some(next_bfsnode) = bfs_queue[next_bfsnode_index] else {
                         fail!(InsertError::FalseEmpty(new_slot.key, new_slot.value));
                     };

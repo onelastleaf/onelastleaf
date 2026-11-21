@@ -262,7 +262,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::LockPayload,
-        reply: Reply<FileLock>,
+        reply: Reply<reply::LockResult>,
     ) {
         todo!()
     }
