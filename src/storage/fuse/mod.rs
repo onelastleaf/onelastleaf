@@ -25,178 +25,297 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Clean up filesystem.
     /// Corresponds to FUSE opcode 1.
-    fn lookup(&self) {
+    fn lookup(
+        &self,
+        header: request::Header,
+        payload: request::LookupPayload<'_>,
+        reply: Reply<reply::EntryResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 2.
-    fn forget(&self) {
+    fn forget(&self, header: request::Header, payload: request::ForgetPayload) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 3.
-    fn getattr(&self) {
+    fn getattr(
+        &self,
+        header: request::Header,
+        payload: request::GetattrPayload,
+        reply: Reply<reply::AttrResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 4.
-    fn setattr(&self) {
+    fn setattr(
+        &self,
+        header: request::Header,
+        payload: request::SetattrPayload,
+        reply: Reply<reply::AttrResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 5.
-    fn readlink(&self) {
+    fn readlink(&self, header: request::Header, reply: Reply<reply::ReadlinkResult>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 6.
-    fn symlink(&self) {
+    fn symlink(
+        &self,
+        header: request::Header,
+        payload: request::SymlinkPayload<'_>,
+        extensions: Option<request::Extensions<'_>>,
+        reply: Reply<reply::EntryResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 8.
-    fn mknod(&self) {
+    fn mknod(
+        &self,
+        header: request::Header,
+        payload: request::MknodPayload<'_>,
+        extensions: Option<request::Extensions<'_>>,
+        reply: Reply<reply::EntryResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 9.
-    fn mkdir(&self) {
+    fn mkdir(
+        &self,
+        header: request::Header,
+        payload: request::MkdirPayload<'_>,
+        extensions: Option<request::Extensions<'_>>,
+        reply: Reply<reply::EntryResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 10.
-    fn unlink(&self) {
+    fn unlink(
+        &self,
+        header: request::Header,
+        payload: request::UnlinkPayload<'_>,
+        reply: Reply<()>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 11.
-    fn rmdir(&self) {
+    fn rmdir(&self, header: request::Header, payload: request::RmdirPayload<'_>, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 12.
-    fn rename(&self) {
+    fn rename(
+        &self,
+        header: request::Header,
+        payload: request::RenamePayload<'_>,
+        reply: Reply<()>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 13.
-    fn link(&self) {
+    fn link(
+        &self,
+        header: request::Header,
+        payload: request::LinkPayload<'_>,
+        reply: Reply<reply::EntryResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 14.
-    fn open(&self) {
+    fn open(
+        &self,
+        header: request::Header,
+        payload: request::OpenPayload,
+        reply: Reply<reply::OpenResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 15.
-    fn read(&self) {
+    fn read(
+        &self,
+        header: request::Header,
+        payload: request::ReadPayload,
+        reply: Reply<reply::ReadResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 16.
-    fn write(&self) {
+    fn write(
+        &self,
+        header: request::Header,
+        payload: request::WritePayload<'_>,
+        reply: Reply<reply::WriteResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 17.
-    fn statfs(&self) {
+    fn statfs(&self, header: request::Header, reply: Reply<reply::StatfsResult>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 18.
-    fn release(&self) {
+    fn release(&self, header: request::Header, payload: request::ReleasePayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 20.
-    fn fsync(&self) {
+    fn fsync(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 21.
-    fn setxattr(&self) {
+    fn setxattr(
+        &self,
+        header: request::Header,
+        payload: request::SetxattrPayload<'_>,
+        reply: Reply<()>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 22.
-    fn getxattr(&self) {
+    fn getxattr(
+        &self,
+        header: request::Header,
+        payload: request::GetxattrPayload<'_>,
+        reply: Reply<reply::XattrResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 23.
-    fn listxattr(&self) {
+    fn listxattr(
+        &self,
+        header: request::Header,
+        payload: request::ListxattrPayload,
+        reply: Reply<reply::XattrResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 24.
-    fn removexattr(&self) {
+    fn removexattr(
+        &self,
+        header: request::Header,
+        payload: request::RemovexattrPayload<'_>,
+        reply: Reply<()>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 25.
-    fn flush(&self) {
+    fn flush(&self, header: request::Header, payload: request::FlushPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 27. (26 is INIT)
-    fn opendir(&self) {
+    fn opendir(
+        &self,
+        header: request::Header,
+        payload: request::OpenPayload,
+        reply: Reply<reply::OpenResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 28.
-    fn readdir(&self) {
+    fn readdir(
+        &self,
+        header: request::Header,
+        payload: request::ReadPayload,
+        reply: Reply<reply::ReaddirResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 29.
-    fn releasedir(&self) {
+    fn releasedir(
+        &self,
+        header: request::Header,
+        payload: request::ReleasePayload,
+        reply: Reply<()>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 30.
-    fn fsyncdir(&self) {
+    fn fsyncdir(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 31.
-    fn getlk(&self) {
+    fn getlk(
+        &self,
+        header: request::Header,
+        payload: request::LockPayload,
+        reply: Reply<FileLock>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 32.
-    fn setlk(&self) {
+    fn setlk(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 33.
-    fn setlkw(&self) {
+    fn setlkw(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 34.
-    fn access(&self) {
+    fn access(&self, header: request::Header, payload: request::AccessPayload, reply: Reply<()>) {
         todo!()
     }
 
     /// Atomically create and open a regular file.
     /// Corresponds to FUSE opcode 35.
-    fn create(&self) {
+    fn create(
+        &self,
+        header: request::Header,
+        payload: request::CreatePayload<'_>,
+        extensions: Option<request::Extensions<'_>>,
+        reply: Reply<reply::CreateResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 36.
-    fn interrupt(&self) {
+    fn interrupt(&self, header: request::Header, payload: request::InterruptPayload) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 39.
-    fn ioctl(&self) {
+    fn ioctl(
+        &self,
+        header: request::Header,
+        payload: request::IoctlPayload<'_>,
+        reply: Reply<reply::IoctlResult>,
+    ) {
         todo!()
     }
 
     /// Corresponds to FUSE opcode 40.
-    fn poll(&self) {
+    fn poll(
+        &self,
+        header: request::Header,
+        payload: request::PollPayload,
+        reply: Reply<reply::PollResult>,
+    ) {
         todo!()
     }
 
