@@ -66,9 +66,30 @@ pub struct ReadResult {
     pub data: Vec<u8>,
 }
 
-pub struct WriteResult;
-pub struct StatfsResult;
-pub struct XattrResult;
+pub struct WriteResult {
+    pub size: u32,
+}
+
+pub struct StatfsResult {
+    pub stats: KernelStatfs,
+}
+
+pub struct KernelStatfs {
+    pub blocks: u64,
+    pub free_blocks: u64,
+    pub available_blocks: u64,
+    pub files: u64,
+    pub free_inodes: u64,
+    pub block_size: u32,
+    pub max_name_length: u32,
+    pub fragment_size: u32,
+}
+
+pub enum XattrResult {
+    Size(u32),
+    Data(Vec<u8>),
+}
+
 pub struct ReaddirResult {
     pub data: Vec<DirEntry>,
 }
