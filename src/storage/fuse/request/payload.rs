@@ -79,7 +79,7 @@ pub struct InitPayload {
 /// `name` + "\0"
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LookupPayload<'a> {
-    name: &'a [u8],
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -90,7 +90,7 @@ pub struct LookupPayload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForgetPayload {
-    nlookup: u64,
+    pub nlookup: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -103,8 +103,8 @@ pub struct ForgetPayload {
 /// ````
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetattrPayload {
-    getattr_flags: u32,
-    fh: u64,
+    pub getattr_flags: u32,
+    pub fh: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -130,19 +130,19 @@ pub struct GetattrPayload {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetattrPayload {
-    valid: u32,
-    fh: u64,
-    size: u64,
-    lock_owner: u64,
-    atime: u64,
-    mtime: u64,
-    ctime: u64,
-    atimensec: u32,
-    mtimensec: u32,
-    ctimensec: u32,
-    mode: u32,
-    uid: u32,
-    gid: u32,
+    pub valid: u32,
+    pub fh: u64,
+    pub size: u64,
+    pub lock_owner: u64,
+    pub atime: u64,
+    pub mtime: u64,
+    pub ctime: u64,
+    pub atimensec: u32,
+    pub mtimensec: u32,
+    pub ctimensec: u32,
+    pub mode: u32,
+    pub uid: u32,
+    pub gid: u32,
 }
 
 // `FUSE_READLINK` haven't request payload
@@ -151,8 +151,8 @@ pub struct SetattrPayload {
 /// When negotiated, security-context and supplementary-group extensions follow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SymlinkPayload<'a> {
-    name: &'a [u8],
-    target: &'a [u8],
+    pub name: &'a [u8],
+    pub target: &'a [u8],
 }
 
 /// ```c
@@ -167,10 +167,10 @@ pub struct SymlinkPayload<'a> {
 /// When negotiated, security-context and supplementary-group extensions follow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MknodPayload<'a> {
-    mode: u32,
-    rdev: u32,
-    umask: Option<u32>,
-    name: &'a [u8],
+    pub mode: u32,
+    pub rdev: u32,
+    pub umask: Option<u32>,
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -184,23 +184,23 @@ pub struct MknodPayload<'a> {
 /// When negotiated, security-context and supplementary-group extensions follow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MkdirPayload<'a> {
-    mode: u32,
-    umask: Option<u32>,
-    name: &'a [u8],
+    pub mode: u32,
+    pub umask: Option<u32>,
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding underlying C structure:
 /// `name` + "\0"
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnlinkPayload<'a> {
-    name: &'a [u8],
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding underlying C structure:
 /// `name` + "\0"
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RmdirPayload<'a> {
-    name: &'a [u8],
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -212,9 +212,9 @@ pub struct RmdirPayload<'a> {
 /// then, add `old_name` + \0 + `new_name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RenamePayload<'a> {
-    new_dir: u64,
-    old_name: &'a [u8],
-    new_name: &'a [u8],
+    pub new_dir: u64,
+    pub old_name: &'a [u8],
+    pub new_name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -226,8 +226,8 @@ pub struct RenamePayload<'a> {
 /// then, add `name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkPayload<'a> {
-    old_nodeid: u64,
-    name: &'a [u8],
+    pub old_nodeid: u64,
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -240,8 +240,8 @@ pub struct LinkPayload<'a> {
 /// Used by `FUSE_OPEN` and `FUSE_OPENDIR`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OpenPayload {
-    flags: u32,
-    open_flags: u32,
+    pub flags: u32,
+    pub open_flags: u32,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -259,12 +259,12 @@ pub struct OpenPayload {
 /// Used by `FUSE_READ`, `FUSE_READDIR`, and `FUSE_READDIRPLUS`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReadPayload {
-    fh: u64,
-    offset: u64,
-    size: u32,
-    read_flags: u32,
-    lock_owner: Option<u64>,
-    flags: Option<u32>,
+    pub fh: u64,
+    pub offset: u64,
+    pub size: u32,
+    pub read_flags: u32,
+    pub lock_owner: Option<u64>,
+    pub flags: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -282,12 +282,12 @@ pub struct ReadPayload {
 /// then, add `data` (`size` bytes, without an added trailing \0)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WritePayload<'a> {
-    fh: u64,
-    offset: u64,
-    write_flags: u32,
-    lock_owner: Option<u64>,
-    flags: Option<u32>,
-    data: &'a [u8], // use `data.len()` instead of `size`
+    pub fh: u64,
+    pub offset: u64,
+    pub write_flags: u32,
+    pub lock_owner: Option<u64>,
+    pub flags: Option<u32>,
+    pub data: &'a [u8], // use `data.len()` instead of `size`
 }
 
 /// The definition of the corresponding C struct in C:
@@ -302,10 +302,10 @@ pub struct WritePayload<'a> {
 /// Used by `FUSE_RELEASE` and `FUSE_RELEASEDIR`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ReleasePayload {
-    fh: u64,
-    flags: Option<u32>,
-    release_flags: Option<u32>,
-    lock_owner: Option<u64>,
+    pub fh: u64,
+    pub flags: Option<u32>,
+    pub release_flags: Option<u32>,
+    pub lock_owner: Option<u64>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -319,8 +319,8 @@ pub struct ReleasePayload {
 /// Used by `FUSE_FSYNC` and `FUSE_FSYNCDIR`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FsyncPayload {
-    fh: u64,
-    fsync_flags: u32,
+    pub fh: u64,
+    pub fsync_flags: u32,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -336,10 +336,10 @@ pub struct FsyncPayload {
 /// Without `FUSE_SETXATTR_EXT`, only the first two fields of the C struct are sent.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetxattrPayload<'a> {
-    flags: u32,
-    setxattr_flags: Option<u32>,
-    name: &'a [u8],
-    value: &'a [u8], // use `value.len()` instead of `size`
+    pub flags: u32,
+    pub setxattr_flags: Option<u32>,
+    pub name: &'a [u8],
+    pub value: &'a [u8], // use `value.len()` instead of `size`
 }
 
 /// The definition of the corresponding C struct in C:
@@ -353,8 +353,8 @@ pub struct SetxattrPayload<'a> {
 /// For `FUSE_LISTXATTR`, only the C struct is sent, without a name.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct GetxattrPayload<'a> {
-    size: u32,
-    name: &'a [u8],
+    pub size: u32,
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -367,14 +367,14 @@ pub struct GetxattrPayload<'a> {
 /// It reuse `fuse_getxattr_in`, but without a trailing `name` + `\0`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ListxattrPayload {
-    size: u32,
+    pub size: u32,
 }
 
 /// The definition of the corresponding underlying C structure:
 /// `name` + "\0"
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovexattrPayload<'a> {
-    name: &'a [u8],
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -388,8 +388,8 @@ pub struct RemovexattrPayload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FlushPayload {
-    fh: u64,
-    lock_owner: Option<u64>,
+    pub fh: u64,
+    pub lock_owner: Option<u64>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -405,28 +405,10 @@ pub struct FlushPayload {
 /// Used by `FUSE_GETLK`, `FUSE_SETLK`, and `FUSE_SETLKW`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LockPayload {
-    fh: u64,
-    owner: u64,
-    lk: FileLock,
-    lk_flags: Option<u32>,
-}
-
-/// The definition of the corresponding C struct in C:
-/// ```c
-/// struct fuse_file_lock {
-///     uint64_t start;
-///     uint64_t end;
-///     uint32_t type;
-///     uint32_t pid;
-/// };
-/// ```
-/// The C field `type` is represented by `lock_type`.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct FileLock {
-    start: u64,
-    end: u64,
-    lock_type: u32,
-    pid: u32,
+    pub fh: u64,
+    pub owner: u64,
+    pub lk: super::super::FileLock,
+    pub lk_flags: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -438,7 +420,7 @@ pub struct FileLock {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AccessPayload {
-    mask: u32,
+    pub mask: u32,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -455,11 +437,11 @@ pub struct AccessPayload {
 /// When negotiated, security-context and supplementary-group extensions follow.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CreatePayload<'a> {
-    flags: u32,
-    mode: u32,
-    umask: Option<u32>,
-    open_flags: Option<u32>,
-    name: &'a [u8],
+    pub flags: u32,
+    pub mode: u32,
+    pub umask: Option<u32>,
+    pub open_flags: Option<u32>,
+    pub name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -470,7 +452,7 @@ pub struct CreatePayload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterruptPayload {
-    unique: u64,
+    pub unique: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -501,13 +483,13 @@ pub struct BmapPayload {
 /// then, add `input` (`in_size` bytes, without an added trailing \0)
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IoctlPayload<'a> {
-    fh: u64,
-    flags: u32,
-    cmd: u32,
-    arg: u64,
-    in_size: u32,
-    out_size: u32,
-    input: &'a [u8],
+    pub fh: u64,
+    pub flags: u32,
+    pub cmd: u32,
+    pub arg: u64,
+    pub in_size: u32,
+    pub out_size: u32,
+    pub input: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -521,10 +503,10 @@ pub struct IoctlPayload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PollPayload {
-    fh: u64,
-    kh: u64,
-    flags: u32,
-    events: Option<u32>,
+    pub fh: u64,
+    pub kh: u64,
+    pub flags: u32,
+    pub events: Option<u32>,
 }
 
 /// The definition of the corresponding C struct in C:

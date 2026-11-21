@@ -13,13 +13,13 @@
 /// };
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(in super::super) struct Header {
-    pub(in super::super) len: u32,
-    pub(in super::super) opcode: u32,
-    pub(in super::super) unique: u64,
-    pub(in super::super) nodeid: u64,
-    pub(in super::super) uid: u32,
-    pub(in super::super) gid: u32,
-    pub(in super::super) pid: u32,
-    pub(in super::super) total_extlen: u16,
+pub struct Header {
+    pub len: u32,
+    pub opcode: u32,
+    pub unique: u64,
+    pub nodeid: u64,
+    pub uid: u32,
+    pub gid: u32,
+    pub pid: u32,
+    pub total_extlen: u16,
 }

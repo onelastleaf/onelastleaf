@@ -2,9 +2,9 @@ mod extensions;
 mod header;
 mod payload;
 
-pub(super) use extensions::{Extensions, SecurityContext};
-pub(super) use header::Header;
-pub(super) use payload::*;
+pub use extensions::{Extensions, SecurityContext};
+pub use header::Header;
+pub use payload::*;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Request<'a> {
