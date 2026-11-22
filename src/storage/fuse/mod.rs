@@ -47,21 +47,30 @@ pub trait FileSystem: Send + Sync + 'static {
     );
 
     /// Corresponds to FUSE opcode 4.
+    ///
+    /// The default replies with `ENOSYS`. The attribute change fails, and Linux can still send
+    /// later `FUSE_SETATTR` requests.
     fn setattr(
         &self,
         header: request::Header,
         payload: request::SetattrPayload,
         reply: Reply<reply::AttrResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 5.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns the error from this symlink target lookup
+    /// and can still send later `FUSE_READLINK` requests.
     fn readlink(&self, header: request::Header, reply: Reply<reply::ReadlinkResult>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 6.
+    ///
+    /// The default replies with `ENOSYS`. The symlink creation fails, and Linux can still send
+    /// later `FUSE_SYMLINK` requests.
     fn symlink(
         &self,
         header: request::Header,
@@ -69,10 +78,13 @@ pub trait FileSystem: Send + Sync + 'static {
         extensions: Option<request::Extensions<'_>>,
         reply: Reply<reply::EntryResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 8.
+    ///
+    /// The default replies with `ENOSYS`. The node creation fails, and Linux can still send later
+    /// `FUSE_MKNOD` requests.
     fn mknod(
         &self,
         header: request::Header,
@@ -80,10 +92,13 @@ pub trait FileSystem: Send + Sync + 'static {
         extensions: Option<request::Extensions<'_>>,
         reply: Reply<reply::EntryResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 9.
+    ///
+    /// The default replies with `ENOSYS`. The directory creation fails, and Linux can still send
+    /// later `FUSE_MKDIR` requests.
     fn mkdir(
         &self,
         header: request::Header,
@@ -91,42 +106,55 @@ pub trait FileSystem: Send + Sync + 'static {
         extensions: Option<request::Extensions<'_>>,
         reply: Reply<reply::EntryResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 10.
+    ///
+    /// The default replies with `ENOSYS`. This unlink fails, and Linux can still send later
+    /// `FUSE_UNLINK` requests.
     fn unlink(
         &self,
         header: request::Header,
         payload: request::UnlinkPayload<'_>,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 11.
+    ///
+    /// The default replies with `ENOSYS`. The directory removal fails, and Linux can still send
+    /// later `FUSE_RMDIR` requests.
     fn rmdir(&self, header: request::Header, payload: request::RmdirPayload<'_>, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 12.
+    ///
+    /// The default replies with `ENOSYS`. This rename without flags fails, and Linux can still send
+    /// later `FUSE_RENAME` requests.
     fn rename(
         &self,
         header: request::Header,
         payload: request::RenamePayload<'_>,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 13.
+    ///
+    /// The default replies with `ENOSYS`. Upstream Linux 6.14 returns that error for the current
+    /// request. Starting with Linux 6.15, the kernel returns `EPERM` and disables `FUSE_LINK` on
+    /// the connection.
     fn link(
         &self,
         header: request::Header,
         payload: request::LinkPayload<'_>,
         reply: Reply<reply::EntryResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 14.
@@ -140,28 +168,38 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 15.
+    ///
+    /// The default replies with `ENOSYS`. This read request fails, and Linux can still send later
+    /// `FUSE_READ` requests.
     fn read(
         &self,
         header: request::Header,
         payload: request::ReadPayload,
         reply: Reply<reply::ReadResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 16.
+    ///
+    /// The default replies with `ENOSYS`. This write request fails, and Linux can still send later
+    /// `FUSE_WRITE` requests. With asynchronous writeback, the error may surface on a later
+    /// `fsync`.
     fn write(
         &self,
         header: request::Header,
         payload: request::WritePayload<'_>,
         reply: Reply<reply::WriteResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 17.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns the error from this statistics query and
+    /// can still send later `FUSE_STATFS` requests.
     fn statfs(&self, header: request::Header, reply: Reply<reply::StatfsResult>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 18.
@@ -230,13 +268,16 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 28.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns the error from this directory read and can
+    /// still send later `FUSE_READDIR` requests.
     fn readdir(
         &self,
         header: request::Header,
         payload: request::ReadPayload,
         reply: Reply<reply::ReaddirResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 29.
@@ -327,13 +368,16 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 43.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns `EOPNOTSUPP` and disables `FUSE_FALLOCATE`
+    /// on the connection for every file and mode.
     fn fallocate(
         &self,
         header: request::Header,
         payload: request::FallocatePayload,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 44.
@@ -347,13 +391,16 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 45.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns `EINVAL` and disables `FUSE_RENAME2` on the
+    /// connection. Renames without flags can still use `FUSE_RENAME`.
     fn rename2(
         &self,
         header: request::Header,
         payload: request::Rename2Payload<'_>,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 46.
@@ -402,6 +449,9 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 51.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns `EOPNOTSUPP` and disables further
+    /// `FUSE_TMPFILE` requests on the connection.
     fn tmpfile(
         &self,
         header: request::Header,
@@ -409,7 +459,7 @@ pub trait FileSystem: Send + Sync + 'static {
         extensions: Option<request::Extensions<'_>>,
         reply: Reply<reply::CreateResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 52.
