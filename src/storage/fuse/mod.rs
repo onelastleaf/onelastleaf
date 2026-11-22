@@ -237,8 +237,13 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 20.
+    ///
+    /// The default replies with `EOPNOTSUPP` to report that file synchronization is unsupported.
+    /// Linux propagates this error. An `ENOSYS` reply would be treated as success and disable later
+    /// `FUSE_FSYNC` requests on the connection.
+    #[expect(unused_variables)]
     fn fsync(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
     /// Corresponds to FUSE opcode 21.
@@ -298,8 +303,12 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 25.
+    ///
+    /// The default acknowledges the current `FUSE_FLUSH` request with an empty success reply. Linux
+    /// can still send flush requests for later closes.
+    #[expect(unused_variables)]
     fn flush(&self, header: request::Header, payload: request::FlushPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Ok(()));
     }
 
     /// Corresponds to FUSE opcode 27. (26 is INIT)
@@ -349,8 +358,13 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 30.
+    ///
+    /// The default replies with `EOPNOTSUPP` to report that directory synchronization is
+    /// unsupported. Linux propagates this error. An `ENOSYS` reply would be treated as success and
+    /// disable later `FUSE_FSYNCDIR` requests on the connection.
+    #[expect(unused_variables)]
     fn fsyncdir(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
     /// Corresponds to FUSE opcode 31.
@@ -388,8 +402,12 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 34.
+    ///
+    /// The default replies with `EACCES`. Linux fails the current permission check and can still
+    /// send `FUSE_ACCESS` requests for later checks.
+    #[expect(unused_variables)]
     fn access(&self, header: request::Header, payload: request::AccessPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::EACCES));
     }
 
     /// Atomically create and open a regular file.
@@ -415,23 +433,30 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 39.
+    ///
+    /// The default replies with `ENOTTY`. Linux reports the requested ioctl command as unsupported.
+    #[expect(unused_variables)]
     fn ioctl(
         &self,
         header: request::Header,
         payload: request::IoctlPayload<'_>,
         reply: Reply<reply::IoctlResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOTTY));
     }
 
     /// Corresponds to FUSE opcode 40.
+    ///
+    /// The default replies with `ENOSYS`. Linux uses its default readable and writable event mask
+    /// for this poll and skips further `FUSE_POLL` requests on the connection.
+    #[expect(unused_variables)]
     fn poll(
         &self,
         header: request::Header,
         payload: request::PollPayload,
         reply: Reply<reply::PollResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 41.
@@ -557,8 +582,16 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 50.
+    ///
+    /// The default replies with `EOPNOTSUPP` to report that filesystem-wide synchronization is
+    /// unsupported. Linux propagates this error. An `ENOSYS` reply would be treated as success and
+    /// disable later `FUSE_SYNCFS` requests on the connection.
+    ///
+    /// The default `INIT` configuration leaves `FUSE_HAS_SYNCFS` unset for kernels that negotiate
+    /// it.
+    #[expect(unused_variables)]
     fn syncfs(&self, header: request::Header, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
     /// Corresponds to FUSE opcode 51.
