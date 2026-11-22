@@ -97,8 +97,20 @@ pub struct ReadlinkResult {
 /// };
 /// ```
 /// Used by `FUSE_OPEN` and `FUSE_OPENDIR`.
-/// Protocol versions before 7.47 use only the first 16 bytes. Before 7.40, the `backing_id` slot is
-/// padding.
+///
+/// The protocol version controls the reply layout.
+///
+/// - Before 7.40, the `backing_id` slot is padding. Write zero there.
+/// - Before 7.47, write only the first 16 bytes.
+///
+/// The flags negotiated in `FUSE_INIT` determine which ID to use.
+///
+/// - For a normal open, set both IDs to zero.
+/// - For passthrough V1 (`FUSE_PASSTHROUGH`), fill `backing_id` and set the other ID to zero.
+/// - For passthrough V2 (`FUSE_PASSTHROUGH_V2`), fill `backing_id_64` and set the other ID to zero.
+///
+/// Use V2 if both passthrough flags were negotiated.
+/// Set `FOPEN_PASSTHROUGH` in `open_flags` for an open that uses a backing ID.
 pub struct OpenResult {
     pub fh: u64,
     pub open_flags: u32,
