@@ -257,13 +257,114 @@ bitflags::bitflags! {
     }
 }
 
+/// The reply payload of `FUSE_READDIRPLUS` is a sequence of `fuse_direntplus` records. The encoded
+/// entries must fit within the `size` requested in `fuse_read_in`.
 pub struct ReaddirPlusResult {
     pub entries: Vec<DirEntryPlus>,
 }
 
-pub struct DirEntryPlus;
-pub struct LseekResult;
-pub struct StatxResult;
-pub struct Statx;
-pub struct SxTime;
-pub struct CopyFileRangeResult;
+/// The corresponding C structure is `fuse_direntplus`.
+/// ```c
+/// struct fuse_direntplus {
+///     struct fuse_entry_out entry_out;
+///     struct fuse_dirent dirent;
+/// };
+/// ```
+/// Encode `entry` as `fuse_entry_out` followed by `dirent` as `fuse_dirent`. Pad each complete
+/// record with zeroes to an 8-byte boundary.
+pub struct DirEntryPlus {
+    pub entry: EntryResult,
+    pub dirent: DirEntry,
+}
+
+/// The corresponding C structure is `fuse_lseek_out`.
+/// ```c
+/// struct fuse_lseek_out {
+///     uint64_t offset;
+/// };
+/// ```
+/// `offset` is the resulting file position in bytes from the start of the file.
+pub struct LseekResult {
+    pub offset: u64,
+}
+
+/// The corresponding C structure is `fuse_statx_out`.
+/// ```c
+/// struct fuse_statx_out {
+///     uint64_t attr_valid;
+///     uint32_t attr_valid_nsec, flags;
+///     uint64_t spare[2];
+///     struct fuse_statx stat;
+/// };
+/// ```
+/// `attr_valid` and `attr_valid_nsec` are the seconds and nanoseconds of the attribute cache
+/// lifetime. Encode `spare` as zero.
+pub struct StatxResult {
+    pub attr_valid: u64,
+    pub attr_valid_nsec: u32,
+    pub flags: u32,
+    pub stat: Statx,
+}
+
+/// The corresponding C structure is `fuse_statx`.
+/// ```c
+/// struct fuse_statx {
+///     uint32_t mask, blksize;
+///     uint64_t attributes;
+///     uint32_t nlink, uid, gid;
+///     uint16_t mode, __spare0[1];
+///     uint64_t ino, size, blocks, attributes_mask;
+///     struct fuse_sx_time atime, btime, ctime, mtime;
+///     uint32_t rdev_major, rdev_minor, dev_major, dev_minor;
+///     uint64_t __spare2[14];
+/// };
+/// ```
+/// `mask` indicates which fields are valid. `attributes_mask` indicates which bits in `attributes`
+/// are supported. Encode `__spare0` and `__spare2` as zero.
+pub struct Statx {
+    pub mask: u32,
+    pub blksize: u32,
+    pub attributes: u64,
+    pub nlink: u32,
+    pub uid: u32,
+    pub gid: u32,
+    pub mode: u16,
+    pub ino: u64,
+    pub size: u64,
+    pub blocks: u64,
+    pub attributes_mask: u64,
+    pub atime: SxTime,
+    pub btime: SxTime,
+    pub ctime: SxTime,
+    pub mtime: SxTime,
+    pub rdev_major: u32,
+    pub rdev_minor: u32,
+    pub dev_major: u32,
+    pub dev_minor: u32,
+}
+
+/// The corresponding C structure is `fuse_sx_time`.
+/// ```c
+/// struct fuse_sx_time {
+///     int64_t tv_sec;
+///     uint32_t tv_nsec;
+///     int32_t __reserved;
+/// };
+/// ```
+/// `tv_sec` is the signed number of seconds from the Unix epoch, and `tv_nsec` is the nanosecond
+/// offset within that second. Encode `__reserved` as zero.
+pub struct SxTime {
+    pub tv_sec: i64,
+    pub tv_nsec: u32,
+}
+
+/// The corresponding C structure is `fuse_copy_file_range_out`.
+/// ```c
+/// struct fuse_copy_file_range_out {
+///     uint64_t bytes_copied;
+/// };
+/// ```
+/// Used by `FUSE_COPY_FILE_RANGE_64`. The original `FUSE_COPY_FILE_RANGE` uses [`WriteResult`].
+pub struct CopyFileRangeResult {
+    pub bytes_copied: u64,
+}
