@@ -50,6 +50,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. The attribute change fails, and Linux can still send
     /// later `FUSE_SETATTR` requests.
+    #[expect(unused_variables)]
     fn setattr(
         &self,
         header: request::Header,
@@ -63,6 +64,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns the error from this symlink target lookup
     /// and can still send later `FUSE_READLINK` requests.
+    #[expect(unused_variables)]
     fn readlink(&self, header: request::Header, reply: Reply<reply::ReadlinkResult>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -71,6 +73,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. The symlink creation fails, and Linux can still send
     /// later `FUSE_SYMLINK` requests.
+    #[expect(unused_variables)]
     fn symlink(
         &self,
         header: request::Header,
@@ -85,6 +88,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. The node creation fails, and Linux can still send later
     /// `FUSE_MKNOD` requests.
+    #[expect(unused_variables)]
     fn mknod(
         &self,
         header: request::Header,
@@ -99,6 +103,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. The directory creation fails, and Linux can still send
     /// later `FUSE_MKDIR` requests.
+    #[expect(unused_variables)]
     fn mkdir(
         &self,
         header: request::Header,
@@ -113,6 +118,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. This unlink fails, and Linux can still send later
     /// `FUSE_UNLINK` requests.
+    #[expect(unused_variables)]
     fn unlink(
         &self,
         header: request::Header,
@@ -126,6 +132,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. The directory removal fails, and Linux can still send
     /// later `FUSE_RMDIR` requests.
+    #[expect(unused_variables)]
     fn rmdir(&self, header: request::Header, payload: request::RmdirPayload<'_>, reply: Reply<()>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -134,6 +141,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. This rename without flags fails, and Linux can still send
     /// later `FUSE_RENAME` requests.
+    #[expect(unused_variables)]
     fn rename(
         &self,
         header: request::Header,
@@ -148,6 +156,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. Upstream Linux 6.14 returns that error for the current
     /// request. Starting with Linux 6.15, the kernel returns `EPERM` and disables `FUSE_LINK` on
     /// the connection.
+    #[expect(unused_variables)]
     fn link(
         &self,
         header: request::Header,
@@ -171,6 +180,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. This read request fails, and Linux can still send later
     /// `FUSE_READ` requests.
+    #[expect(unused_variables)]
     fn read(
         &self,
         header: request::Header,
@@ -185,6 +195,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. This write request fails, and Linux can still send later
     /// `FUSE_WRITE` requests. With asynchronous writeback, the error may surface on a later
     /// `fsync`.
+    #[expect(unused_variables)]
     fn write(
         &self,
         header: request::Header,
@@ -198,6 +209,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns the error from this statistics query and
     /// can still send later `FUSE_STATFS` requests.
+    #[expect(unused_variables)]
     fn statfs(&self, header: request::Header, reply: Reply<reply::StatfsResult>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -271,6 +283,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns the error from this directory read and can
     /// still send later `FUSE_READDIR` requests.
+    #[expect(unused_variables)]
     fn readdir(
         &self,
         header: request::Header,
@@ -371,6 +384,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns `EOPNOTSUPP` and disables `FUSE_FALLOCATE`
     /// on the connection for every file and mode.
+    #[expect(unused_variables)]
     fn fallocate(
         &self,
         header: request::Header,
@@ -394,6 +408,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns `EINVAL` and disables `FUSE_RENAME2` on the
     /// connection. Renames without flags can still use `FUSE_RENAME`.
+    #[expect(unused_variables)]
     fn rename2(
         &self,
         header: request::Header,
@@ -452,6 +467,7 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default replies with `ENOSYS`. Linux returns `EOPNOTSUPP` and disables further
     /// `FUSE_TMPFILE` requests on the connection.
+    #[expect(unused_variables)]
     fn tmpfile(
         &self,
         header: request::Header,
