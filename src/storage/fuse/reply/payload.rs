@@ -347,7 +347,6 @@ pub struct LseekResult {
 pub struct StatxResult {
     pub attr_valid: u64,
     pub attr_valid_nsec: u32,
-    pub flags: u32,
     pub stat: Statx,
 }
 
