@@ -1,5 +1,25 @@
 use nix::libc;
 
+/// The corresponding C structure is `fuse_entry_out`.
+/// ```c
+/// struct fuse_entry_out {
+///     uint64_t nodeid, generation, entry_valid, attr_valid;
+///     uint32_t entry_valid_nsec, attr_valid_nsec;
+///     struct fuse_attr attr;
+/// };
+/// ```
+/// Used by `FUSE_LOOKUP`, `FUSE_MKNOD`, `FUSE_MKDIR`, `FUSE_SYMLINK`, and `FUSE_LINK`. It also
+/// appears in [`CreateResult`] and [`DirEntryPlus`].
+///
+/// The kernel addresses the inode by `nodeid`. Use a new `generation` each time you reuse a node
+/// ID for a different inode.
+///
+/// `entry_valid` and `entry_valid_nsec` give the cache lifetime of the name lookup in seconds and
+/// nanoseconds. For a `FUSE_LOOKUP` miss, return `nodeid` set to zero to let the kernel cache the
+/// missing name for that duration. `attr_valid` and `attr_valid_nsec` give the separate cache
+/// lifetime of `attr` in the same units.
+///
+/// Protocol versions before 7.9 use only the first 120 bytes of `fuse_entry_out`.
 pub struct EntryResult {
     pub nodeid: u64,
     pub generation: u64,
@@ -10,12 +30,37 @@ pub struct EntryResult {
     pub attr: Attr,
 }
 
+/// The corresponding C structure is `fuse_attr_out`.
+/// ```c
+/// struct fuse_attr_out {
+///     uint64_t attr_valid;
+///     uint32_t attr_valid_nsec, dummy;
+///     struct fuse_attr attr;
+/// };
+/// ```
+/// Used by `FUSE_GETATTR` and `FUSE_SETATTR`. `attr_valid` and `attr_valid_nsec` give the kernel's
+/// cache lifetime for `attr` in seconds and nanoseconds. Encode `dummy` as zero.
+///
+/// Protocol versions before 7.9 use only the first 96 bytes of `fuse_attr_out`.
 pub struct AttrResult {
     pub attr_valid: u64,
     pub attr_valid_nsec: u32,
     pub attr: Attr,
 }
 
+/// The corresponding C structure is `fuse_attr`.
+/// ```c
+/// struct fuse_attr {
+///     uint64_t ino, size, blocks, atime, mtime, ctime;
+///     uint32_t atimensec, mtimensec, ctimensec, mode, nlink, uid, gid, rdev, blksize, flags;
+/// };
+/// ```
+/// Inode attributes carried by [`EntryResult`] and [`AttrResult`]. `ino` is the inode number
+/// reported by `stat(2)`. `mode` holds the file type and permission bits. `flags` holds
+/// `FUSE_ATTR_*` bits.
+///
+/// `atime`, `mtime`, and `ctime` are the access, modification, and status change times in seconds
+/// since the Unix epoch. Each has a matching nanosecond field.
 pub struct Attr {
     pub ino: u64,
     pub size: u64,
