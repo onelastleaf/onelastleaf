@@ -7,6 +7,7 @@ pub use payload::*;
 use nix::errno::Errno;
 
 // Why I use `dyn`?
+//
 // To be honest, I never wanted to use `dyn` in the first place, because a `vtable` means a runtime
 // table lookup. That's runtime overhead. If I can turn that into compile-time overhead, I can cut
 // down the runtime cost.
