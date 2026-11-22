@@ -16,6 +16,14 @@ documents across devices and extending document workflows with plugins.
 > Under Huge Refactor now. Onelastleaf is pre-0.2 and under active development.
 
 
+## NO AI SLOP
+
+This project only accepts two kinds of code:
+
+1. Code written entirely by hand.
+2. AI-generated code that has been reviewed line by line.
+
+This project does not accept AI slop. If you use AI to generate code, make sure you have fully reviewed all AI-generated code.
 
 ## License
 
