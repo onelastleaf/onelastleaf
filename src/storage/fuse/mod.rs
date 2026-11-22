@@ -431,6 +431,24 @@ pub trait FileSystem: Send + Sync + 'static {
     #[expect(unused_variables)]
     fn interrupt(&self, header: request::Header, payload: request::InterruptPayload) {}
 
+    /// Map a logical file block to a block on the backing device.
+    /// Corresponds to FUSE opcode 37.
+    ///
+    /// Linux sends this request only for filesystems backed by a block device. Block numbers are in
+    /// units of `payload.blocksize`.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns block number zero to indicate that no
+    /// mapping is available and disables further `FUSE_BMAP` requests on the connection.
+    #[expect(unused_variables)]
+    fn bmap(
+        &self,
+        header: request::Header,
+        payload: request::BmapPayload,
+        reply: Reply<reply::BmapResult>,
+    ) {
+        let _ = reply.complete(Err(Errno::ENOSYS));
+    }
+
     /// Corresponds to FUSE opcode 39.
     ///
     /// The default replies with `ENOTTY`. Linux reports the requested ioctl command as unsupported.

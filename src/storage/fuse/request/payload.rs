@@ -465,8 +465,8 @@ pub struct InterruptPayload {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BmapPayload {
-    block: u64,
-    blocksize: u32,
+    pub block: u64,
+    pub blocksize: u32,
 }
 
 /// The definition of the corresponding C struct in C:
