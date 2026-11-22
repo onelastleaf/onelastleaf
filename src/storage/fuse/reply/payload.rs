@@ -302,8 +302,10 @@ bitflags::bitflags! {
     }
 }
 
-/// The reply payload of `FUSE_READDIRPLUS` is a sequence of `fuse_direntplus` records. The encoded
-/// entries must fit within the `size` requested in `fuse_read_in`.
+/// `FUSE_READDIRPLUS` returns a list of `fuse_direntplus` records.
+/// Each record has a directory entry and optional inode attributes.
+///
+/// The reply payload must fit within the `size` in `fuse_read_in`.
 pub struct ReaddirPlusResult {
     pub entries: Vec<DirEntryPlus>,
 }
@@ -315,10 +317,15 @@ pub struct ReaddirPlusResult {
 ///     struct fuse_dirent dirent;
 /// };
 /// ```
-/// Encode `entry` as `fuse_entry_out` followed by `dirent` as `fuse_dirent`. Pad each complete
-/// record with zeroes to an 8-byte boundary.
+/// Write `fuse_entry_out` first.
+///
+/// - For `Some(entry)`, write the entry with a nonzero `nodeid`.
+/// - For `None`, fill `fuse_entry_out` with zeroes. The kernel skips caching the inode attributes.
+///
+/// Then write `dirent` as `fuse_dirent`.
+/// Pad the whole record with zeroes to a multiple of 8 bytes.
 pub struct DirEntryPlus {
-    pub entry: EntryResult,
+    pub entry: Option<EntryResult>,
     pub dirent: DirEntry,
 }
 
