@@ -524,8 +524,8 @@ pub struct PollPayload {
 /// Used by `FUSE_NOTIFY_REPLY` for a `FUSE_NOTIFY_RETRIEVE` notification.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NotifyReplyPayload<'a> {
-    offset: u64,
-    data: &'a [u8],
+    pub offset: u64,
+    pub data: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -538,7 +538,7 @@ pub struct NotifyReplyPayload<'a> {
 /// then, add `count` consecutive `struct fuse_forget_one` entries
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BatchForgetPayload {
-    entries: Vec<ForgetOne>,
+    pub entries: Vec<ForgetOne>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -550,8 +550,8 @@ pub struct BatchForgetPayload {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ForgetOne {
-    nodeid: u64,
-    nlookup: u64,
+    pub nodeid: u64,
+    pub nlookup: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -566,10 +566,10 @@ pub struct ForgetOne {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FallocatePayload {
-    fh: u64,
-    offset: u64,
-    length: u64,
-    mode: u32,
+    pub fh: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub mode: u32,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -583,10 +583,10 @@ pub struct FallocatePayload {
 /// then, add `old_name` + \0 + `new_name` + \0
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rename2Payload<'a> {
-    new_dir: u64,
-    flags: u32,
-    old_name: &'a [u8],
-    new_name: &'a [u8],
+    pub new_dir: u64,
+    pub flags: u32,
+    pub old_name: &'a [u8],
+    pub new_name: &'a [u8],
 }
 
 /// The definition of the corresponding C struct in C:
@@ -600,9 +600,9 @@ pub struct Rename2Payload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LseekPayload {
-    fh: u64,
-    offset: u64,
-    whence: u32,
+    pub fh: u64,
+    pub offset: u64,
+    pub whence: u32,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -620,13 +620,13 @@ pub struct LseekPayload {
 /// Used by `FUSE_COPY_FILE_RANGE` and `FUSE_COPY_FILE_RANGE_64`.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CopyFileRangePayload {
-    fh_in: u64,
-    off_in: u64,
-    nodeid_out: u64,
-    fh_out: u64,
-    off_out: u64,
-    len: u64,
-    flags: u64,
+    pub fh_in: u64,
+    pub off_in: u64,
+    pub nodeid_out: u64,
+    pub fh_out: u64,
+    pub off_out: u64,
+    pub len: u64,
+    pub flags: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -641,11 +641,11 @@ pub struct CopyFileRangePayload {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetupmappingPayload {
-    fh: u64,
-    foffset: u64,
-    len: u64,
-    flags: u64,
-    moffset: u64,
+    pub fh: u64,
+    pub foffset: u64,
+    pub len: u64,
+    pub flags: u64,
+    pub moffset: u64,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -657,7 +657,7 @@ pub struct SetupmappingPayload {
 /// then, add `count` consecutive `struct fuse_removemapping_one` entries
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovemappingPayload {
-    entries: Vec<RemovemappingOne>,
+    pub entries: Vec<RemovemappingOne>,
 }
 
 /// The definition of the corresponding C struct in C:
@@ -669,8 +669,8 @@ pub struct RemovemappingPayload {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RemovemappingOne {
-    moffset: u64,
-    len: u64,
+    pub moffset: u64,
+    pub len: u64,
 }
 
 // pub struct SyncfsPayload {
@@ -689,10 +689,10 @@ pub struct RemovemappingOne {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StatxPayload {
-    getattr_flags: u32,
-    fh: u64,
-    sx_flags: u32,
-    sx_mask: u32,
+    pub getattr_flags: u32,
+    pub fh: u64,
+    pub sx_flags: u32,
+    pub sx_mask: u32,
 }
 
 // Now I will implementing some functions, for payload parsing

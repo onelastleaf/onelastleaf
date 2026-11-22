@@ -33,9 +33,14 @@ pub trait FileSystem: Send + Sync + 'static {
     );
 
     /// Corresponds to FUSE opcode 2.
-    fn forget(&self, header: request::Header, payload: request::ForgetPayload) {
-        todo!()
-    }
+    ///
+    /// Linux sends `FUSE_FORGET` to drop `payload.nlookup` lookup references for the inode
+    /// identified by `header.nodeid`. Filesystems that track these references should override this
+    /// method and [`Self::batch_forget`] and use the same reference accounting in both.
+    ///
+    /// The default is a no-op. Linux expects no reply.
+    #[expect(unused_variables)]
+    fn forget(&self, header: request::Header, payload: request::ForgetPayload) {}
 
     /// This is a **Required Method**.
     /// Corresponds to FUSE opcode 3.
@@ -167,13 +172,22 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 14.
+    ///
+    /// The default accepts the open with `fh = 0` and zero flags and backing IDs. Later `read` and
+    /// `write` methods can identify the file through `header.nodeid`.
+    #[expect(unused_variables)]
     fn open(
         &self,
         header: request::Header,
         payload: request::OpenPayload,
         reply: Reply<reply::OpenResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Ok(reply::OpenResult {
+            fh: 0,
+            open_flags: 0,
+            backing_id: 0,
+            backing_id_64: 0,
+        }));
     }
 
     /// Corresponds to FUSE opcode 15.
@@ -215,8 +229,11 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 18.
+    ///
+    /// The default acknowledges the file handle release with an empty success reply.
+    #[expect(unused_variables)]
     fn release(&self, header: request::Header, payload: request::ReleasePayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Ok(()));
     }
 
     /// Corresponds to FUSE opcode 20.
@@ -286,13 +303,22 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 27. (26 is INIT)
+    ///
+    /// The default accepts the open with `fh = 0` and zero flags and backing IDs. Later `readdir`
+    /// methods can enumerate the directory using `header.nodeid` and the requested offset.
+    #[expect(unused_variables)]
     fn opendir(
         &self,
         header: request::Header,
         payload: request::OpenPayload,
         reply: Reply<reply::OpenResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Ok(reply::OpenResult {
+            fh: 0,
+            open_flags: 0,
+            backing_id: 0,
+            backing_id_64: 0,
+        }));
     }
 
     /// Corresponds to FUSE opcode 28.
@@ -310,13 +336,16 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 29.
+    ///
+    /// The default acknowledges the directory handle release with an empty success reply.
+    #[expect(unused_variables)]
     fn releasedir(
         &self,
         header: request::Header,
         payload: request::ReleasePayload,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Ok(()));
     }
 
     /// Corresponds to FUSE opcode 30.
@@ -325,23 +354,37 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 31.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns that error for the current lock query.
+    /// Kernel-local POSIX lock testing is selected at `INIT` when `FUSE_POSIX_LOCKS` is absent.
+    #[expect(unused_variables)]
     fn getlk(
         &self,
         header: request::Header,
         payload: request::LockPayload,
         reply: Reply<reply::LockResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 32.
+    ///
+    /// The default replies with `ENOSYS`. Linux returns that error for the current nonblocking lock
+    /// or unlock request. It selects kernel-local locking at `INIT` when the corresponding remote
+    /// locking capability is absent.
+    #[expect(unused_variables)]
     fn setlk(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 33.
+    ///
+    /// The default replies with `ENOSYS`. The current blocking lock operation fails with that
+    /// error. Linux selects local or remote locking at `INIT` and keeps that choice after this
+    /// reply.
+    #[expect(unused_variables)]
     fn setlkw(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 34.
@@ -351,6 +394,11 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Atomically create and open a regular file.
     /// Corresponds to FUSE opcode 35.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_CREATE` on the connection and falls
+    /// back to `FUSE_MKNOD` followed by the normal open path. Implement [`Self::mknod`] for regular
+    /// files to support creation through this fallback.
+    #[expect(unused_variables)]
     fn create(
         &self,
         header: request::Header,
@@ -358,7 +406,7 @@ pub trait FileSystem: Send + Sync + 'static {
         extensions: Option<request::Extensions<'_>>,
         reply: Reply<reply::CreateResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 36.
@@ -387,14 +435,24 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 41.
-    fn notify_reply(&self, header: request::Header, payload: request::NotifyReplyPayload<'_>) {
-        todo!()
-    }
+    ///
+    /// Linux sends `FUSE_NOTIFY_REPLY` with cached file data in response to `FUSE_NOTIFY_RETRIEVE`.
+    /// The `header.unique` field carries the original notification's `notify_unique`. A session
+    /// that sends retrieve notifications should match this ID to the waiting caller and deliver the
+    /// offset and data from the payload.
+    ///
+    /// The default is a no-op. Linux expects no reply.
+    #[expect(unused_variables)]
+    fn notify_reply(&self, header: request::Header, payload: request::NotifyReplyPayload<'_>) {}
 
     /// Corresponds to FUSE opcode 42.
-    fn batch_forget(&self, header: request::Header, payload: request::BatchForgetPayload) {
-        todo!()
-    }
+    ///
+    /// Linux sends `FUSE_BATCH_FORGET` with a list of inode lookup reference decrements. Use each
+    /// entry's own `nodeid` and `nlookup` and apply the same accounting as in [`Self::forget`].
+    ///
+    /// The default is a no-op. Linux expects no reply.
+    #[expect(unused_variables)]
+    fn batch_forget(&self, header: request::Header, payload: request::BatchForgetPayload) {}
 
     /// Corresponds to FUSE opcode 43.
     ///
@@ -411,13 +469,18 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 44.
+    ///
+    /// The default replies with `ENOSYS`. Linux fails the current directory read and keeps the
+    /// negotiated READDIRPLUS mode. Leave `FUSE_DO_READDIRPLUS` disabled at `INIT` to use ordinary
+    /// `FUSE_READDIR`.
+    #[expect(unused_variables)]
     fn readdir_plus(
         &self,
         header: request::Header,
         payload: request::ReadPayload,
         reply: Reply<reply::ReaddirPlusResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 45.
@@ -435,43 +498,62 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 46.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_LSEEK` on the connection and uses
+    /// generic `SEEK_DATA` and `SEEK_HOLE` behavior. For offsets before EOF, the requested offset
+    /// is treated as data and EOF is the next hole. Override this method to report actual sparse
+    /// regions.
+    #[expect(unused_variables)]
     fn lseek(
         &self,
         header: request::Header,
         payload: request::LseekPayload,
         reply: Reply<reply::LseekResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 47.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables FUSE range copying on the connection and
+    /// falls back to copying through splice. The fallback depends on read support on the source and
+    /// write support on the destination.
+    #[expect(unused_variables)]
     fn copy_file_range(
         &self,
         header: request::Header,
         payload: request::CopyFileRangePayload,
         reply: Reply<reply::WriteResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 48.
+    ///
+    /// The default replies with `ENOSYS`. Linux propagates the error from DAX mapping setup or from
+    /// an upgrade of an existing mapping to writable.
+    #[expect(unused_variables)]
     fn setupmapping(
         &self,
         header: request::Header,
         payload: request::SetupmappingPayload,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 49.
+    ///
+    /// The default replies with `ENOSYS`. Linux treats the DAX unmap as failed. During mapping
+    /// reclaim or inode eviction it logs the failure and proceeds with local mapping cleanup.
+    #[expect(unused_variables)]
     fn removemapping(
         &self,
         header: request::Header,
         payload: request::RemovemappingPayload,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 50.
@@ -495,23 +577,34 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 52.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_STATX` on the connection and falls
+    /// back to `FUSE_GETATTR` for basic attributes. Override this method to provide additional stat
+    /// fields such as birth time.
+    #[expect(unused_variables)]
     fn statx(
         &self,
         header: request::Header,
         payload: request::StatxPayload,
         reply: Reply<reply::StatxResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 53.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_COPY_FILE_RANGE_64` on the
+    /// connection and retries with `FUSE_COPY_FILE_RANGE`, capping the request length at the
+    /// largest page-aligned 32-bit unsigned value. If the legacy opcode also replies with `ENOSYS`,
+    /// Linux falls back to copying through splice.
+    #[expect(unused_variables)]
     fn copy_file_range64(
         &self,
         header: request::Header,
         payload: request::CopyFileRangePayload,
         reply: Reply<reply::CopyFileRangeResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     // Other util function
