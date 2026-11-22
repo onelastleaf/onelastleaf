@@ -225,43 +225,59 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 21.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_SETXATTR` on the connection and
+    /// returns `EOPNOTSUPP` for this and later `setxattr` requests.
+    #[expect(unused_variables)]
     fn setxattr(
         &self,
         header: request::Header,
         payload: request::SetxattrPayload<'_>,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 22.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_GETXATTR` on the connection and
+    /// returns `EOPNOTSUPP` for this and later `getxattr` requests.
+    #[expect(unused_variables)]
     fn getxattr(
         &self,
         header: request::Header,
         payload: request::GetxattrPayload<'_>,
         reply: Reply<reply::XattrResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 23.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_LISTXATTR` on the connection and
+    /// returns `EOPNOTSUPP` for this and later `listxattr` requests.
+    #[expect(unused_variables)]
     fn listxattr(
         &self,
         header: request::Header,
         payload: request::ListxattrPayload,
         reply: Reply<reply::XattrResult>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 24.
+    ///
+    /// The default replies with `ENOSYS`. Linux disables `FUSE_REMOVEXATTR` on the connection and
+    /// returns `EOPNOTSUPP` for this and later `removexattr` requests.
+    #[expect(unused_variables)]
     fn removexattr(
         &self,
         header: request::Header,
         payload: request::RemovexattrPayload<'_>,
         reply: Reply<()>,
     ) {
-        todo!()
+        let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
     /// Corresponds to FUSE opcode 25.
