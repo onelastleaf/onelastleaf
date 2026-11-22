@@ -810,7 +810,7 @@ bitflags::bitflags! {
     /// `SPLICE_WRITE` is set. Otherwise, send replies with a regular write.
     ///
     /// ```
-    /// use onelastleaf::storage::fuse::session::Flags;
+    /// use onelastleaf::storage::fuse::Flags;
     ///
     /// fn can_splice_replies(negotiated_config: Option<Flags>) -> bool {
     ///     negotiated_config.is_some_and(|flags| flags.contains(Flags::SPLICE_WRITE))
