@@ -428,9 +428,8 @@ pub trait FileSystem: Send + Sync + 'static {
     }
 
     /// Corresponds to FUSE opcode 36.
-    fn interrupt(&self, header: request::Header, payload: request::InterruptPayload) {
-        todo!()
-    }
+    #[expect(unused_variables)]
+    fn interrupt(&self, header: request::Header, payload: request::InterruptPayload) {}
 
     /// Corresponds to FUSE opcode 39.
     ///
