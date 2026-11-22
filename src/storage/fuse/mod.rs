@@ -23,7 +23,6 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Corresponds to FUSE opcode 38.
     fn destroy(&self) {}
 
-    /// Clean up filesystem.
     /// Corresponds to FUSE opcode 1.
     fn lookup(
         &self,
