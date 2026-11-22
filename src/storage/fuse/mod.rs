@@ -23,30 +23,28 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Corresponds to FUSE opcode 38.
     fn destroy(&self) {}
 
+    /// This is a **Required Method**.
     /// Corresponds to FUSE opcode 1.
     fn lookup(
         &self,
         header: request::Header,
         payload: request::LookupPayload<'_>,
         reply: Reply<reply::EntryResult>,
-    ) {
-        todo!()
-    }
+    );
 
     /// Corresponds to FUSE opcode 2.
     fn forget(&self, header: request::Header, payload: request::ForgetPayload) {
         todo!()
     }
 
+    /// This is a **Required Method**.
     /// Corresponds to FUSE opcode 3.
     fn getattr(
         &self,
         header: request::Header,
         payload: request::GetattrPayload,
         reply: Reply<reply::AttrResult>,
-    ) {
-        todo!()
-    }
+    );
 
     /// Corresponds to FUSE opcode 4.
     fn setattr(
