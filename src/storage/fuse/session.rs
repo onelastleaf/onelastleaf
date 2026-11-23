@@ -456,7 +456,18 @@ impl<FS: FileSystem> Session<FS> {
         Some(extensions)
     }
 
-    fn write_reply(fuse_file: &mut File) -> Result<(), Errno> {
+    fn serialize_reply<T>(
+        result: Result<T, Errno>,
+        protocol_version: u32,
+    ) -> Result<Vec<u8>, Errno> {
+        todo!()
+    }
+
+    fn write_reply(
+        fuse_file: &mut File,
+        unique: u64,
+        result: Result<&[u8], Errno>,
+    ) -> io::Result<()> {
         todo!()
     }
 }
