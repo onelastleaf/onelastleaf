@@ -2,7 +2,6 @@ mod helper;
 pub mod reply;
 pub mod request;
 pub mod session;
-mod transport;
 
 use bitflags;
 use nix::{errno::Errno, libc};
