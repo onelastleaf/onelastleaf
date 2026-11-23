@@ -1,5 +1,6 @@
 use super::{Flags, helper, request};
 use nix::{
+    errno::Errno,
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
 };
@@ -453,6 +454,10 @@ impl<FS: FileSystem> Session<FS> {
         }
 
         Some(extensions)
+    }
+
+    fn write_reply(fuse_file: &mut File) -> Result<(), Errno> {
+        todo!()
     }
 }
 
