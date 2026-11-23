@@ -173,8 +173,12 @@ pub trait FileSystem: Send + Sync + 'static {
 
     /// Corresponds to FUSE opcode 14.
     ///
-    /// The default accepts the open with `fh = 0` and zero flags and backing IDs. Later `read` and
-    /// `write` methods can identify the file through `header.nodeid`.
+    /// The default replies with `EOPNOTSUPP` when the request carries `O_TRUNC`. Linux passes this
+    /// flag in `FUSE_OPEN` only when `FUSE_ATOMIC_O_TRUNC` is negotiated. Filesystems that enable
+    /// this capability should override this method to perform the truncation.
+    ///
+    /// Other opens succeed with `fh = 0` and zero flags and backing IDs. Later `read` and `write`
+    /// methods can identify the file through `header.nodeid`.
     #[expect(unused_variables)]
     fn open(
         &self,
@@ -182,6 +186,11 @@ pub trait FileSystem: Send + Sync + 'static {
         payload: request::OpenPayload,
         reply: Reply<reply::OpenResult>,
     ) {
+        if payload.flags & (libc::O_TRUNC as u32) != 0 {
+            let _ = reply.complete(Err(Errno::EOPNOTSUPP));
+            return;
+        }
+
         let _ = reply.complete(Ok(reply::OpenResult {
             fh: 0,
             open_flags: 0,
