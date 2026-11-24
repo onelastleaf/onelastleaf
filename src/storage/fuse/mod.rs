@@ -896,3 +896,62 @@ bitflags::bitflags! {
         const PASSTHROUGH_V2 = 1 << 45;
     }
 }
+
+impl Flags {
+    // Keep this table in ascending order by the minor version that introduced the INIT bit.
+    const FLAG_MIN_MINOR: &[(Self, u32)] = &[
+        (Self::ASYNC_READ, 6),
+        (Self::POSIX_LOCKS, 7),
+        (Self::FILE_OPS, 9),
+        (Self::ATOMIC_O_TRUNC, 9),
+        (Self::EXPORT_SUPPORT, 9),
+        (Self::BIG_WRITES, 9),
+        (Self::DONT_MASK, 12),
+        (Self::FLOCK_LOCKS, 17),
+        // Splice and directory ioctls predate their explicit INIT bits.
+        (Self::SPLICE_WRITE, 20),
+        (Self::SPLICE_MOVE, 20),
+        (Self::SPLICE_READ, 20),
+        (Self::HAS_IOCTL_DIR, 20),
+        (Self::AUTO_INVAL_DATA, 20),
+        (Self::DO_READDIRPLUS, 21),
+        (Self::READDIRPLUS_AUTO, 21),
+        (Self::ASYNC_DIO, 22),
+        (Self::WRITEBACK_CACHE, 23),
+        (Self::NO_OPEN_SUPPORT, 23),
+        (Self::PARALLEL_DIROPS, 25),
+        (Self::HANDLE_KILLPRIV, 26),
+        (Self::POSIX_ACL, 26),
+        (Self::ABORT_ERROR, 27),
+        (Self::MAX_PAGES, 28),
+        (Self::CACHE_SYMLINKS, 28),
+        (Self::NO_OPENDIR_SUPPORT, 29),
+        (Self::EXPLICIT_INVAL_DATA, 30),
+        (Self::MAP_ALIGNMENT, 31),
+        (Self::SUBMOUNTS, 32),
+        (Self::HANDLE_KILLPRIV_V2, 33),
+        (Self::SETXATTR_EXT, 33),
+        (Self::INIT_EXT, 36),
+        (Self::SECURITY_CTX, 36),
+        (Self::HAS_INODE_DAX, 36),
+        (Self::CREATE_SUPP_GROUP, 38),
+        (Self::HAS_EXPIRE_ONLY, 38),
+        (Self::DIRECT_IO_ALLOW_MMAP, 39),
+        (Self::PASSTHROUGH, 40),
+        (Self::NO_EXPORT_SUPPORT, 40),
+        (Self::HAS_RESEND, 40),
+        (Self::ALLOW_IDMAP, 41),
+        (Self::OVER_IO_URING, 42),
+        (Self::REQUEST_TIMEOUT, 43),
+        (Self::HAS_IO_URING_BUFPOOL, 46),
+        (Self::HAS_SYNCFS, 47),
+        (Self::PASSTHROUGH_V2, 47),
+    ];
+
+    fn at_minor(minor: u32) -> Self {
+        Self::FLAG_MIN_MINOR
+            .iter()
+            .take_while(|&&(_, since)| since <= minor)
+            .fold(Self::empty(), |mask, &(flag, _)| mask | flag)
+    }
+}

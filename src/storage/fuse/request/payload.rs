@@ -70,10 +70,10 @@ pub enum Payload<'a> {
 /// ```
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InitPayload {
-    major: u32,
-    minor: u32,
-    max_readahead: u32,
-    flags: Flags,
+    pub major: u32,
+    pub minor: u32,
+    pub max_readahead: u32,
+    pub flags: Flags,
 }
 /// The definition of the corresponding underlying C structure:
 /// `name` + "\0"

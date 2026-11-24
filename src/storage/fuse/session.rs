@@ -13,7 +13,7 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use super::{FileSystem, InitConfig};
+use super::{FileSystem, InitConfig, LockType, SUPPORTED_PROTOCOL_MINOR};
 
 
 pub struct Session<FS: FileSystem> {
@@ -461,15 +461,27 @@ impl<FS: FileSystem> Session<FS> {
         todo!()
     }
 
-    // Encode the agreed INIT values before publishing them on the session.
+    // After confirming major version 7, encode the INIT reply and return the selected config.
     #[inline]
-    fn serialize_init(config: &InitConfig) -> Vec<u8> {
-        let minor = config.protocol_version;
+    fn serialize_init(
+        kernel: &request::InitPayload,
+        mut config: InitConfig,
+    ) -> (InitConfig, Vec<u8>) {
+        let minor = kernel
+            .minor
+            .min(config.protocol_version)
+            .min(SUPPORTED_PROTOCOL_MINOR);
+        config.protocol_version = minor;
+        config.flags &= kernel.flags & Flags::at_minor(minor);
+        if !config.flags.contains(Flags::INIT_EXT) {
+            config.flags &= Flags::from_bits_truncate(u64::from(u32::MAX));
+        }
+
         let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&7u32.to_ne_bytes());
         bytes.extend_from_slice(&minor.to_ne_bytes());
         if minor < 5 {
-            return bytes;
+            return (config, bytes);
         }
 
         let flags = config.flags.bits();
@@ -488,30 +500,29 @@ impl<FS: FileSystem> Session<FS> {
         }
         bytes.extend_from_slice(&config.max_write.to_ne_bytes());
         if minor < 23 {
-            return bytes;
+            return (config, bytes);
         }
 
-        let max_pages = if minor >= 28 && config.flags.contains(Flags::MAX_PAGES) {
+        let max_pages = if config.flags.contains(Flags::MAX_PAGES) {
             config.max_pages
         } else {
             0
         };
-        let map_alignment = if minor >= 31 && config.flags.contains(Flags::MAP_ALIGNMENT) {
+        let map_alignment = if config.flags.contains(Flags::MAP_ALIGNMENT) {
             config.map_alignment
         } else {
             0
         };
-        let flags2 = if minor >= 36 && config.flags.contains(Flags::INIT_EXT) {
-            (flags >> 32) as u32
-        } else {
-            0
-        };
-        let max_stack_depth = if minor >= 40 && config.flags.contains(Flags::PASSTHROUGH) {
+        let flags2 = (flags >> 32) as u32;
+        let max_stack_depth = if config
+            .flags
+            .intersects(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2)
+        {
             config.max_stack_depth
         } else {
             0
         };
-        let request_timeout = if minor >= 43 && config.flags.contains(Flags::REQUEST_TIMEOUT) {
+        let request_timeout = if config.flags.contains(Flags::REQUEST_TIMEOUT) {
             config.request_timeout
         } else {
             0
@@ -523,7 +534,7 @@ impl<FS: FileSystem> Session<FS> {
         bytes.extend_from_slice(&max_stack_depth.to_ne_bytes());
         bytes.extend_from_slice(&request_timeout.to_ne_bytes());
         bytes.extend_from_slice(&[0; 22]);
-        bytes
+        (config, bytes)
     }
 
     fn write_reply(
