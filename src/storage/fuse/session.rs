@@ -102,6 +102,38 @@ pub enum ParseError {
     UnknownError,
 }
 
+impl std::fmt::Display for ParseError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InsufficientLength => formatter.write_str("FUSE request is too short"),
+            Self::ExcessiveLength => formatter.write_str("FUSE request is too long"),
+            Self::InvalidLength => {
+                formatter.write_str("FUSE request length does not match its header")
+            }
+            Self::RequestBeforeInit => {
+                formatter.write_str("received a non-INIT request before FUSE initialization")
+            }
+            Self::InvalidState => {
+                formatter.write_str("FUSE session has inconsistent initialization state")
+            }
+            Self::UnsupportedOpcode(opcode) => {
+                write!(formatter, "unsupported FUSE opcode {opcode}")
+            }
+            Self::UnexpectedOpcode(opcode) => write!(formatter, "unexpected FUSE opcode {opcode}"),
+            Self::InvalidLockType(lock_type) => {
+                write!(formatter, "invalid FUSE lock type {lock_type}")
+            }
+            Self::InvalidExtensions => formatter.write_str("malformed FUSE request extensions"),
+            Self::UnexpectedExtensions => {
+                formatter.write_str("FUSE request extensions do not match the expected layout")
+            }
+            Self::UnknownError => formatter.write_str("unknown error while parsing a FUSE request"),
+        }
+    }
+}
+
+impl std::error::Error for ParseError {}
+
 impl SessionError {
     pub fn message(&self) -> String {
         match self {
