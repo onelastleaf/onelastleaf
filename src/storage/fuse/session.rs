@@ -13,7 +13,8 @@ use std::{
     thread::{self, JoinHandle},
 };
 
-use super::FileSystem;
+use super::{FileSystem, InitConfig};
+
 
 pub struct Session<FS: FileSystem> {
     filesystem: FS,
@@ -458,6 +459,71 @@ impl<FS: FileSystem> Session<FS> {
 
     fn serialize_reply(&self, payload: reply::Payload) -> Result<Vec<u8>, Errno> {
         todo!()
+    }
+
+    // Encode the agreed INIT values before publishing them on the session.
+    #[inline]
+    fn serialize_init(config: &InitConfig) -> Vec<u8> {
+        let minor = config.protocol_version;
+        let mut bytes = Vec::with_capacity(64);
+        bytes.extend_from_slice(&7u32.to_ne_bytes());
+        bytes.extend_from_slice(&minor.to_ne_bytes());
+        if minor < 5 {
+            return bytes;
+        }
+
+        let flags = config.flags.bits();
+        let max_readahead = if minor >= 6 { config.max_readahead } else { 0 };
+        bytes.extend_from_slice(&max_readahead.to_ne_bytes());
+        // This word is reserved in FUSE 7.5 and should be zero; the 7.5 kernel ignores any flag
+        // bits written here. Technically there is an issue here because the FUSE 7.5 kernel marks
+        // bits 8–20 as unused, but valid values may be filled in there; since the FUSE kernel
+        // ignores this value, it's not a big deal, so I won't change it.
+        bytes.extend_from_slice(&(flags as u32).to_ne_bytes());
+        if minor >= 13 {
+            bytes.extend_from_slice(&config.max_background.to_ne_bytes());
+            bytes.extend_from_slice(&config.congestion_threshold.to_ne_bytes());
+        } else {
+            bytes.extend_from_slice(&[0; 4]);
+        }
+        bytes.extend_from_slice(&config.max_write.to_ne_bytes());
+        if minor < 23 {
+            return bytes;
+        }
+
+        let max_pages = if minor >= 28 && config.flags.contains(Flags::MAX_PAGES) {
+            config.max_pages
+        } else {
+            0
+        };
+        let map_alignment = if minor >= 31 && config.flags.contains(Flags::MAP_ALIGNMENT) {
+            config.map_alignment
+        } else {
+            0
+        };
+        let flags2 = if minor >= 36 && config.flags.contains(Flags::INIT_EXT) {
+            (flags >> 32) as u32
+        } else {
+            0
+        };
+        let max_stack_depth = if minor >= 40 && config.flags.contains(Flags::PASSTHROUGH) {
+            config.max_stack_depth
+        } else {
+            0
+        };
+        let request_timeout = if minor >= 43 && config.flags.contains(Flags::REQUEST_TIMEOUT) {
+            config.request_timeout
+        } else {
+            0
+        };
+        bytes.extend_from_slice(&config.time_gran.to_ne_bytes());
+        bytes.extend_from_slice(&max_pages.to_ne_bytes());
+        bytes.extend_from_slice(&map_alignment.to_ne_bytes());
+        bytes.extend_from_slice(&flags2.to_ne_bytes());
+        bytes.extend_from_slice(&max_stack_depth.to_ne_bytes());
+        bytes.extend_from_slice(&request_timeout.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 22]);
+        bytes
     }
 
     fn write_reply(
