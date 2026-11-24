@@ -749,8 +749,9 @@ pub struct InitConfig {
     // of 1 allows backing files on filesystems with no stacking. A value of 2 also allows backing
     // files on filesystems with one layer of stacking, such as overlayfs.
     //
-    // Passthrough requires a nonzero depth and either `PASSTHROUGH` or `PASSTHROUGH_V2`. A depth
-    // of 0 clears both flags during INIT negotiation.
+    // Passthrough requires a depth of 1 or 2 and either `PASSTHROUGH` or `PASSTHROUGH_V2`.
+    // A depth outside that range or negotiated `WRITEBACK_CACHE` clears both flags and sets the
+    // depth to 0 during INIT negotiation.
     pub max_stack_depth: u32,
 }
 

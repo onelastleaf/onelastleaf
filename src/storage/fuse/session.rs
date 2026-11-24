@@ -325,10 +325,13 @@ impl<FS: FileSystem> Session<FS> {
             }
         };
 
-        if init_config.max_stack_depth == 0 {
+        let writeback_cache =
+            (init_config.flags & init_payload.flags).contains(Flags::WRITEBACK_CACHE);
+        if !(1..=2).contains(&init_config.max_stack_depth) || writeback_cache {
             init_config
                 .flags
                 .remove(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2);
+            init_config.max_stack_depth = 0;
         }
 
         let (selected_config, init_reply) = Self::serialize_init(init_payload, init_config);
