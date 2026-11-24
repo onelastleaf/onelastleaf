@@ -537,6 +537,11 @@ impl<FS: FileSystem> Session<FS> {
         (config, bytes)
     }
 
+    #[inline]
+    fn serialize_empty() -> Vec<u8> {
+        Vec::new()
+    }
+
     fn write_reply(
         fuse_file: &mut File,
         unique: u64,
