@@ -6,6 +6,28 @@ pub use payload::*;
 
 use nix::errno::Errno;
 
+pub(super) enum Payload {
+    Empty,
+    Entry(EntryResult),
+    Attr(AttrResult),
+    Readlink(ReadlinkResult),
+    Open(OpenResult),
+    Read(ReadResult),
+    Write(WriteResult),
+    Statfs(StatfsResult),
+    Xattr(XattrResult),
+    Readdir(ReaddirResult),
+    Lock(LockResult),
+    Create(CreateResult),
+    Bmap(BmapResult),
+    Ioctl(IoctlResult),
+    Poll(PollResult),
+    ReaddirPlus(ReaddirPlusResult),
+    Lseek(LseekResult),
+    Statx(StatxResult),
+    CopyFileRange64(CopyFileRangeResult),
+}
+
 // Why I use `dyn`?
 //
 // To be honest, I never wanted to use `dyn` in the first place, because a `vtable` means a runtime

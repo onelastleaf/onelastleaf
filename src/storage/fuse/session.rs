@@ -1,4 +1,4 @@
-use super::{Flags, helper, request};
+use super::{Flags, helper, reply, request};
 use nix::{
     errno::Errno,
     mount::{MntFlags, MsFlags, mount, umount2},
@@ -456,10 +456,7 @@ impl<FS: FileSystem> Session<FS> {
         Some(extensions)
     }
 
-    fn serialize_reply<T>(
-        result: Result<T, Errno>,
-        protocol_version: u32,
-    ) -> Result<Vec<u8>, Errno> {
+    fn serialize_reply(&self, payload: reply::Payload) -> Result<Vec<u8>, Errno> {
         todo!()
     }
 
