@@ -3,6 +3,8 @@ pub mod reply;
 pub mod request;
 pub mod session;
 
+pub use session::{MountOptions, Session};
+
 use bitflags;
 use nix::{errno::Errno, libc};
 

@@ -22,9 +22,18 @@ const REPLY_HEADER_LEN: usize = 16;
 const MAX_REPLY_PAYLOAD_LEN: usize = u32::MAX as usize - REPLY_HEADER_LEN;
 const LEGACY_DIRENT_NAME_MAX: usize = 1024;
 
+/// Options used when mounting a FUSE session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct MountOptions {
+    /// Pass `default_permissions` to Linux to enable VFS permission checks.
+    /// Linux also enables these checks when `FUSE_POSIX_ACL` is negotiated.
+    pub default_permissions: bool,
+}
+
 pub struct Session<FS: FileSystem> {
-    filesystem: FS,
+    filesystem: Arc<FS>,
     mount_point: PathBuf,
+    mount_options: MountOptions,
     protocol_version: Option<u32>,
     capabilities: Option<Flags>,
     dirent_name_max: usize,
@@ -114,7 +123,11 @@ impl SessionError {
 }
 
 impl<FS: FileSystem> Session<FS> {
-    pub fn new(filesystem: FS, mount_point: impl Into<PathBuf>) -> Self {
+    pub fn new(
+        filesystem: Arc<FS>,
+        mount_point: impl Into<PathBuf>,
+        mount_options: MountOptions,
+    ) -> Self {
         let dirent_name_max = uname()
             .ok()
             .and_then(|kernel| kernel.release().to_str().map(Self::dirent_name_limit))
@@ -122,6 +135,7 @@ impl<FS: FileSystem> Session<FS> {
         Self {
             filesystem,
             mount_point: mount_point.into(),
+            mount_options,
             protocol_version: None,
             capabilities: None,
             dirent_name_max,
@@ -196,12 +210,15 @@ impl<FS: FileSystem> Session<FS> {
         let fuse_fd: RawFd = fuse_file.as_raw_fd();
 
         // 2. Mount the filesystem
-        let mount_options = format!(
+        let mut mount_options = format!(
             "fd={},rootmode=40000,user_id={},group_id={}",
             fuse_fd,
             Uid::current().as_raw(),
             Gid::current().as_raw(),
         );
+        if self.mount_options.default_permissions {
+            mount_options.push_str(",default_permissions");
+        }
 
         if let Err(error) = mount(
             Some(self.filesystem.get_name().as_str()), // Filesystem name
