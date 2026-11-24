@@ -66,6 +66,30 @@ pub enum SessionError {
     UnknownError,
 }
 
+impl std::fmt::Display for SessionError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(match self {
+            Self::NoFuseFile => {
+                "/dev/fuse cannot be opened. Please check possible permission settings."
+            }
+            Self::MountFailed => {
+                "Failed to mount the FUSE filesystem. Please check mount permissions and the target path."
+            }
+            Self::CannotReadFuse => {
+                "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue."
+            }
+            Self::CannotParseRequest => {
+                "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue."
+            }
+            Self::UnknownError => {
+                "The FUSE protocol stack failed to run because it encountered an unexpected error."
+            }
+        })
+    }
+}
+
+impl std::error::Error for SessionError {}
+
 #[derive(Clone, Copy, Debug)]
 pub enum ParseError {
     // The request length is too short
@@ -133,26 +157,6 @@ impl std::fmt::Display for ParseError {
 }
 
 impl std::error::Error for ParseError {}
-
-impl SessionError {
-    pub fn message(&self) -> String {
-        match self {
-            Self::NoFuseFile =>
-                "/dev/fuse cannot be opened. Please check possible permission settings.".into(),
-
-            Self::MountFailed =>
-                "Failed to mount the FUSE filesystem. Please check mount permissions and the target path.".into(),
-
-            Self::CannotReadFuse =>
-                "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue.".into(),
-
-            Self::CannotParseRequest =>
-                "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue.".into(),
-
-            Self::UnknownError => "The FUSE protocol stack failed to run because it encountered an unexpected error.".into(),
-        }
-    }
-}
 
 impl<FS: FileSystem> Session<FS> {
     pub fn new(
