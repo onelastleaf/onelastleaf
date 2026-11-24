@@ -542,6 +542,35 @@ impl<FS: FileSystem> Session<FS> {
         Vec::new()
     }
 
+    #[inline]
+    fn serialize_entry(
+        bytes: &mut Vec<u8>,
+        entry: &reply::EntryResult,
+        protocol_version: u32,
+        capabilities: Flags,
+    ) -> Result<(), Errno> {
+        bytes.extend_from_slice(&entry.nodeid.to_ne_bytes());
+        bytes.extend_from_slice(&entry.generation.to_ne_bytes());
+        bytes.extend_from_slice(&entry.entry_valid.to_ne_bytes());
+        bytes.extend_from_slice(&entry.attr_valid.to_ne_bytes());
+        bytes.extend_from_slice(&entry.entry_valid_nsec.to_ne_bytes());
+        bytes.extend_from_slice(&entry.attr_valid_nsec.to_ne_bytes());
+        Self::serialize_inode_attr(bytes, &entry.attr, protocol_version, capabilities)
+    }
+
+    #[inline]
+    fn serialize_attr(
+        bytes: &mut Vec<u8>,
+        result: &reply::AttrResult,
+        protocol_version: u32,
+        capabilities: Flags,
+    ) -> Result<(), Errno> {
+        bytes.extend_from_slice(&result.attr_valid.to_ne_bytes());
+        bytes.extend_from_slice(&result.attr_valid_nsec.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+        Self::serialize_inode_attr(bytes, &result.attr, protocol_version, capabilities)
+    }
+
     fn write_reply(
         fuse_file: &mut File,
         unique: u64,
