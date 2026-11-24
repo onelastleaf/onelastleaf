@@ -317,13 +317,19 @@ impl<FS: FileSystem> Session<FS> {
             return Err(self.rollback_mount(fuse_file, error));
         }
 
-        let init_config = match self.filesystem.init() {
+        let mut init_config = match self.filesystem.init() {
             Ok(config) => config,
             Err(errno) => {
                 state.lock().stop_with_error(SessionError::InitFailed);
                 return Err(self.rollback_mount(fuse_file, errno.into()));
             }
         };
+
+        if init_config.max_stack_depth == 0 {
+            init_config
+                .flags
+                .remove(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2);
+        }
 
         let (selected_config, init_reply) = Self::serialize_init(init_payload, init_config);
 
