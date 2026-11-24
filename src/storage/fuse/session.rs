@@ -327,6 +327,19 @@ impl<FS: FileSystem> Session<FS> {
 
         let (selected_config, init_reply) = Self::serialize_init(init_payload, init_config);
 
+        // Linux rejects INIT if FUSE_ALLOW_IDMAP is set without VFS permission checks. Either
+        // default_permissions at mount time or FUSE_POSIX_ACL in the INIT reply enables them.
+        let default_permissions = self.mount_options.default_permissions
+            || selected_config.flags.contains(Flags::POSIX_ACL);
+        if selected_config.flags.contains(Flags::ALLOW_IDMAP) && !default_permissions {
+            state.lock().stop_with_error(SessionError::InitFailed);
+            let error = io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "FUSE_ALLOW_IDMAP requires default_permissions or FUSE_POSIX_ACL",
+            );
+            return Err(self.rollback_mount(fuse_file, error));
+        }
+
         todo!()
     }
 
