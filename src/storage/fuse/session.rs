@@ -8,7 +8,7 @@ use nix::{
 };
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read},
+    io::{self, IoSlice, Read, Write},
     os::fd::{AsRawFd, RawFd},
     path::PathBuf,
     sync::{Arc, nonpoison::Mutex},
@@ -1071,6 +1071,31 @@ impl<FS: FileSystem> Session<FS> {
         unique: u64,
         result: Result<&[u8], Errno>,
     ) -> io::Result<()> {
-        todo!()
+        let (error, payload): (i32, &[u8]) = match result {
+            Ok(payload) => (0, payload),
+            // UnknownErrno has value zero, which FUSE interprets as success.
+            Err(Errno::UnknownErrno) => (-(Errno::EIO as i32), &[]),
+            Err(errno) => (-(errno as i32), &[]),
+        };
+
+        if payload.len() > MAX_REPLY_PAYLOAD_LEN {
+            return Err(Errno::EOVERFLOW.into());
+        }
+        let len = REPLY_HEADER_LEN + payload.len();
+
+        let mut header = [0; REPLY_HEADER_LEN];
+        header[..4].copy_from_slice(&(len as u32).to_ne_bytes());
+        header[4..8].copy_from_slice(&error.to_ne_bytes());
+        header[8..].copy_from_slice(&unique.to_ne_bytes());
+
+        // Each write to /dev/fuse carries a complete reply.
+        let written = fuse_file.write_vectored(&[IoSlice::new(&header), IoSlice::new(payload)])?;
+        if written != len {
+            return Err(io::Error::other(format!(
+                "short FUSE reply write: wrote {written} of {len} bytes"
+            )));
+        }
+
+        Ok(())
     }
 }
