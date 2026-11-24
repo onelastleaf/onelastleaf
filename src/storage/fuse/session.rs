@@ -63,6 +63,7 @@ pub enum SessionError {
     MountFailed,
     CannotReadFuse,
     CannotParseRequest,
+    InitFailed,
     UnknownError,
 }
 
@@ -81,6 +82,7 @@ impl std::fmt::Display for SessionError {
             Self::CannotParseRequest => {
                 "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue."
             }
+            Self::InitFailed => "Failed to initialize the FUSE session.",
             Self::UnknownError => {
                 "The FUSE protocol stack failed to run because it encountered an unexpected error."
             }
@@ -294,17 +296,36 @@ impl<FS: FileSystem> Session<FS> {
             }
         };
 
-        let init_result = match &request.payload {
-            request::Payload::Init(_) => self.filesystem.init(),
-            _ => {
-                state
-                    .lock()
-                    .stop_with_error(SessionError::CannotParseRequest);
-                let error = ParseError::UnexpectedOpcode(request.header.opcode);
-                let error = io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"));
-                return Err(self.rollback_mount(fuse_file, error));
+        let request::Payload::Init(init_payload) = &request.payload else {
+            state
+                .lock()
+                .stop_with_error(SessionError::CannotParseRequest);
+            let error = ParseError::UnexpectedOpcode(request.header.opcode);
+            let error = io::Error::new(io::ErrorKind::InvalidData, error);
+            return Err(self.rollback_mount(fuse_file, error));
+        };
+
+        if init_payload.major != 7 {
+            state.lock().stop_with_error(SessionError::InitFailed);
+            let error = io::Error::new(
+                io::ErrorKind::Unsupported,
+                format!(
+                    "unsupported FUSE protocol major version {}",
+                    init_payload.major
+                ),
+            );
+            return Err(self.rollback_mount(fuse_file, error));
+        }
+
+        let init_config = match self.filesystem.init() {
+            Ok(config) => config,
+            Err(errno) => {
+                state.lock().stop_with_error(SessionError::InitFailed);
+                return Err(self.rollback_mount(fuse_file, errno.into()));
             }
         };
+
+        let (selected_config, init_reply) = Self::serialize_init(init_payload, init_config);
 
         todo!()
     }
