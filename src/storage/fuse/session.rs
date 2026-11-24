@@ -652,6 +652,8 @@ impl<FS: FileSystem> Session<FS> {
         kernel: &request::InitPayload,
         mut config: InitConfig,
     ) -> (InitConfig, Vec<u8>) {
+        const MIN_MAX_WRITE: u32 = 4096;
+
         let minor = kernel
             .minor
             .min(config.protocol_version)
@@ -661,6 +663,14 @@ impl<FS: FileSystem> Session<FS> {
         if !config.flags.contains(Flags::INIT_EXT) {
             config.flags &= Flags::from_bits_truncate(u64::from(u32::MAX));
         }
+        if !config.flags.contains(Flags::MAX_PAGES) {
+            config.max_pages = 0;
+        }
+        config.max_write = if minor < 5 {
+            MIN_MAX_WRITE
+        } else {
+            config.max_write.max(MIN_MAX_WRITE)
+        };
 
         let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&7u32.to_ne_bytes());
@@ -688,11 +698,6 @@ impl<FS: FileSystem> Session<FS> {
             return (config, bytes);
         }
 
-        let max_pages = if config.flags.contains(Flags::MAX_PAGES) {
-            config.max_pages
-        } else {
-            0
-        };
         let map_alignment = if config.flags.contains(Flags::MAP_ALIGNMENT) {
             config.map_alignment
         } else {
@@ -713,7 +718,7 @@ impl<FS: FileSystem> Session<FS> {
             0
         };
         bytes.extend_from_slice(&config.time_gran.to_ne_bytes());
-        bytes.extend_from_slice(&max_pages.to_ne_bytes());
+        bytes.extend_from_slice(&config.max_pages.to_ne_bytes());
         bytes.extend_from_slice(&map_alignment.to_ne_bytes());
         bytes.extend_from_slice(&flags2.to_ne_bytes());
         bytes.extend_from_slice(&max_stack_depth.to_ne_bytes());
