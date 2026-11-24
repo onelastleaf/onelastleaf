@@ -294,6 +294,18 @@ impl<FS: FileSystem> Session<FS> {
             }
         };
 
+        let init_result = match &request.payload {
+            request::Payload::Init(_) => self.filesystem.init(),
+            _ => {
+                state
+                    .lock()
+                    .stop_with_error(SessionError::CannotParseRequest);
+                let error = ParseError::UnexpectedOpcode(request.header.opcode);
+                let error = io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"));
+                return Err(self.rollback_mount(fuse_file, error));
+            }
+        };
+
         todo!()
     }
 
