@@ -243,7 +243,7 @@ impl<FS: FileSystem> Session<FS> {
         }
     }
 
-    fn run(self, state: &Mutex<HandleState>) -> io::Result<()> {
+    fn run(mut self, state: &Mutex<HandleState>) -> io::Result<()> {
         // 1. Open /dev/fuse, and get the fd
         let mut fuse_file = match Self::open_fuse_file() {
             Ok(device) => device,
@@ -356,7 +356,24 @@ impl<FS: FileSystem> Session<FS> {
             return Err(self.rollback_mount(fuse_file, error));
         }
 
-        todo!()
+        if let Err(error) = Self::write_reply(
+            &mut fuse_file,
+            request.header.unique,
+            Ok(init_reply.as_slice()),
+        ) {
+            state.lock().stop_with_error(SessionError::InitFailed);
+            return Err(self.rollback_mount(fuse_file, error));
+        }
+
+        self.protocol_version = Some(selected_config.protocol_version);
+        self.capabilities = Some(selected_config.flags);
+        {
+            let mut state = state.lock();
+            state.negotiated_config = Some(selected_config.flags);
+            state.status = Status::Running;
+        }
+
+        todo!("dispatch FUSE requests")
     }
 
     fn parse_fuse_request<'a>(
