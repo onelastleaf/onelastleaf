@@ -688,8 +688,7 @@ pub struct InitConfig {
     // 1 μs? 100 μs? Or 1 ms? You need tell kernel this.
     pub time_gran: u32,
 
-    // A single write request can carry at most `max_write` bytes of data. If set to 0, the default
-    // is used, which is 4 KiB (4096 bytes).
+    // Maximum number of data bytes in a single write request. Defaults to 4096 bytes (4 KiB).
     pub max_write: u32,
 
     // A single write request can carry at most the number of bytes corresponding to `max_pages`,
@@ -774,7 +773,7 @@ impl Default for InitConfig {
             flags: Flags::empty(),
             max_readahead: 0,
             time_gran: 1,
-            max_write: 0,
+            max_write: 4096,
             max_pages: 0,
             max_background: 0,
             congestion_threshold: 0,
