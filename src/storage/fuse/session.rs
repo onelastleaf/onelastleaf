@@ -40,14 +40,21 @@ pub struct Session<FS: FileSystem> {
 }
 
 pub struct Handle {
-    thread: JoinHandle<io::Result<()>>,
-    state: Arc<Mutex<HandleState>>,
+    pub thread: JoinHandle<io::Result<()>>,
+    pub state: Arc<Mutex<HandleState>>,
 }
 
 pub struct HandleState {
-    status: Status,
-    error: Option<SessionError>,
-    negotiated_config: Option<Flags>,
+    pub status: Status,
+    pub error: Option<SessionError>,
+    pub negotiated_config: Option<Flags>,
+}
+
+impl HandleState {
+    fn stop_with_error(&mut self, error: SessionError) {
+        self.status = Status::Stopped;
+        self.error = Some(error);
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1064,12 +1071,5 @@ impl<FS: FileSystem> Session<FS> {
         result: Result<&[u8], Errno>,
     ) -> io::Result<()> {
         todo!()
-    }
-}
-
-impl HandleState {
-    fn stop_with_error(&mut self, error: SessionError) {
-        self.status = Status::Stopped;
-        self.error = Some(error);
     }
 }
