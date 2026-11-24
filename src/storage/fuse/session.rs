@@ -3,6 +3,7 @@ use nix::{
     errno::Errno,
     libc::{PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
+    sys::utsname::uname,
     unistd::{Gid, Uid},
 };
 use std::{
@@ -16,12 +17,17 @@ use std::{
 
 use super::{FileSystem, InitConfig, LockType, SUPPORTED_PROTOCOL_MINOR};
 
+const REPLY_HEADER_LEN: usize = 16;
+// fuse_out_header.len includes both the header and the payload.
+const MAX_REPLY_PAYLOAD_LEN: usize = u32::MAX as usize - REPLY_HEADER_LEN;
+const LEGACY_DIRENT_NAME_MAX: usize = 1024;
 
 pub struct Session<FS: FileSystem> {
     filesystem: FS,
     mount_point: PathBuf,
     protocol_version: Option<u32>,
     capabilities: Option<Flags>,
+    dirent_name_max: usize,
 }
 
 pub struct Handle {
@@ -109,11 +115,36 @@ impl SessionError {
 
 impl<FS: FileSystem> Session<FS> {
     pub fn new(filesystem: FS, mount_point: impl Into<PathBuf>) -> Self {
+        let dirent_name_max = uname()
+            .ok()
+            .and_then(|kernel| kernel.release().to_str().map(Self::dirent_name_limit))
+            .unwrap_or(LEGACY_DIRENT_NAME_MAX);
         Self {
             filesystem,
             mount_point: mount_point.into(),
             protocol_version: None,
             capabilities: None,
+            dirent_name_max,
+        }
+    }
+
+    fn dirent_name_limit(kernel_release: &str) -> usize {
+        // Split the release returned by uname at version dots and suffix separators.
+        // For example, 6.18.2-gentoo-dist starts with the components "6" and "18".
+        let mut version = kernel_release.split(['.', '-', '+']);
+
+        // Parse the first component as the major version. A missing or invalid part yields None.
+        let major = version.next().and_then(|part| part.parse::<u32>().ok());
+
+        // Parse the second component as the minor version. Later components are unused.
+        let minor = version.next().and_then(|part| part.parse::<u32>().ok());
+
+        // Select the directory entry name limit by comparing the numeric version pair.
+        match (major, minor) {
+            // Linux 6.15 raised FUSE_NAME_MAX for directory records to PATH_MAX - 1.
+            (Some(major), Some(minor)) if (major, minor) >= (6, 15) => PATH_MAX as usize - 1,
+            // Use 1024 bytes for older kernels or releases that could not be parsed.
+            _ => LEGACY_DIRENT_NAME_MAX,
         }
     }
 
@@ -459,7 +490,55 @@ impl<FS: FileSystem> Session<FS> {
     }
 
     fn serialize_reply(&self, payload: reply::Payload) -> Result<Vec<u8>, Errno> {
-        todo!()
+        use reply::Payload;
+
+        let protocol_version = self.protocol_version.ok_or(Errno::EPROTO)?;
+        let capabilities = self.capabilities.ok_or(Errno::EPROTO)?;
+        let mut bytes = Vec::new();
+        match payload {
+            Payload::Empty => bytes = Self::serialize_empty(),
+            Payload::Entry(entry) => {
+                Self::serialize_entry(&mut bytes, &entry, protocol_version, capabilities)?
+            }
+            Payload::Attr(attr) => {
+                Self::serialize_attr(&mut bytes, &attr, protocol_version, capabilities)?
+            }
+            Payload::Readlink(readlink) => bytes = Self::serialize_readlink(readlink),
+            Payload::Open(open) => {
+                Self::serialize_open(&mut bytes, &open, protocol_version, capabilities)?
+            }
+            Payload::Read(read) => bytes = Self::serialize_read(read),
+            Payload::Write(write) => Self::serialize_write(&mut bytes, write),
+            Payload::Statfs(statfs) => {
+                Self::serialize_statfs(&mut bytes, &statfs, protocol_version)
+            }
+            Payload::Xattr(xattr) => bytes = Self::serialize_xattr(xattr),
+            Payload::Readdir(readdir) => {
+                Self::serialize_readdir(&mut bytes, &readdir, self.dirent_name_max)?
+            }
+            Payload::Lock(lock) => Self::serialize_lock(&mut bytes, &lock)?,
+            Payload::Create(create) => {
+                Self::serialize_create(&mut bytes, &create, protocol_version, capabilities)?
+            }
+            Payload::Bmap(bmap) => Self::serialize_bmap(&mut bytes, bmap),
+            Payload::Ioctl(ioctl) => Self::serialize_ioctl(&mut bytes, ioctl)?,
+            Payload::Poll(poll) => Self::serialize_poll(&mut bytes, poll),
+            Payload::ReaddirPlus(readdir) => Self::serialize_readdir_plus(
+                &mut bytes,
+                &readdir,
+                protocol_version,
+                capabilities,
+                self.dirent_name_max,
+            )?,
+            Payload::Lseek(lseek) => Self::serialize_lseek(&mut bytes, lseek),
+            Payload::Statx(statx) => Self::serialize_statx(&mut bytes, statx),
+            Payload::CopyFileRange64(copy) => Self::serialize_copy_file_range64(&mut bytes, copy),
+        }
+
+        if bytes.len() > MAX_REPLY_PAYLOAD_LEN {
+            return Err(Errno::EOVERFLOW);
+        }
+        Ok(bytes)
     }
 
     // After confirming major version 7, encode the INIT reply and return the selected config.
@@ -694,6 +773,176 @@ impl<FS: FileSystem> Session<FS> {
             }
             reply::XattrResult::Data(data) => data,
         }
+    }
+
+    #[inline]
+    fn serialize_readdir(
+        bytes: &mut Vec<u8>,
+        readdir: &reply::ReaddirResult,
+        max_name_len: usize,
+    ) -> Result<(), Errno> {
+        for entry in &readdir.entries {
+            Self::serialize_dirent(bytes, entry, max_name_len)?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_lock(bytes: &mut Vec<u8>, result: &reply::LockResult) -> Result<(), Errno> {
+        let lock = &result.lock;
+        if lock.lock_type != LockType::Unlock
+            && (lock.start > lock.end || lock.end > i64::MAX as u64)
+        {
+            return Err(Errno::EIO);
+        }
+        bytes.extend_from_slice(&lock.start.to_ne_bytes());
+        bytes.extend_from_slice(&lock.end.to_ne_bytes());
+        bytes.extend_from_slice(&(lock.lock_type as u32).to_ne_bytes());
+        bytes.extend_from_slice(&lock.pid.to_ne_bytes());
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_create(
+        bytes: &mut Vec<u8>,
+        create: &reply::CreateResult,
+        protocol_version: u32,
+        capabilities: Flags,
+    ) -> Result<(), Errno> {
+        Self::serialize_entry(bytes, &create.entry, protocol_version, capabilities)?;
+        Self::serialize_open(bytes, &create.open, protocol_version, capabilities)
+    }
+
+    #[inline]
+    fn serialize_bmap(bytes: &mut Vec<u8>, bmap: reply::BmapResult) {
+        bytes.extend_from_slice(&bmap.block.to_ne_bytes());
+    }
+
+    #[inline]
+    fn serialize_ioctl(bytes: &mut Vec<u8>, ioctl: reply::IoctlResult) -> Result<(), Errno> {
+        const IOCTL_OUT_LEN: usize = 16;
+
+        // Regular FUSE file and directory ioctls do not allow FUSE_IOCTL_RETRY.
+        let reply::IoctlResult::Complete { result, data } = ioctl else {
+            return Err(Errno::EIO);
+        };
+        if data.len() > MAX_REPLY_PAYLOAD_LEN - IOCTL_OUT_LEN {
+            return Err(Errno::EOVERFLOW);
+        }
+        bytes
+            .try_reserve_exact(IOCTL_OUT_LEN + data.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        bytes.extend_from_slice(&result.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 12]);
+        bytes.extend_from_slice(&data);
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_poll(bytes: &mut Vec<u8>, poll: reply::PollResult) {
+        bytes.extend_from_slice(&poll.revents.bits().to_ne_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+    }
+
+    #[inline]
+    fn serialize_readdir_plus(
+        bytes: &mut Vec<u8>,
+        readdir: &reply::ReaddirPlusResult,
+        protocol_version: u32,
+        capabilities: Flags,
+        max_name_len: usize,
+    ) -> Result<(), Errno> {
+        if protocol_version < 21 || !capabilities.contains(Flags::DO_READDIRPLUS) {
+            return Err(Errno::EIO);
+        }
+        for entry in &readdir.entries {
+            match &entry.entry {
+                Some(inode) if inode.nodeid != 0 => {
+                    Self::serialize_entry(bytes, inode, protocol_version, capabilities)?
+                }
+                Some(_) => return Err(Errno::EIO),
+                None => bytes.extend_from_slice(&[0; 128]),
+            }
+            Self::serialize_dirent(bytes, &entry.dirent, max_name_len)?;
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_lseek(bytes: &mut Vec<u8>, lseek: reply::LseekResult) {
+        bytes.extend_from_slice(&lseek.offset.to_ne_bytes());
+    }
+
+    #[inline]
+    fn serialize_statx(bytes: &mut Vec<u8>, statx: reply::StatxResult) {
+        bytes.extend_from_slice(&statx.attr_valid.to_ne_bytes());
+        bytes.extend_from_slice(&statx.attr_valid_nsec.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 20]);
+
+        let stat = statx.stat;
+        bytes.extend_from_slice(&stat.mask.to_ne_bytes());
+        bytes.extend_from_slice(&stat.blksize.to_ne_bytes());
+        bytes.extend_from_slice(&stat.attributes.to_ne_bytes());
+        bytes.extend_from_slice(&stat.nlink.to_ne_bytes());
+        bytes.extend_from_slice(&stat.uid.to_ne_bytes());
+        bytes.extend_from_slice(&stat.gid.to_ne_bytes());
+        bytes.extend_from_slice(&stat.mode.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 2]);
+        bytes.extend_from_slice(&stat.ino.to_ne_bytes());
+        bytes.extend_from_slice(&stat.size.to_ne_bytes());
+        bytes.extend_from_slice(&stat.blocks.to_ne_bytes());
+        bytes.extend_from_slice(&stat.attributes_mask.to_ne_bytes());
+        for time in [stat.atime, stat.btime, stat.ctime, stat.mtime] {
+            bytes.extend_from_slice(&time.tv_sec.to_ne_bytes());
+            bytes.extend_from_slice(&time.tv_nsec.to_ne_bytes());
+            bytes.extend_from_slice(&[0; 4]);
+        }
+        bytes.extend_from_slice(&stat.rdev_major.to_ne_bytes());
+        bytes.extend_from_slice(&stat.rdev_minor.to_ne_bytes());
+        bytes.extend_from_slice(&stat.dev_major.to_ne_bytes());
+        bytes.extend_from_slice(&stat.dev_minor.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 112]);
+    }
+
+    #[inline]
+    fn serialize_copy_file_range64(bytes: &mut Vec<u8>, copy: reply::CopyFileRangeResult) {
+        bytes.extend_from_slice(&copy.bytes_copied.to_ne_bytes());
+    }
+
+    #[inline]
+    fn serialize_dirent(
+        bytes: &mut Vec<u8>,
+        entry: &reply::DirEntry,
+        max_name_len: usize,
+    ) -> Result<(), Errno> {
+        const DIRENT_HEADER_LEN: usize = 24;
+
+        if entry.name.is_empty()
+            || entry.name.len() > max_name_len
+            || entry.name.contains(&0)
+            || entry.name.contains(&b'/')
+        {
+            return Err(Errno::EIO);
+        }
+        let name_len = u32::try_from(entry.name.len()).map_err(|_| Errno::EOVERFLOW)?;
+        let record_end = bytes
+            .len()
+            .checked_add(DIRENT_HEADER_LEN)
+            .and_then(|end| end.checked_add(entry.name.len()))
+            .and_then(|end| end.checked_next_multiple_of(8))
+            .filter(|&end| end <= MAX_REPLY_PAYLOAD_LEN)
+            .ok_or(Errno::EOVERFLOW)?;
+
+        bytes
+            .try_reserve(record_end - bytes.len())
+            .map_err(|_| Errno::ENOMEM)?;
+        bytes.extend_from_slice(&entry.ino.to_ne_bytes());
+        bytes.extend_from_slice(&entry.offset.to_ne_bytes());
+        bytes.extend_from_slice(&name_len.to_ne_bytes());
+        bytes.extend_from_slice(&entry.file_type.to_ne_bytes());
+        bytes.extend_from_slice(&entry.name);
+        bytes.resize(record_end, 0);
+        Ok(())
     }
 
     fn write_reply(
