@@ -298,7 +298,7 @@ impl<FS: FileSystem> Session<FS> {
                 state
                     .lock()
                     .stop_with_error(SessionError::CannotParseRequest);
-                let error = io::Error::new(io::ErrorKind::InvalidData, format!("{error:?}"));
+                let error = io::Error::new(io::ErrorKind::InvalidData, error);
                 return Err(self.rollback_mount(fuse_file, error));
             }
         };
