@@ -1,6 +1,7 @@
 use super::{Flags, helper, reply, request};
 use nix::{
     errno::Errno,
+    libc::{PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
 };
@@ -569,6 +570,130 @@ impl<FS: FileSystem> Session<FS> {
         bytes.extend_from_slice(&result.attr_valid_nsec.to_ne_bytes());
         bytes.extend_from_slice(&[0; 4]);
         Self::serialize_inode_attr(bytes, &result.attr, protocol_version, capabilities)
+    }
+
+    #[inline]
+    fn serialize_inode_attr(
+        bytes: &mut Vec<u8>,
+        attr: &reply::Attr,
+        protocol_version: u32,
+        capabilities: Flags,
+    ) -> Result<(), Errno> {
+        const FUSE_ATTR_SUBMOUNT: u32 = 1 << 0;
+
+        if attr.flags & FUSE_ATTR_SUBMOUNT != 0
+            && (protocol_version < 32
+                || !capabilities.contains(Flags::SUBMOUNTS)
+                || attr.mode & S_IFMT as u32 != S_IFDIR as u32)
+        {
+            return Err(Errno::EIO);
+        }
+
+        bytes.extend_from_slice(&attr.ino.to_ne_bytes());
+        bytes.extend_from_slice(&attr.size.to_ne_bytes());
+        bytes.extend_from_slice(&attr.blocks.to_ne_bytes());
+        bytes.extend_from_slice(&attr.atime.to_ne_bytes());
+        bytes.extend_from_slice(&attr.mtime.to_ne_bytes());
+        bytes.extend_from_slice(&attr.ctime.to_ne_bytes());
+        bytes.extend_from_slice(&attr.atimensec.to_ne_bytes());
+        bytes.extend_from_slice(&attr.mtimensec.to_ne_bytes());
+        bytes.extend_from_slice(&attr.ctimensec.to_ne_bytes());
+        bytes.extend_from_slice(&attr.mode.to_ne_bytes());
+        bytes.extend_from_slice(&attr.nlink.to_ne_bytes());
+        bytes.extend_from_slice(&attr.uid.to_ne_bytes());
+        bytes.extend_from_slice(&attr.gid.to_ne_bytes());
+        bytes.extend_from_slice(&attr.rdev.to_ne_bytes());
+        if protocol_version >= 9 {
+            let flags = if protocol_version >= 32 {
+                attr.flags
+            } else {
+                0
+            };
+            bytes.extend_from_slice(&attr.blksize.to_ne_bytes());
+            bytes.extend_from_slice(&flags.to_ne_bytes());
+        }
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_readlink(readlink: reply::ReadlinkResult) -> Vec<u8> {
+        readlink.target
+    }
+
+    #[inline]
+    fn serialize_open(
+        bytes: &mut Vec<u8>,
+        open: &reply::OpenResult,
+        protocol_version: u32,
+        capabilities: Flags,
+    ) -> Result<(), Errno> {
+        const FOPEN_DIRECT_IO: u32 = 1 << 0;
+        const FOPEN_NOFLUSH: u32 = 1 << 5;
+        const FOPEN_PARALLEL_DIRECT_WRITES: u32 = 1 << 6;
+        const FOPEN_PASSTHROUGH: u32 = 1 << 7;
+        const FOPEN_PASSTHROUGH_MASK: u32 =
+            FOPEN_PASSTHROUGH | FOPEN_DIRECT_IO | FOPEN_PARALLEL_DIRECT_WRITES | FOPEN_NOFLUSH;
+
+        if open.backing_id_64 != 0 {
+            return Err(Errno::EIO);
+        }
+
+        if open.open_flags & FOPEN_PASSTHROUGH != 0 {
+            if protocol_version < 40
+                || !capabilities.contains(Flags::PASSTHROUGH)
+                || open.backing_id <= 0
+                || open.open_flags & !FOPEN_PASSTHROUGH_MASK != 0
+            {
+                return Err(Errno::EIO);
+            }
+        } else if open.backing_id != 0 {
+            return Err(Errno::EIO);
+        }
+
+        bytes.extend_from_slice(&open.fh.to_ne_bytes());
+        bytes.extend_from_slice(&open.open_flags.to_ne_bytes());
+        bytes.extend_from_slice(&open.backing_id.to_ne_bytes());
+        Ok(())
+    }
+
+    #[inline]
+    fn serialize_read(read: reply::ReadResult) -> Vec<u8> {
+        read.data
+    }
+
+    #[inline]
+    fn serialize_write(bytes: &mut Vec<u8>, write: reply::WriteResult) {
+        bytes.extend_from_slice(&write.size.to_ne_bytes());
+        bytes.extend_from_slice(&[0; 4]);
+    }
+
+    #[inline]
+    fn serialize_statfs(bytes: &mut Vec<u8>, statfs: &reply::StatfsResult, protocol_version: u32) {
+        let stats = &statfs.stats;
+        bytes.extend_from_slice(&stats.blocks.to_ne_bytes());
+        bytes.extend_from_slice(&stats.free_blocks.to_ne_bytes());
+        bytes.extend_from_slice(&stats.available_blocks.to_ne_bytes());
+        bytes.extend_from_slice(&stats.files.to_ne_bytes());
+        bytes.extend_from_slice(&stats.free_inodes.to_ne_bytes());
+        bytes.extend_from_slice(&stats.block_size.to_ne_bytes());
+        bytes.extend_from_slice(&stats.namelen.to_ne_bytes());
+        if protocol_version >= 4 {
+            bytes.extend_from_slice(&stats.fragment_size.to_ne_bytes());
+            bytes.extend_from_slice(&[0; 28]);
+        }
+    }
+
+    #[inline]
+    fn serialize_xattr(xattr: reply::XattrResult) -> Vec<u8> {
+        match xattr {
+            reply::XattrResult::Size(size) => {
+                let mut bytes = Vec::with_capacity(8);
+                bytes.extend_from_slice(&size.to_ne_bytes());
+                bytes.extend_from_slice(&[0; 4]);
+                bytes
+            }
+            reply::XattrResult::Data(data) => data,
+        }
     }
 
     fn write_reply(
