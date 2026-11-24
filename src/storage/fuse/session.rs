@@ -673,14 +673,38 @@ impl<FS: FileSystem> Session<FS> {
         if !config.flags.contains(Flags::INIT_EXT) {
             config.flags &= Flags::from_bits_truncate(u64::from(u32::MAX));
         }
-        if !config.flags.contains(Flags::MAX_PAGES) {
-            config.max_pages = 0;
-        }
+
         config.max_write = if minor < 5 {
             MIN_MAX_WRITE
         } else {
             config.max_write.max(MIN_MAX_WRITE)
         };
+        if minor < 6 {
+            config.max_readahead = 0;
+        }
+        if minor < 13 {
+            config.max_background = 0;
+            config.congestion_threshold = 0;
+        }
+        if minor < 23 {
+            config.time_gran = 0;
+        }
+
+        if !config.flags.contains(Flags::MAX_PAGES) {
+            config.max_pages = 0;
+        }
+        if !config.flags.contains(Flags::MAP_ALIGNMENT) {
+            config.map_alignment = 0;
+        }
+        if !config
+            .flags
+            .intersects(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2)
+        {
+            config.max_stack_depth = 0;
+        }
+        if !config.flags.contains(Flags::REQUEST_TIMEOUT) {
+            config.request_timeout = 0;
+        }
 
         let mut bytes = Vec::with_capacity(64);
         bytes.extend_from_slice(&7u32.to_ne_bytes());
@@ -690,49 +714,26 @@ impl<FS: FileSystem> Session<FS> {
         }
 
         let flags = config.flags.bits();
-        let max_readahead = if minor >= 6 { config.max_readahead } else { 0 };
-        bytes.extend_from_slice(&max_readahead.to_ne_bytes());
+        bytes.extend_from_slice(&config.max_readahead.to_ne_bytes());
         // This word is reserved in FUSE 7.5 and should be zero; the 7.5 kernel ignores any flag
         // bits written here. Technically there is an issue here because the FUSE 7.5 kernel marks
         // bits 8–20 as unused, but valid values may be filled in there; since the FUSE kernel
         // ignores this value, it's not a big deal, so I won't change it.
         bytes.extend_from_slice(&(flags as u32).to_ne_bytes());
-        if minor >= 13 {
-            bytes.extend_from_slice(&config.max_background.to_ne_bytes());
-            bytes.extend_from_slice(&config.congestion_threshold.to_ne_bytes());
-        } else {
-            bytes.extend_from_slice(&[0; 4]);
-        }
+        bytes.extend_from_slice(&config.max_background.to_ne_bytes());
+        bytes.extend_from_slice(&config.congestion_threshold.to_ne_bytes());
         bytes.extend_from_slice(&config.max_write.to_ne_bytes());
         if minor < 23 {
             return (config, bytes);
         }
 
-        let map_alignment = if config.flags.contains(Flags::MAP_ALIGNMENT) {
-            config.map_alignment
-        } else {
-            0
-        };
         let flags2 = (flags >> 32) as u32;
-        let max_stack_depth = if config
-            .flags
-            .intersects(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2)
-        {
-            config.max_stack_depth
-        } else {
-            0
-        };
-        let request_timeout = if config.flags.contains(Flags::REQUEST_TIMEOUT) {
-            config.request_timeout
-        } else {
-            0
-        };
         bytes.extend_from_slice(&config.time_gran.to_ne_bytes());
         bytes.extend_from_slice(&config.max_pages.to_ne_bytes());
-        bytes.extend_from_slice(&map_alignment.to_ne_bytes());
+        bytes.extend_from_slice(&config.map_alignment.to_ne_bytes());
         bytes.extend_from_slice(&flags2.to_ne_bytes());
-        bytes.extend_from_slice(&max_stack_depth.to_ne_bytes());
-        bytes.extend_from_slice(&request_timeout.to_ne_bytes());
+        bytes.extend_from_slice(&config.max_stack_depth.to_ne_bytes());
+        bytes.extend_from_slice(&config.request_timeout.to_ne_bytes());
         bytes.extend_from_slice(&[0; 22]);
         (config, bytes)
     }
