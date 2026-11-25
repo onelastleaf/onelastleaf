@@ -3,15 +3,16 @@ use nix::{
     errno::Errno,
     libc::{O_NONBLOCK, PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
+    poll::{PollFd, PollFlags, PollTimeout, poll},
     sys::eventfd::{EfdFlags, EventFd},
     sys::utsname::uname,
-    unistd::{Gid, Uid},
+    unistd::{Gid, Uid, read},
 };
 use std::{
     fs::{File, OpenOptions},
     io::{self, IoSlice, Read, Write},
     os::{
-        fd::{AsRawFd, RawFd},
+        fd::{AsFd, AsRawFd, RawFd},
         unix::fs::OpenOptionsExt,
     },
     path::PathBuf,
@@ -25,6 +26,24 @@ const REPLY_HEADER_LEN: usize = 16;
 // fuse_out_header.len includes both the header and the payload.
 const MAX_REPLY_PAYLOAD_LEN: usize = u32::MAX as usize - REPLY_HEADER_LEN;
 const LEGACY_DIRENT_NAME_MAX: usize = 1024;
+// Linux's FUSE_MIN_READ_BUFFER is the minimum read buffer size for /dev/fuse.
+const MIN_READ_BUFFER_LEN: usize = 8192;
+// Why this constant? First, we need to understand that for a daemon to read requests from the
+// kernel, it must preallocate a buffer. Even though it doesn't know how large the next request will
+// be, it has to impose a size limit, and anything exceeding that size must be rejected. This cannot
+// be changed.
+//
+// But how is this maximum size set? Where does it come from? The answer is that it is determined
+// jointly by the `max_write` parameter and an extra space called ROOM (this constant lol). For
+// example, if `max_write` is set to 4 KiB and the extra space ROOM is set to 4 KiB, the total
+// buffer reserved is 8 KiB.
+//
+// Naturally, one might ask: what if there is a request larger than this 8 KiB? For example,
+// `FUSE_SETXATTR` can exceed 8 KiB; the maximum request size for `FUSE_SETXATTR` is 65,840 bytes.
+// The answer, of course, is that there's not much you can do. The kernel will simply reject the
+// userspace process that issued this request. That userspace process will fail outright. In effect,
+// the responsibility is shifted to the caller.
+const READ_BUFFER_HEADER_ROOM: usize = 4096;
 
 /// Options used when mounting a FUSE session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -93,6 +112,7 @@ pub enum SessionError {
     NoFuseFile,
     MountFailed,
     CannotReadFuse,
+    ShortRead,
     CannotParseRequest,
     InitFailed,
     RequestLoopSetupFailed,
@@ -114,6 +134,7 @@ impl std::fmt::Display for SessionError {
             Self::CannotReadFuse => {
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue."
             }
+            Self::ShortRead => "Read from /dev/fuse returned an incomplete request header.",
             Self::CannotParseRequest => {
                 "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue."
             }
@@ -318,7 +339,7 @@ impl<FS: FileSystem> Session<FS> {
         }
 
         // 3. Receive the INIT packet from the Linux kernel.
-        let mut buffer = vec![0u8; 8192];
+        let mut buffer = vec![0u8; MIN_READ_BUFFER_LEN];
 
         let size = loop {
             match fuse_file.read(&mut buffer) {
@@ -408,13 +429,128 @@ impl<FS: FileSystem> Session<FS> {
 
         self.protocol_version = Some(selected_config.protocol_version);
         self.capabilities = Some(selected_config.flags);
-        {
-            let mut state = state.lock();
-            state.negotiated_config = Some(selected_config.flags);
-            state.status = Status::Running;
-        }
+        let (session_error, result) =
+            match self.run_request_loop(&fuse_file, state, selected_config, buffer) {
+                Ok(()) => {
+                    drop(fuse_file);
+                    (None, Ok(()))
+                }
+                Err((session_error, error)) => (
+                    Some(session_error),
+                    Err(self.rollback_mount(fuse_file, error)),
+                ),
+            };
+        self.filesystem.destroy();
 
-        todo!("dispatch FUSE requests")
+        let mut state = state.lock();
+        state.status = Status::Stopped;
+        state.error = session_error;
+        result
+    }
+
+    fn run_request_loop(
+        &self,
+        fuse_file: &File,
+        state: &Mutex<HandleState>,
+        config: InitConfig,
+        mut buffer: Vec<u8>,
+    ) -> Result<(), (SessionError, io::Error)> {
+        // Reuse the INIT buffer and make room for the target buffer size.
+        // The target size is negotiated `max_write` + ROOM.
+        // Prepare the read buffer max size.
+        let setup_error = |errno: Errno| (SessionError::RequestLoopSetupFailed, errno.into());
+        let buffer_len = (config.max_write as usize)
+            .checked_add(READ_BUFFER_HEADER_ROOM)
+            .ok_or_else(|| setup_error(Errno::EOVERFLOW))?
+            .max(MIN_READ_BUFFER_LEN);
+        // if INIT buffer is enough, reuse it; otherwise, resize it.
+        buffer
+            .try_reserve_exact(buffer_len.saturating_sub(buffer.len()))
+            .map_err(|_| setup_error(Errno::ENOMEM))?;
+        buffer.resize(buffer_len, 0);
+
+        // Publish readiness once setup is complete. Clone the wake fd so polling can proceed after
+        // releasing the shared state lock.
+        let wake_fd = {
+            let mut state = state.lock();
+            state.negotiated_config = Some(config.flags);
+            state.status = Status::Running;
+            Arc::clone(&state.wake_fd)
+        };
+        let mut fds = [
+            PollFd::new(fuse_file.as_fd(), PollFlags::POLLIN),
+            PollFd::new(wake_fd.as_fd(), PollFlags::POLLIN),
+        ];
+
+        loop {
+            // Sleep until a FUSE request or a wakeup arrives. Resume waiting if a signal interrupts
+            // poll.
+            match poll(&mut fds, PollTimeout::NONE) {
+                Ok(_) => {}
+                Err(Errno::EINTR) => continue,
+                Err(errno) => return Err((SessionError::PollFailed, errno.into())),
+            }
+
+            let wake_events = fds[1].revents().unwrap_or(PollFlags::empty());
+            if wake_events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP | PollFlags::POLLNVAL)
+            {
+                return Err((SessionError::WakeFdFailed, Errno::EIO.into()));
+            }
+            if wake_events.contains(PollFlags::POLLIN) {
+                match wake_fd.read() {
+                    Ok(_) | Err(Errno::EAGAIN) => {}
+                    Err(errno) => return Err((SessionError::WakeFdFailed, errno.into())),
+                }
+            }
+            let unmount_requested = state.lock().unmount_requested;
+            if unmount_requested {
+                return umount2(&self.mount_point, MntFlags::MNT_DETACH)
+                    .map_err(|errno| (SessionError::UnmountFailed, errno.into()));
+            }
+
+            let fuse_events = fds[0].revents().unwrap_or(PollFlags::empty());
+            if fuse_events.contains(PollFlags::POLLNVAL) {
+                return Err((SessionError::PollFailed, Errno::EBADF.into()));
+            }
+            if fuse_events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP) {
+                return Ok(());
+            }
+            if !fuse_events.contains(PollFlags::POLLIN) {
+                continue;
+            }
+
+            // - A read shorter than the 40-byte header stops the loop with ShortRead and EIO.
+            // - A read of at least 40 bytes goes to the request parser.
+            // - ENODEV or ECONNABORTED means the FUSE connection has ended. Stop the loop.
+            // - Wait on poll again after EAGAIN (empty queue) or EINTR (interrupted read).
+            // - Any other errno stops the loop with CannotReadFuse.
+            let size = match read(fuse_file, &mut buffer) {
+                Ok(size) if size < 40 => return Err((SessionError::ShortRead, Errno::EIO.into())),
+                Ok(size) => size,
+                Err(Errno::ENODEV | Errno::ECONNABORTED) => return Ok(()),
+                Err(Errno::EAGAIN | Errno::EINTR) => continue,
+                Err(errno) => return Err((SessionError::CannotReadFuse, errno.into())),
+            };
+            // Parse the bytes returned by this read. The buffer is reused for each request.
+            let request = self.parse_fuse_request(&buffer[..size]).map_err(|error| {
+                (
+                    SessionError::CannotParseRequest,
+                    io::Error::new(io::ErrorKind::InvalidData, error),
+                )
+            })?;
+
+            // Use the normal error cleanup until request dispatch is wired into the loop.
+            return Err((
+                SessionError::UnknownError,
+                io::Error::new(
+                    io::ErrorKind::Unsupported,
+                    format!(
+                        "FUSE request dispatch unavailable for opcode {}",
+                        request.header.opcode
+                    ),
+                ),
+            ));
+        }
     }
 
     fn parse_fuse_request<'a>(
