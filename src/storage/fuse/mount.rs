@@ -10,7 +10,7 @@ use std::{
     io,
     os::{
         fd::AsRawFd,
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+        unix::{ffi::OsStringExt, fs::OpenOptionsExt},
     },
     path::{Path, PathBuf},
 };
@@ -24,7 +24,6 @@ pub struct MountOptions {
 }
 
 pub(super) struct Mount {
-    mount_point: PathBuf,
     fsname: String,
 }
 
@@ -41,8 +40,6 @@ impl Mount {
             .open("/dev/fuse")
             .map_err(|error| (SessionError::NoFuseFile, error))?;
 
-        // Resolve the path before mounting so cleanup can compare it with mountinfo without
-        // accessing the FUSE filesystem after disconnect.
         let mount_point = fs::canonicalize(mount_point)
             .map_err(|error| (SessionError::ResolveMountPointFailed, error))?;
         let suffix: u32 = std::random::random(..);
@@ -74,23 +71,14 @@ impl Mount {
             (reason, errno.into())
         })?;
 
-        Ok((
-            Self {
-                mount_point,
-                fsname,
-            },
-            fuse_file,
-        ))
+        Ok((Self { fsname }, fuse_file))
     }
 
     pub(super) fn unmount(&self) -> Result<(), (SessionError, io::Error)> {
         let contents = fs::read("/proc/self/mountinfo")
             .map_err(|error| (SessionError::ReadMountInfoFailed, error))?;
-        let owns_mount =
-            is_topmost_fuse_mount(&contents, &self.mount_point, self.fsname.as_bytes())
-                .map_err(|error| (SessionError::ParseMountInfoFailed, error))?;
-        if owns_mount {
-            umount2(&self.mount_point, MntFlags::MNT_DETACH)
+        if let Some(mount_point) = find_unmount_target(&contents, &self.fsname)? {
+            umount2(&mount_point, MntFlags::MNT_DETACH)
                 .map_err(|errno| (SessionError::UnmountFailed, errno.into()))?;
         }
         Ok(())
@@ -104,8 +92,8 @@ impl Mount {
             Err((reason, unmount_error)) => io::Error::new(
                 error.kind(),
                 format!(
-                    "{error}. {reason} {}: {unmount_error}",
-                    self.mount_point.display(),
+                    "{error}. Cleanup for {} failed. {reason} {unmount_error}",
+                    self.fsname,
                 ),
             ),
         }
@@ -116,7 +104,7 @@ struct MountInfo<'a> {
     id: u64,
     parent_id: u64,
     root: &'a [u8],
-    mount_point: Vec<u8>,
+    mount_point: PathBuf,
     filesystem_type: &'a [u8],
     source: &'a [u8],
 }
@@ -127,7 +115,11 @@ impl<'a> MountInfo<'a> {
         let id = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
         let parent_id = std::str::from_utf8(fields.next()?).ok()?.parse().ok()?;
         let root = fields.nth(1)?;
-        let mount_point = unescape_mountinfo_field(fields.next()?)?;
+        let decoded_path = unescape_mountinfo_field(fields.next()?)?;
+        let mount_point = PathBuf::from(std::ffi::OsString::from_vec(decoded_path));
+        if !mount_point.is_absolute() {
+            return None;
+        }
         fields.next()?;
         fields.find(|field| *field == b"-")?;
         let filesystem_type = fields.next()?;
@@ -166,11 +158,11 @@ fn unescape_mountinfo_field(mut field: &[u8]) -> Option<Vec<u8>> {
     Some(decoded)
 }
 
-fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> io::Result<bool> {
+fn parse_mountinfo(contents: &[u8]) -> io::Result<Vec<MountInfo<'_>>> {
     let mut mounts = Vec::new();
     let lines = contents.strip_suffix(b"\n").unwrap_or(contents);
     if lines.is_empty() {
-        return Ok(false);
+        return Ok(mounts);
     }
     for (index, line) in lines.split(|&byte| byte == b'\n').enumerate() {
         let entry = MountInfo::parse(line).ok_or_else(|| {
@@ -188,7 +180,51 @@ fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> 
             "duplicate mount ID",
         ));
     }
+    Ok(mounts)
+}
 
+fn find_unmount_target(
+    contents: &[u8],
+    fsname: &str,
+) -> Result<Option<PathBuf>, (SessionError, io::Error)> {
+    let parse_error = |error| (SessionError::ParseMountInfoFailed, error);
+    let mounts = parse_mountinfo(contents).map_err(parse_error)?;
+    let mut matched = None;
+    for entry in &mounts {
+        if entry.filesystem_type != b"fuse" || entry.root != b"/" {
+            continue;
+        }
+        let source = unescape_mountinfo_field(entry.source).ok_or_else(|| {
+            parse_error(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid FUSE mount source",
+            ))
+        })?;
+        if source != fsname.as_bytes() {
+            continue;
+        }
+        if matched.replace(entry).is_some() {
+            return Err((
+                SessionError::AmbiguousMountSource,
+                io::Error::other(format!(
+                    "multiple FUSE root mounts use the source {fsname:?}"
+                )),
+            ));
+        }
+    }
+    let Some(target) = matched else {
+        return Ok(None);
+    };
+    match topmost_mount(&mounts, &target.mount_point).map_err(parse_error)? {
+        Some(visible) if visible.id == target.id => Ok(Some(target.mount_point.clone())),
+        _ => Ok(None),
+    }
+}
+
+fn topmost_mount<'mounts, 'data>(
+    mounts: &'mounts [MountInfo<'data>],
+    mount_point: &Path,
+) -> io::Result<Option<&'mounts MountInfo<'data>>> {
     // Walk from the root to the target, following each stack on the visible parent. A mount
     // below a covered ancestor stays in mountinfo but cannot be reached through the path.
     let ancestors: Vec<_> = mount_point.ancestors().collect();
@@ -196,7 +232,7 @@ fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> 
     for path in ancestors.into_iter().rev() {
         loop {
             let mut children = mounts.iter().filter(|entry| {
-                if entry.mount_point != path.as_os_str().as_bytes() {
+                if entry.mount_point != path {
                     return false;
                 }
                 match visible {
@@ -223,16 +259,5 @@ fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> 
         }
     }
 
-    let Some(entry) = visible else {
-        return Ok(false);
-    };
-    if entry.mount_point != mount_point.as_os_str().as_bytes()
-        || entry.filesystem_type != b"fuse"
-        || entry.root != b"/"
-    {
-        return Ok(false);
-    }
-    let source = unescape_mountinfo_field(entry.source)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "invalid FUSE mount source"))?;
-    Ok(source == fsname)
+    Ok(visible)
 }

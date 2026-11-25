@@ -113,6 +113,7 @@ pub enum SessionError {
     MountSyscallFailed,
     ReadMountInfoFailed,
     ParseMountInfoFailed,
+    AmbiguousMountSource,
     CannotReadFuse,
     ShortRead,
     CannotParseRequest,
@@ -136,6 +137,7 @@ impl std::fmt::Display for SessionError {
             Self::MountSyscallFailed => "The mount system call failed.",
             Self::ReadMountInfoFailed => "Failed to read /proc/self/mountinfo.",
             Self::ParseMountInfoFailed => "Failed to parse /proc/self/mountinfo.",
+            Self::AmbiguousMountSource => "Multiple FUSE root mounts use the session's mount `fsname`. This is impossible.",
             Self::CannotReadFuse => {
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue."
             }
