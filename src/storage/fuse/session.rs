@@ -92,6 +92,10 @@ pub enum SessionError {
     CannotReadFuse,
     CannotParseRequest,
     InitFailed,
+    RequestLoopSetupFailed,
+    PollFailed,
+    WakeFdFailed,
+    UnmountFailed,
     UnknownError,
 }
 
@@ -111,6 +115,10 @@ impl std::fmt::Display for SessionError {
                 "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue."
             }
             Self::InitFailed => "Failed to initialize the FUSE session.",
+            Self::RequestLoopSetupFailed => "Failed to prepare the FUSE request loop.",
+            Self::PollFailed => "Failed to wait for FUSE session events.",
+            Self::WakeFdFailed => "The FUSE session wakeup file descriptor failed.",
+            Self::UnmountFailed => "Failed to unmount the FUSE filesystem.",
             Self::UnknownError => {
                 "The FUSE protocol stack failed to run because it encountered an unexpected error."
             }
