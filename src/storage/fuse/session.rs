@@ -79,9 +79,27 @@ impl Handle {
         }
     }
 
-    /// Signal the session thread to unmount the filesystem.
+    /// Ask the session thread to stop and clean up its mount.
     ///
-    /// Join the session thread to wait for the unmount result.
+    /// **Did the request go through?** `Ok(())` means the request was recorded. A wakeup was
+    /// sent, or one was already waiting. `Err(error)` means the wakeup failed. The request is
+    /// still recorded.
+    ///
+    /// **What happened to the mount?** Call `handle.thread.join()` to wait for the thread.
+    /// If it returns `Ok(Ok(()))`, the session stopped and closed its FUSE device. There are
+    /// three cases.
+    ///
+    /// - The session's mount was on top. The session removed it from the path.
+    /// - The session's mount was already gone. There was nothing to unmount.
+    /// - Another mount hid the session's mount. The session left both in place.
+    ///
+    /// What if someone removes the top mount later? The old FUSE mount can show up again.
+    /// Operations that need the stopped session will fail.
+    ///
+    /// **What if the session fails?** If `join()` returns `Ok(Err(error))`, the session
+    /// returned an error. For example, it could not read the mount table or unmount its
+    /// filesystem. The `error` field of [`HandleState`] gives you the kind of session error.
+    /// If the thread panics, `join()` itself returns `Err`.
     pub fn request_unmount(&self) -> io::Result<()> {
         let wake_fd = {
             let mut state = self.state.lock();
