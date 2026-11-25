@@ -455,6 +455,12 @@ impl<FS: FileSystem> Session<FS> {
         config: InitConfig,
         mut buffer: Vec<u8>,
     ) -> Result<(), (SessionError, io::Error)> {
+        enum SessionEvent {
+            UnmountRequested,
+            RepliesReady,
+            FuseReady(PollFlags),
+        }
+
         // Reuse the INIT buffer and make room for the target buffer size.
         // The target size is negotiated `max_write` + ROOM.
         // Prepare the read buffer max size.
@@ -496,60 +502,86 @@ impl<FS: FileSystem> Session<FS> {
             {
                 return Err((SessionError::WakeFdFailed, Errno::EIO.into()));
             }
-            if wake_events.contains(PollFlags::POLLIN) {
+            let wake_ready = wake_events.contains(PollFlags::POLLIN);
+            if wake_ready {
                 match wake_fd.read() {
                     Ok(_) | Err(Errno::EAGAIN) => {}
                     Err(errno) => return Err((SessionError::WakeFdFailed, errno.into())),
                 }
             }
-            let unmount_requested = state.lock().unmount_requested;
-            if unmount_requested {
-                return umount2(&self.mount_point, MntFlags::MNT_DETACH)
-                    .map_err(|errno| (SessionError::UnmountFailed, errno.into()));
-            }
+            let wake_event = if state.lock().unmount_requested {
+                Some(SessionEvent::UnmountRequested)
+            } else {
+                wake_ready.then_some(SessionEvent::RepliesReady)
+            };
 
             let fuse_events = fds[0].revents().unwrap_or(PollFlags::empty());
-            if fuse_events.contains(PollFlags::POLLNVAL) {
-                return Err((SessionError::PollFailed, Errno::EBADF.into()));
-            }
-            if fuse_events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP) {
-                return Ok(());
-            }
-            if !fuse_events.contains(PollFlags::POLLIN) {
-                continue;
-            }
+            let fuse_event =
+                (!fuse_events.is_empty()).then_some(SessionEvent::FuseReady(fuse_events));
 
-            // - A read shorter than the 40-byte header stops the loop with ShortRead and EIO.
-            // - A read of at least 40 bytes goes to the request parser.
-            // - ENODEV or ECONNABORTED means the FUSE connection has ended. Stop the loop.
-            // - Wait on poll again after EAGAIN (empty queue) or EINTR (interrupted read).
-            // - Any other errno stops the loop with CannotReadFuse.
-            let size = match read(fuse_file, &mut buffer) {
-                Ok(size) if size < 40 => return Err((SessionError::ShortRead, Errno::EIO.into())),
-                Ok(size) => size,
-                Err(Errno::ENODEV | Errno::ECONNABORTED) => return Ok(()),
-                Err(Errno::EAGAIN | Errno::EINTR) => continue,
-                Err(errno) => return Err((SessionError::CannotReadFuse, errno.into())),
-            };
-            // Parse the bytes returned by this read. The buffer is reused for each request.
-            let request = self.parse_fuse_request(&buffer[..size]).map_err(|error| {
-                (
-                    SessionError::CannotParseRequest,
-                    io::Error::new(io::ErrorKind::InvalidData, error),
-                )
-            })?;
+            // Both descriptors can be ready in the same poll. Handle the wake fd first.
+            for event in [wake_event, fuse_event].into_iter().flatten() {
+                match event {
+                    SessionEvent::UnmountRequested => {
+                        return umount2(&self.mount_point, MntFlags::MNT_DETACH)
+                            .map_err(|errno| (SessionError::UnmountFailed, errno.into()));
+                    }
+                    SessionEvent::RepliesReady => {
+                        // TODO: Serialize and write pending replies.
+                    }
+                    SessionEvent::FuseReady(events) => {
+                        if events.contains(PollFlags::POLLNVAL) {
+                            return Err((SessionError::PollFailed, Errno::EBADF.into()));
+                        }
+                        if events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP) {
+                            return Ok(());
+                        }
+                        if !events.contains(PollFlags::POLLIN) {
+                            continue;
+                        }
 
-            // Use the normal error cleanup until request dispatch is wired into the loop.
-            return Err((
-                SessionError::UnknownError,
-                io::Error::new(
-                    io::ErrorKind::Unsupported,
-                    format!(
-                        "FUSE request dispatch unavailable for opcode {}",
-                        request.header.opcode
-                    ),
-                ),
-            ));
+                        // - A read shorter than the 40-byte header stops the loop with ShortRead
+                        //   and EIO.
+                        // - A read of at least 40 bytes goes to the request parser.
+                        // - ENODEV or ECONNABORTED means the FUSE connection has ended. Stop the
+                        //   loop.
+                        // - Wait on poll again after EAGAIN (empty queue) or EINTR (interrupted
+                        //   read).
+                        // - Any other errno stops the loop with CannotReadFuse.
+                        let size = match read(fuse_file, &mut buffer) {
+                            Ok(size) if size < 40 => {
+                                return Err((SessionError::ShortRead, Errno::EIO.into()));
+                            }
+                            Ok(size) => size,
+                            Err(Errno::ENODEV | Errno::ECONNABORTED) => return Ok(()),
+                            Err(Errno::EAGAIN | Errno::EINTR) => continue,
+                            Err(errno) => return Err((SessionError::CannotReadFuse, errno.into())),
+                        };
+                        // Parse the bytes returned by this read. The buffer is reused for each
+                        // request.
+                        let request =
+                            self.parse_fuse_request(&buffer[..size]).map_err(|error| {
+                                (
+                                    SessionError::CannotParseRequest,
+                                    io::Error::new(io::ErrorKind::InvalidData, error),
+                                )
+                            })?;
+
+                        // Use the normal error cleanup until request dispatch is wired into the
+                        // loop.
+                        return Err((
+                            SessionError::UnknownError,
+                            io::Error::new(
+                                io::ErrorKind::Unsupported,
+                                format!(
+                                    "FUSE request dispatch unavailable for opcode {}",
+                                    request.header.opcode
+                                ),
+                            ),
+                        ));
+                    }
+                }
+            }
         }
     }
 
