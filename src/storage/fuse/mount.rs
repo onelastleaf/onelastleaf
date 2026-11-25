@@ -6,7 +6,6 @@ use nix::{
     unistd::{Gid, Uid},
 };
 use std::{
-    collections::HashMap,
     fs::{self, File, OpenOptions},
     io,
     os::{
@@ -168,7 +167,7 @@ fn unescape_mountinfo_field(mut field: &[u8]) -> Option<Vec<u8>> {
 }
 
 fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> io::Result<bool> {
-    let mut mounts = HashMap::new();
+    let mut mounts = Vec::new();
     let lines = contents.strip_suffix(b"\n").unwrap_or(contents);
     if lines.is_empty() {
         return Ok(false);
@@ -180,12 +179,14 @@ fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> 
                 format!("invalid mountinfo entry on line {}", index + 1),
             )
         })?;
-        if mounts.insert(entry.id, entry).is_some() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "duplicate mount ID",
-            ));
-        }
+        mounts.push(entry);
+    }
+    mounts.sort_unstable_by_key(|entry| entry.id);
+    if mounts.windows(2).any(|pair| pair[0].id == pair[1].id) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "duplicate mount ID",
+        ));
     }
 
     // Walk from the root to the target, following each stack on the visible parent. A mount
@@ -194,14 +195,19 @@ fn is_topmost_fuse_mount(contents: &[u8], mount_point: &Path, fsname: &[u8]) -> 
     let mut visible: Option<&MountInfo<'_>> = None;
     for path in ancestors.into_iter().rev() {
         loop {
-            let mut children = mounts.values().filter(|entry| {
+            let mut children = mounts.iter().filter(|entry| {
                 if entry.mount_point != path.as_os_str().as_bytes() {
                     return false;
                 }
                 match visible {
                     Some(parent) => entry.parent_id == parent.id && entry.id != parent.id,
                     // A chroot can hide the mount containing the process's root.
-                    None => entry.parent_id == entry.id || !mounts.contains_key(&entry.parent_id),
+                    None => {
+                        entry.parent_id == entry.id
+                            || mounts
+                                .binary_search_by_key(&entry.parent_id, |parent| parent.id)
+                                .is_err()
+                    }
                 }
             });
             let Some(child) = children.next() else {
