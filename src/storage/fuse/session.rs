@@ -16,7 +16,7 @@ use std::{
         unix::fs::OpenOptionsExt,
     },
     path::PathBuf,
-    sync::{Arc, nonpoison::Mutex},
+    sync::{Arc, mpsc, nonpoison::Mutex},
     thread::{self, JoinHandle},
 };
 
@@ -44,6 +44,8 @@ const MIN_READ_BUFFER_LEN: usize = 8192;
 // userspace process that issued this request. That userspace process will fail outright. In effect,
 // the responsibility is shifted to the caller.
 const READ_BUFFER_HEADER_ROOM: usize = 4096;
+
+type PendingReply = (u64, Result<reply::Payload, Errno>);
 
 /// Options used when mounting a FUSE session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -475,6 +477,9 @@ impl<FS: FileSystem> Session<FS> {
             .map_err(|_| setup_error(Errno::ENOMEM))?;
         buffer.resize(buffer_len, 0);
 
+        // Keep the reply queue open for deferred completions until the request loop exits.
+        let (reply_sender, reply_receiver) = mpsc::channel();
+
         // Publish readiness once setup is complete. Clone the wake fd so polling can proceed after
         // releasing the shared state lock.
         let wake_fd = {
@@ -557,32 +562,176 @@ impl<FS: FileSystem> Session<FS> {
                             Err(Errno::EAGAIN | Errno::EINTR) => continue,
                             Err(errno) => return Err((SessionError::CannotReadFuse, errno.into())),
                         };
-                        // Parse the bytes returned by this read. The buffer is reused for each
-                        // request.
-                        let request =
-                            self.parse_fuse_request(&buffer[..size]).map_err(|error| {
+                        // Dispatch while the request still borrows the read buffer.
+                        self.parse_fuse_request(&buffer[..size])
+                            .and_then(|request| self.dispatch_request(request, &reply_sender))
+                            .map_err(|error| {
                                 (
                                     SessionError::CannotParseRequest,
                                     io::Error::new(io::ErrorKind::InvalidData, error),
                                 )
                             })?;
-
-                        // Use the normal error cleanup until request dispatch is wired into the
-                        // loop.
-                        return Err((
-                            SessionError::UnknownError,
-                            io::Error::new(
-                                io::ErrorKind::Unsupported,
-                                format!(
-                                    "FUSE request dispatch unavailable for opcode {}",
-                                    request.header.opcode
-                                ),
-                            ),
-                        ));
                     }
                 }
             }
         }
+    }
+
+    fn dispatch_request(
+        &self,
+        request: request::Request<'_>,
+        reply_sender: &mpsc::Sender<PendingReply>,
+    ) -> Result<(), ParseError> {
+        let request::Request {
+            header,
+            payload,
+            extensions,
+        } = request;
+        let unique = header.unique;
+        let filesystem = &self.filesystem;
+        let empty = |()| reply::Payload::Empty;
+
+        macro_rules! reply {
+            ($into_payload:expr) => {{
+                let sender = reply_sender.clone();
+                reply::Reply::new(move |result| {
+                    sender
+                        .send((unique, result.map($into_payload)))
+                        .map_err(|_| reply::CantReplyError::QueueClosed)
+                })
+            }};
+        }
+
+        match payload {
+            request::Payload::Init(_) => return Err(ParseError::UnexpectedOpcode(header.opcode)),
+            request::Payload::Lookup(payload) => {
+                filesystem.lookup(header, payload, reply!(reply::Payload::Entry))
+            }
+            request::Payload::Forget(payload) => filesystem.forget(header, payload),
+            request::Payload::Getattr(payload) => {
+                filesystem.getattr(header, payload, reply!(reply::Payload::Attr))
+            }
+            request::Payload::Setattr(payload) => {
+                filesystem.setattr(header, payload, reply!(reply::Payload::Attr))
+            }
+            request::Payload::Readlink => {
+                filesystem.readlink(header, reply!(reply::Payload::Readlink))
+            }
+            request::Payload::Symlink(payload) => {
+                filesystem.symlink(header, payload, extensions, reply!(reply::Payload::Entry))
+            }
+            request::Payload::Mknod(payload) => {
+                filesystem.mknod(header, payload, extensions, reply!(reply::Payload::Entry))
+            }
+            request::Payload::Mkdir(payload) => {
+                filesystem.mkdir(header, payload, extensions, reply!(reply::Payload::Entry))
+            }
+            request::Payload::Unlink(payload) => filesystem.unlink(header, payload, reply!(empty)),
+            request::Payload::Rmdir(payload) => filesystem.rmdir(header, payload, reply!(empty)),
+            request::Payload::Rename(payload) => filesystem.rename(header, payload, reply!(empty)),
+            request::Payload::Link(payload) => {
+                filesystem.link(header, payload, reply!(reply::Payload::Entry))
+            }
+            request::Payload::Open(payload) => {
+                filesystem.open(header, payload, reply!(reply::Payload::Open))
+            }
+            request::Payload::Read(payload) => {
+                filesystem.read(header, payload, reply!(reply::Payload::Read))
+            }
+            request::Payload::Write(payload) => {
+                filesystem.write(header, payload, reply!(reply::Payload::Write))
+            }
+            request::Payload::Statfs => filesystem.statfs(header, reply!(reply::Payload::Statfs)),
+            request::Payload::Release(payload) => {
+                filesystem.release(header, payload, reply!(empty))
+            }
+            request::Payload::Fsync(payload) => filesystem.fsync(header, payload, reply!(empty)),
+            request::Payload::Setxattr(payload) => {
+                filesystem.setxattr(header, payload, reply!(empty))
+            }
+            request::Payload::Getxattr(payload) => {
+                filesystem.getxattr(header, payload, reply!(reply::Payload::Xattr))
+            }
+            request::Payload::Listxattr(payload) => {
+                filesystem.listxattr(header, payload, reply!(reply::Payload::Xattr))
+            }
+            request::Payload::Removexattr(payload) => {
+                filesystem.removexattr(header, payload, reply!(empty))
+            }
+            request::Payload::Flush(payload) => filesystem.flush(header, payload, reply!(empty)),
+            request::Payload::Opendir(payload) => {
+                filesystem.opendir(header, payload, reply!(reply::Payload::Open))
+            }
+            request::Payload::Readdir(payload) => {
+                filesystem.readdir(header, payload, reply!(reply::Payload::Readdir))
+            }
+            request::Payload::Releasedir(payload) => {
+                filesystem.releasedir(header, payload, reply!(empty))
+            }
+            request::Payload::Fsyncdir(payload) => {
+                filesystem.fsyncdir(header, payload, reply!(empty))
+            }
+            request::Payload::Getlk(payload) => {
+                filesystem.getlk(header, payload, reply!(reply::Payload::Lock))
+            }
+            request::Payload::Setlk(payload) => filesystem.setlk(header, payload, reply!(empty)),
+            request::Payload::Setlkw(payload) => filesystem.setlkw(header, payload, reply!(empty)),
+            request::Payload::Access(payload) => filesystem.access(header, payload, reply!(empty)),
+            request::Payload::Create(payload) => {
+                filesystem.create(header, payload, extensions, reply!(reply::Payload::Create))
+            }
+            request::Payload::Interrupt(payload) => filesystem.interrupt(header, payload),
+            request::Payload::Bmap(payload) => {
+                filesystem.bmap(header, payload, reply!(reply::Payload::Bmap))
+            }
+            request::Payload::Destroy => {
+                // The kernel closes the connection after the acknowledgment. run calls destroy
+                // when the loop exits.
+                let _ = reply!(empty).complete(Ok(()));
+            }
+            request::Payload::Ioctl(payload) => {
+                filesystem.ioctl(header, payload, reply!(reply::Payload::Ioctl))
+            }
+            request::Payload::Poll(payload) => {
+                filesystem.poll(header, payload, reply!(reply::Payload::Poll))
+            }
+            request::Payload::NotifyReply(payload) => filesystem.notify_reply(header, payload),
+            request::Payload::BatchForget(payload) => filesystem.batch_forget(header, payload),
+            request::Payload::Fallocate(payload) => {
+                filesystem.fallocate(header, payload, reply!(empty))
+            }
+            request::Payload::ReaddirPlus(payload) => {
+                filesystem.readdir_plus(header, payload, reply!(reply::Payload::ReaddirPlus))
+            }
+            request::Payload::Rename2(payload) => {
+                filesystem.rename2(header, payload, reply!(empty))
+            }
+            request::Payload::Lseek(payload) => {
+                filesystem.lseek(header, payload, reply!(reply::Payload::Lseek))
+            }
+            request::Payload::CopyFileRange(payload) => {
+                filesystem.copy_file_range(header, payload, reply!(reply::Payload::Write))
+            }
+            request::Payload::Setupmapping(payload) => {
+                filesystem.setupmapping(header, payload, reply!(empty))
+            }
+            request::Payload::Removemapping(payload) => {
+                filesystem.removemapping(header, payload, reply!(empty))
+            }
+            request::Payload::Syncfs => filesystem.syncfs(header, reply!(empty)),
+            request::Payload::Tmpfile(payload) => {
+                filesystem.tmpfile(header, payload, extensions, reply!(reply::Payload::Create))
+            }
+            request::Payload::Statx(payload) => {
+                filesystem.statx(header, payload, reply!(reply::Payload::Statx))
+            }
+            request::Payload::CopyFileRange64(payload) => filesystem.copy_file_range64(
+                header,
+                payload,
+                reply!(reply::Payload::CopyFileRange64),
+            ),
+        }
+        Ok(())
     }
 
     fn parse_fuse_request<'a>(
