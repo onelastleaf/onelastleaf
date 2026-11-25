@@ -57,14 +57,14 @@ impl HandleState {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Status {
     Initializing,
     Running,
     Stopped,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
     NoFuseFile,
     MountFailed,
@@ -99,7 +99,7 @@ impl std::fmt::Display for SessionError {
 
 impl std::error::Error for SessionError {}
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParseError {
     // The request length is too short
     InsufficientLength,
