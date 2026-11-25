@@ -1,7 +1,7 @@
 use super::{Flags, helper, reply, request};
 use nix::{
     errno::Errno,
-    libc::{PATH_MAX, S_IFDIR, S_IFMT},
+    libc::{O_NONBLOCK, PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
     sys::eventfd::{EfdFlags, EventFd},
     sys::utsname::uname,
@@ -10,7 +10,10 @@ use nix::{
 use std::{
     fs::{File, OpenOptions},
     io::{self, IoSlice, Read, Write},
-    os::fd::{AsRawFd, RawFd},
+    os::{
+        fd::{AsRawFd, RawFd},
+        unix::fs::OpenOptionsExt,
+    },
     path::PathBuf,
     sync::{Arc, nonpoison::Mutex},
     thread::{self, JoinHandle},
@@ -259,18 +262,22 @@ impl<FS: FileSystem> Session<FS> {
     }
 
     fn open_fuse_file() -> io::Result<File> {
-        OpenOptions::new().read(true).write(true).open("/dev/fuse")
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .custom_flags(O_NONBLOCK)
+            .open("/dev/fuse")
     }
 
-    fn rollback_mount(&self, fuse_file: File, init_error: io::Error) -> io::Error {
+    fn rollback_mount(&self, fuse_file: File, error: io::Error) -> io::Error {
         drop(fuse_file);
 
         match umount2(&self.mount_point, MntFlags::MNT_DETACH) {
-            Ok(()) => init_error,
+            Ok(()) => error,
             Err(unmount_error) => io::Error::new(
-                init_error.kind(),
+                error.kind(),
                 format!(
-                    "{init_error}. Failed to unmount {}: {unmount_error}",
+                    "{error}. Failed to unmount {}: {unmount_error}",
                     self.mount_point.display(),
                 ),
             ),
