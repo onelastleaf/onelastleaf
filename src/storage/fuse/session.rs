@@ -3,6 +3,7 @@ use nix::{
     errno::Errno,
     libc::{PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
+    sys::eventfd::{EfdFlags, EventFd},
     sys::utsname::uname,
     unistd::{Gid, Uid},
 };
@@ -45,8 +46,20 @@ pub struct Handle {
 }
 
 impl Handle {
-    pub fn request_unmount(&self) {
-        todo!()
+    /// Signal the session thread to unmount the filesystem.
+    ///
+    /// Join the session thread to wait for the unmount result.
+    pub fn request_unmount(&self) -> io::Result<()> {
+        let wake_fd = {
+            let mut state = self.state.lock();
+            state.unmount_requested = true;
+            Arc::clone(&state.wake_fd)
+        };
+
+        match wake_fd.write(1) {
+            Ok(_) | Err(Errno::EAGAIN) => Ok(()),
+            Err(error) => Err(error.into()),
+        }
     }
 }
 
@@ -54,6 +67,8 @@ pub struct HandleState {
     pub status: Status,
     pub error: Option<SessionError>,
     pub negotiated_config: Option<Flags>,
+    unmount_requested: bool,
+    wake_fd: Arc<EventFd>,
 }
 
 impl HandleState {
@@ -217,10 +232,15 @@ impl<FS: FileSystem> Session<FS> {
     where
         FS: Send + 'static,
     {
+        let wake_fd = Arc::new(EventFd::from_flags(
+            EfdFlags::EFD_CLOEXEC | EfdFlags::EFD_NONBLOCK,
+        )?);
         let state = Arc::new(Mutex::new(HandleState {
             status: Status::Initializing,
             error: None,
             negotiated_config: None,
+            unmount_requested: false,
+            wake_fd,
         }));
 
         let state_in_thread = Arc::clone(&state);
