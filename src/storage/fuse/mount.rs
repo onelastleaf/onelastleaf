@@ -74,10 +74,14 @@ impl Mount {
         Ok((Self { fsname }, fuse_file))
     }
 
-    pub(super) fn unmount(&self) -> Result<(), (SessionError, io::Error)> {
+    pub(super) fn current_mount_point(&self) -> Result<Option<PathBuf>, (SessionError, io::Error)> {
         let contents = fs::read("/proc/self/mountinfo")
             .map_err(|error| (SessionError::ReadMountInfoFailed, error))?;
-        if let Some(mount_point) = find_unmount_target(&contents, &self.fsname)? {
+        find_mount_point(&contents, &self.fsname)
+    }
+
+    pub(super) fn unmount(&self) -> Result<(), (SessionError, io::Error)> {
+        if let Some(mount_point) = self.current_mount_point()? {
             umount2(&mount_point, MntFlags::MNT_DETACH)
                 .map_err(|errno| (SessionError::UnmountFailed, errno.into()))?;
         }
@@ -183,7 +187,7 @@ fn parse_mountinfo(contents: &[u8]) -> io::Result<Vec<MountInfo<'_>>> {
     Ok(mounts)
 }
 
-fn find_unmount_target(
+fn find_mount_point(
     contents: &[u8],
     fsname: &str,
 ) -> Result<Option<PathBuf>, (SessionError, io::Error)> {

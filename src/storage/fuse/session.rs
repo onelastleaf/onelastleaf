@@ -65,6 +65,20 @@ pub struct Handle {
 }
 
 impl Handle {
+    /// Look up the current visible mount point of the running session.
+    ///
+    /// Returns [`io::ErrorKind::NotFound`] during initialization, after the session stops, or
+    /// when the mount has disappeared or is covered by another mount.
+    pub fn mount_point(&self) -> io::Result<PathBuf> {
+        let mounted = self.state.lock().mount.clone();
+        let mounted = mounted.ok_or(Errno::ENOENT)?;
+        match mounted.current_mount_point() {
+            Ok(Some(path)) => Ok(path),
+            Ok(None) => Err(Errno::ENOENT.into()),
+            Err((_, error)) => Err(error),
+        }
+    }
+
     /// Signal the session thread to unmount the filesystem.
     ///
     /// Join the session thread to wait for the unmount result.
@@ -86,6 +100,7 @@ pub struct HandleState {
     pub status: Status,
     pub error: Option<SessionError>,
     pub negotiated_config: Option<Flags>,
+    mount: Option<Arc<Mount>>,
     unmount_requested: bool,
     wake_fd: Arc<EventFd>,
 }
@@ -94,6 +109,7 @@ impl HandleState {
     fn stop_with_error(&mut self, error: SessionError) {
         self.status = Status::Stopped;
         self.error = Some(error);
+        self.mount = None;
     }
 }
 
@@ -278,6 +294,7 @@ impl<FS: FileSystem> Session<FS> {
             status: Status::Initializing,
             error: None,
             negotiated_config: None,
+            mount: None,
             unmount_requested: false,
             wake_fd,
         }));
@@ -393,6 +410,7 @@ impl<FS: FileSystem> Session<FS> {
 
         self.protocol_version = Some(selected_config.protocol_version);
         self.capabilities = Some(selected_config.flags);
+        let mounted = Arc::new(mounted);
         let result =
             match self.run_request_loop(&fuse_file, &mounted, state, selected_config, buffer) {
                 Ok(exit) => {
@@ -409,6 +427,7 @@ impl<FS: FileSystem> Session<FS> {
 
         let mut state = state.lock();
         state.status = Status::Stopped;
+        state.mount = None;
         match result {
             Ok(()) => {
                 state.error = None;
@@ -424,7 +443,7 @@ impl<FS: FileSystem> Session<FS> {
     fn run_request_loop(
         &self,
         fuse_file: &File,
-        mounted: &Mount,
+        mounted: &Arc<Mount>,
         state: &Mutex<HandleState>,
         config: InitConfig,
         mut buffer: Vec<u8>,
@@ -457,6 +476,7 @@ impl<FS: FileSystem> Session<FS> {
         let wake_fd = {
             let mut state = state.lock();
             state.negotiated_config = Some(config.flags);
+            state.mount = Some(Arc::clone(mounted));
             state.status = Status::Running;
             Arc::clone(&state.wake_fd)
         };
