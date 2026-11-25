@@ -150,6 +150,7 @@ pub enum SessionError {
     AmbiguousMountSource,
     CannotReadFuse,
     ShortRead,
+    CannotWriteFuse,
     CannotParseRequest,
     InitFailed,
     RequestLoopSetupFailed,
@@ -178,6 +179,7 @@ impl std::fmt::Display for SessionError {
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue."
             }
             Self::ShortRead => "Read from /dev/fuse returned an incomplete request header.",
+            Self::CannotWriteFuse => "Failed to write a reply to /dev/fuse.",
             Self::CannotParseRequest => {
                 "Failed to parse the FUSE protocol request; the Linux kernel may have encountered a runtime issue."
             }
@@ -419,11 +421,9 @@ impl<FS: FileSystem> Session<FS> {
             return Err(mounted.rollback(fuse_file, error));
         }
 
-        if let Err(error) = Self::write_reply(
-            &mut fuse_file,
-            request.header.unique,
-            Ok(init_reply.as_slice()),
-        ) {
+        if let Err(error) =
+            Self::write_reply(&fuse_file, request.header.unique, Ok(init_reply.as_slice()))
+        {
             state.lock().stop_with_error(SessionError::InitFailed);
             return Err(mounted.rollback(fuse_file, error));
         }
@@ -489,7 +489,7 @@ impl<FS: FileSystem> Session<FS> {
         buffer.resize(buffer_len, 0);
 
         // Keep the reply queue open for deferred completions until the request loop exits.
-        let (reply_sender, reply_receiver) = mpsc::channel();
+        let (reply_sender, reply_receiver) = mpsc::channel::<PendingReply>();
 
         // Publish readiness once setup is complete. Clone the wake fd so polling can proceed after
         // releasing the shared state lock.
@@ -543,7 +543,21 @@ impl<FS: FileSystem> Session<FS> {
                         return mounted.unmount().map(|()| RequestLoopExit::Unmounted);
                     }
                     SessionEvent::RepliesReady => {
-                        // TODO: Serialize and write pending replies.
+                        while let Ok((unique, result)) = reply_receiver.try_recv() {
+                            let serialized =
+                                result.and_then(|payload| self.serialize_reply(payload));
+                            let reply = match &serialized {
+                                Ok(bytes) => Ok(bytes.as_slice()),
+                                Err(errno) => Err(*errno),
+                            };
+                            match Self::write_reply(fuse_file, unique, reply) {
+                                Ok(()) => {}
+                                // The request is no longer pending in the kernel.
+                                Err(error)
+                                    if error.raw_os_error() == Some(Errno::ENOENT as i32) => {}
+                                Err(error) => return Err((SessionError::CannotWriteFuse, error)),
+                            }
+                        }
                     }
                     SessionEvent::FuseReady(events) => {
                         if events.contains(PollFlags::POLLNVAL) {
@@ -577,7 +591,9 @@ impl<FS: FileSystem> Session<FS> {
                         };
                         // Dispatch while the request still borrows the read buffer.
                         self.parse_fuse_request(&buffer[..size])
-                            .and_then(|request| self.dispatch_request(request, &reply_sender))
+                            .and_then(|request| {
+                                self.dispatch_request(request, &reply_sender, &wake_fd)
+                            })
                             .map_err(|error| {
                                 (
                                     SessionError::CannotParseRequest,
@@ -594,6 +610,7 @@ impl<FS: FileSystem> Session<FS> {
         &self,
         request: request::Request<'_>,
         reply_sender: &mpsc::Sender<PendingReply>,
+        wake_fd: &Arc<EventFd>,
     ) -> Result<(), ParseError> {
         let request::Request {
             header,
@@ -607,10 +624,15 @@ impl<FS: FileSystem> Session<FS> {
         macro_rules! reply {
             ($into_payload:expr) => {{
                 let sender = reply_sender.clone();
+                let wake_fd = Arc::clone(wake_fd);
                 reply::Reply::new(move |result| {
                     sender
                         .send((unique, result.map($into_payload)))
-                        .map_err(|_| reply::CantReplyError::QueueClosed)
+                        .map_err(|_| reply::CantReplyError::QueueClosed)?;
+                    match wake_fd.write(1) {
+                        Ok(_) | Err(Errno::EAGAIN) => Ok(()),
+                        Err(errno) => Err(reply::CantReplyError::WakeFdFailed(errno)),
+                    }
                 })
             }};
         }
@@ -1455,7 +1477,7 @@ impl<FS: FileSystem> Session<FS> {
     }
 
     fn write_reply(
-        fuse_file: &mut File,
+        mut fuse_file: &File,
         unique: u64,
         result: Result<&[u8], Errno>,
     ) -> io::Result<()> {
@@ -1477,7 +1499,14 @@ impl<FS: FileSystem> Session<FS> {
         header[8..].copy_from_slice(&unique.to_ne_bytes());
 
         // Each write to /dev/fuse carries a complete reply.
-        let written = fuse_file.write_vectored(&[IoSlice::new(&header), IoSlice::new(payload)])?;
+        let slices = [IoSlice::new(&header), IoSlice::new(payload)];
+        let written = loop {
+            match fuse_file.write_vectored(&slices) {
+                Ok(written) => break written,
+                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+                Err(error) => return Err(error),
+            }
+        };
         if written != len {
             return Err(io::Error::other(format!(
                 "short FUSE reply write: wrote {written} of {len} bytes"

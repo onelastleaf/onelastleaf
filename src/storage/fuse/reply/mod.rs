@@ -55,20 +55,20 @@ pub(super) enum Payload {
 // miserable, and I have to vent.
 type Finish<T> = Box<dyn FnOnce(Result<T, Errno>) -> Result<(), CantReplyError> + Send + 'static>;
 
-/// What is "CantReplyError"?
-/// When file system instance want to commit a reply, it find the protocol stack thread totally
-/// disappear —— no reason, just can't reply. File systme instance don't know why, it can only throw
-/// a CantReplyError.
+/// An error while handing a reply to the session thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CantReplyError {
     /// The reply queue's receiver was dropped before the reply could be queued.
     QueueClosed,
+    /// The reply was queued, but waking the session failed.
+    WakeFdFailed(Errno),
 }
 
 impl std::fmt::Display for CantReplyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::QueueClosed => f.write_str("the FUSE reply queue has closed"),
+            Self::WakeFdFailed(errno) => write!(f, "failed to wake the FUSE session: {errno}"),
         }
     }
 }
