@@ -1,7 +1,7 @@
 use super::{Flags, helper, reply, request};
 use nix::{
     errno::Errno,
-    libc::{O_NONBLOCK, PATH_MAX, S_IFDIR, S_IFMT},
+    libc::{self, O_NONBLOCK, PATH_MAX, S_IFDIR, S_IFMT},
     mount::{MntFlags, MsFlags, mount, umount2},
     poll::{PollFd, PollFlags, PollTimeout, poll},
     sys::eventfd::{EfdFlags, EventFd},
@@ -9,13 +9,15 @@ use nix::{
     unistd::{Gid, Uid, read},
 };
 use std::{
+    ffi::CString,
     fs::{File, OpenOptions},
     io::{self, IoSlice, Read, Write},
+    mem::MaybeUninit,
     os::{
         fd::{AsFd, AsRawFd, RawFd},
-        unix::fs::OpenOptionsExt,
+        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
     },
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::{Arc, mpsc, nonpoison::Mutex},
     thread::{self, JoinHandle},
 };
@@ -46,6 +48,17 @@ const MIN_READ_BUFFER_LEN: usize = 8192;
 const READ_BUFFER_HEADER_ROOM: usize = 4096;
 
 type PendingReply = (u64, Result<reply::Payload, Errno>);
+
+enum RequestLoopExit {
+    Unmounted,
+    Disconnected,
+}
+
+#[derive(PartialEq, Eq)]
+struct MountIdentity {
+    id: u64,
+    device: (u32, u32),
+}
 
 /// Options used when mounting a FUSE session.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -292,6 +305,52 @@ impl<FS: FileSystem> Session<FS> {
             .open("/dev/fuse")
     }
 
+    fn mount_identity(path: &Path) -> io::Result<MountIdentity> {
+        let path = CString::new(path.as_os_str().as_bytes())?;
+        let mut stat = MaybeUninit::<libc::statx>::uninit();
+        let mount_ids = libc::STATX_MNT_ID_UNIQUE | libc::STATX_MNT_ID;
+
+        // Cached attributes let us identify the mount before INIT and after disconnect.
+        // SAFETY: path is NUL-terminated and stat points to writable storage for a statx.
+        let result = unsafe {
+            libc::statx(
+                libc::AT_FDCWD,
+                path.as_ptr(),
+                libc::AT_STATX_DONT_SYNC | libc::AT_NO_AUTOMOUNT,
+                mount_ids,
+                stat.as_mut_ptr(),
+            )
+        };
+        if result < 0 {
+            return Err(io::Error::last_os_error());
+        }
+
+        // SAFETY: statx succeeded and initialized the output struct.
+        let stat = unsafe { stat.assume_init() };
+        if stat.stx_mask & mount_ids == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "statx did not return a mount ID",
+            ));
+        }
+        Ok(MountIdentity {
+            id: stat.stx_mnt_id,
+            device: (stat.stx_dev_major, stat.stx_dev_minor),
+        })
+    }
+
+    fn unmount_disconnected(&self, mounted: MountIdentity) -> io::Result<()> {
+        match Self::mount_identity(&self.mount_point) {
+            // The device can disconnect after either an abort or an external unmount.
+            Ok(current) if current == mounted => {
+                umount2(&self.mount_point, MntFlags::MNT_DETACH).map_err(io::Error::from)
+            }
+            Ok(_) => Ok(()),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error),
+        }
+    }
+
     fn rollback_mount(&self, fuse_file: File, error: io::Error) -> io::Error {
         drop(fuse_file);
 
@@ -339,6 +398,7 @@ impl<FS: FileSystem> Session<FS> {
             state.lock().stop_with_error(SessionError::MountFailed);
             return Err(error.into());
         }
+        let mounted = Self::mount_identity(&self.mount_point);
 
         // 3. Receive the INIT packet from the Linux kernel.
         let mut buffer = vec![0u8; MIN_READ_BUFFER_LEN];
@@ -433,9 +493,18 @@ impl<FS: FileSystem> Session<FS> {
         self.capabilities = Some(selected_config.flags);
         let (session_error, result) =
             match self.run_request_loop(&fuse_file, state, selected_config, buffer) {
-                Ok(()) => {
+                Ok(exit) => {
+                    let result = match exit {
+                        RequestLoopExit::Unmounted => Ok(()),
+                        RequestLoopExit::Disconnected => {
+                            mounted.and_then(|mounted| self.unmount_disconnected(mounted))
+                        }
+                    };
                     drop(fuse_file);
-                    (None, Ok(()))
+                    (
+                        result.is_err().then_some(SessionError::UnmountFailed),
+                        result,
+                    )
                 }
                 Err((session_error, error)) => (
                     Some(session_error),
@@ -456,7 +525,7 @@ impl<FS: FileSystem> Session<FS> {
         state: &Mutex<HandleState>,
         config: InitConfig,
         mut buffer: Vec<u8>,
-    ) -> Result<(), (SessionError, io::Error)> {
+    ) -> Result<RequestLoopExit, (SessionError, io::Error)> {
         enum SessionEvent {
             UnmountRequested,
             RepliesReady,
@@ -529,6 +598,7 @@ impl<FS: FileSystem> Session<FS> {
                 match event {
                     SessionEvent::UnmountRequested => {
                         return umount2(&self.mount_point, MntFlags::MNT_DETACH)
+                            .map(|()| RequestLoopExit::Unmounted)
                             .map_err(|errno| (SessionError::UnmountFailed, errno.into()));
                     }
                     SessionEvent::RepliesReady => {
@@ -539,7 +609,7 @@ impl<FS: FileSystem> Session<FS> {
                             return Err((SessionError::PollFailed, Errno::EBADF.into()));
                         }
                         if events.intersects(PollFlags::POLLERR | PollFlags::POLLHUP) {
-                            return Ok(());
+                            return Ok(RequestLoopExit::Disconnected);
                         }
                         if !events.contains(PollFlags::POLLIN) {
                             continue;
@@ -558,7 +628,9 @@ impl<FS: FileSystem> Session<FS> {
                                 return Err((SessionError::ShortRead, Errno::EIO.into()));
                             }
                             Ok(size) => size,
-                            Err(Errno::ENODEV | Errno::ECONNABORTED) => return Ok(()),
+                            Err(Errno::ENODEV | Errno::ECONNABORTED) => {
+                                return Ok(RequestLoopExit::Disconnected);
+                            }
                             Err(Errno::EAGAIN | Errno::EINTR) => continue,
                             Err(errno) => return Err((SessionError::CannotReadFuse, errno.into())),
                         };
