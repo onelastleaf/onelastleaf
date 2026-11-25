@@ -1,23 +1,19 @@
-use super::{Flags, helper, reply, request};
+pub use super::mount::MountOptions;
+
+use super::{Flags, helper, mount::Mount, reply, request};
 use nix::{
     errno::Errno,
-    libc::{self, O_NONBLOCK, PATH_MAX, S_IFDIR, S_IFMT},
-    mount::{MntFlags, MsFlags, mount, umount2},
+    libc::{PATH_MAX, S_IFDIR, S_IFMT},
     poll::{PollFd, PollFlags, PollTimeout, poll},
     sys::eventfd::{EfdFlags, EventFd},
     sys::utsname::uname,
-    unistd::{Gid, Uid, read},
+    unistd::read,
 };
 use std::{
-    ffi::CString,
-    fs::{File, OpenOptions},
+    fs::File,
     io::{self, IoSlice, Read, Write},
-    mem::MaybeUninit,
-    os::{
-        fd::{AsFd, AsRawFd, RawFd},
-        unix::{ffi::OsStrExt, fs::OpenOptionsExt},
-    },
-    path::{Path, PathBuf},
+    os::fd::AsFd,
+    path::PathBuf,
     sync::{Arc, mpsc, nonpoison::Mutex},
     thread::{self, JoinHandle},
 };
@@ -52,20 +48,6 @@ type PendingReply = (u64, Result<reply::Payload, Errno>);
 enum RequestLoopExit {
     Unmounted,
     Disconnected,
-}
-
-#[derive(PartialEq, Eq)]
-struct MountIdentity {
-    id: u64,
-    device: (u32, u32),
-}
-
-/// Options used when mounting a FUSE session.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct MountOptions {
-    /// Pass `default_permissions` to Linux to enable VFS permission checks.
-    /// Linux also enables these checks when `FUSE_POSIX_ACL` is negotiated.
-    pub default_permissions: bool,
 }
 
 pub struct Session<FS: FileSystem> {
@@ -125,7 +107,12 @@ pub enum Status {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SessionError {
     NoFuseFile,
-    MountFailed,
+    ResolveMountPointFailed,
+    MountPermissionDenied,
+    MountPointBusy,
+    MountSyscallFailed,
+    ReadMountInfoFailed,
+    ParseMountInfoFailed,
     CannotReadFuse,
     ShortRead,
     CannotParseRequest,
@@ -143,9 +130,12 @@ impl std::fmt::Display for SessionError {
             Self::NoFuseFile => {
                 "/dev/fuse cannot be opened. Please check possible permission settings."
             }
-            Self::MountFailed => {
-                "Failed to mount the FUSE filesystem. Please check mount permissions and the target path."
-            }
+            Self::ResolveMountPointFailed => "Failed to resolve the FUSE mount point.",
+            Self::MountPermissionDenied => "Permission denied while mounting the FUSE filesystem.",
+            Self::MountPointBusy => "The FUSE mount point is busy.",
+            Self::MountSyscallFailed => "The mount system call failed.",
+            Self::ReadMountInfoFailed => "Failed to read /proc/self/mountinfo.",
+            Self::ParseMountInfoFailed => "Failed to parse /proc/self/mountinfo.",
             Self::CannotReadFuse => {
                 "Failed to read data from /dev/fuse; the Linux kernel may have encountered a runtime issue."
             }
@@ -297,110 +287,20 @@ impl<FS: FileSystem> Session<FS> {
         Ok(Handle { thread, state })
     }
 
-    fn open_fuse_file() -> io::Result<File> {
-        OpenOptions::new()
-            .read(true)
-            .write(true)
-            .custom_flags(O_NONBLOCK)
-            .open("/dev/fuse")
-    }
-
-    fn mount_identity(path: &Path) -> io::Result<MountIdentity> {
-        let path = CString::new(path.as_os_str().as_bytes())?;
-        let mut stat = MaybeUninit::<libc::statx>::uninit();
-        let mount_ids = libc::STATX_MNT_ID_UNIQUE | libc::STATX_MNT_ID;
-
-        // Cached attributes let us identify the mount before INIT and after disconnect.
-        // SAFETY: path is NUL-terminated and stat points to writable storage for a statx.
-        let result = unsafe {
-            libc::statx(
-                libc::AT_FDCWD,
-                path.as_ptr(),
-                libc::AT_STATX_DONT_SYNC | libc::AT_NO_AUTOMOUNT,
-                mount_ids,
-                stat.as_mut_ptr(),
-            )
-        };
-        if result < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        // SAFETY: statx succeeded and initialized the output struct.
-        let stat = unsafe { stat.assume_init() };
-        if stat.stx_mask & mount_ids == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::Unsupported,
-                "statx did not return a mount ID",
-            ));
-        }
-        Ok(MountIdentity {
-            id: stat.stx_mnt_id,
-            device: (stat.stx_dev_major, stat.stx_dev_minor),
-        })
-    }
-
-    fn unmount_disconnected(&self, mounted: MountIdentity) -> io::Result<()> {
-        match Self::mount_identity(&self.mount_point) {
-            // The device can disconnect after either an abort or an external unmount.
-            Ok(current) if current == mounted => {
-                umount2(&self.mount_point, MntFlags::MNT_DETACH).map_err(io::Error::from)
-            }
-            Ok(_) => Ok(()),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-            Err(error) => Err(error),
-        }
-    }
-
-    fn rollback_mount(&self, fuse_file: File, error: io::Error) -> io::Error {
-        drop(fuse_file);
-
-        match umount2(&self.mount_point, MntFlags::MNT_DETACH) {
-            Ok(()) => error,
-            Err(unmount_error) => io::Error::new(
-                error.kind(),
-                format!(
-                    "{error}. Failed to unmount {}: {unmount_error}",
-                    self.mount_point.display(),
-                ),
-            ),
-        }
-    }
-
     fn run(mut self, state: &Mutex<HandleState>) -> io::Result<()> {
-        // 1. Open /dev/fuse, and get the fd
-        let mut fuse_file = match Self::open_fuse_file() {
-            Ok(device) => device,
-            Err(error) => {
-                state.lock().stop_with_error(SessionError::NoFuseFile);
+        let (mounted, mut fuse_file) = match Mount::new(
+            &self.mount_point,
+            &self.filesystem.get_name(),
+            self.mount_options,
+        ) {
+            Ok(mounted) => mounted,
+            Err((reason, error)) => {
+                state.lock().stop_with_error(reason);
                 return Err(error);
             }
         };
-        let fuse_fd: RawFd = fuse_file.as_raw_fd();
 
-        // 2. Mount the filesystem
-        let mut mount_options = format!(
-            "fd={},rootmode=40000,user_id={},group_id={}",
-            fuse_fd,
-            Uid::current().as_raw(),
-            Gid::current().as_raw(),
-        );
-        if self.mount_options.default_permissions {
-            mount_options.push_str(",default_permissions");
-        }
-
-        if let Err(error) = mount(
-            Some(self.filesystem.get_name().as_str()), // Filesystem name
-            &self.mount_point,                         // Mount point
-            Some("fuse"),                              // Filesystem type
-            MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
-            Some(mount_options.as_str()), // FUSE mount options
-        ) {
-            state.lock().stop_with_error(SessionError::MountFailed);
-            return Err(error.into());
-        }
-        let mounted = Self::mount_identity(&self.mount_point);
-
-        // 3. Receive the INIT packet from the Linux kernel.
+        // Receive the INIT packet from the Linux kernel.
         let mut buffer = vec![0u8; MIN_READ_BUFFER_LEN];
 
         let size = loop {
@@ -409,7 +309,7 @@ impl<FS: FileSystem> Session<FS> {
                 Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
                 Err(error) => {
                     state.lock().stop_with_error(SessionError::CannotReadFuse);
-                    return Err(self.rollback_mount(fuse_file, error));
+                    return Err(mounted.rollback(fuse_file, error));
                 }
             }
         };
@@ -423,7 +323,7 @@ impl<FS: FileSystem> Session<FS> {
                     .lock()
                     .stop_with_error(SessionError::CannotParseRequest);
                 let error = io::Error::new(io::ErrorKind::InvalidData, error);
-                return Err(self.rollback_mount(fuse_file, error));
+                return Err(mounted.rollback(fuse_file, error));
             }
         };
 
@@ -433,7 +333,7 @@ impl<FS: FileSystem> Session<FS> {
                 .stop_with_error(SessionError::CannotParseRequest);
             let error = ParseError::UnexpectedOpcode(request.header.opcode);
             let error = io::Error::new(io::ErrorKind::InvalidData, error);
-            return Err(self.rollback_mount(fuse_file, error));
+            return Err(mounted.rollback(fuse_file, error));
         };
 
         if init_payload.major != 7 {
@@ -445,14 +345,14 @@ impl<FS: FileSystem> Session<FS> {
                     init_payload.major
                 ),
             );
-            return Err(self.rollback_mount(fuse_file, error));
+            return Err(mounted.rollback(fuse_file, error));
         }
 
         let mut init_config = match self.filesystem.init() {
             Ok(config) => config,
             Err(errno) => {
                 state.lock().stop_with_error(SessionError::InitFailed);
-                return Err(self.rollback_mount(fuse_file, errno.into()));
+                return Err(mounted.rollback(fuse_file, errno.into()));
             }
         };
 
@@ -477,7 +377,7 @@ impl<FS: FileSystem> Session<FS> {
                 io::ErrorKind::InvalidInput,
                 "FUSE_ALLOW_IDMAP requires default_permissions or FUSE_POSIX_ACL",
             );
-            return Err(self.rollback_mount(fuse_file, error));
+            return Err(mounted.rollback(fuse_file, error));
         }
 
         if let Err(error) = Self::write_reply(
@@ -486,42 +386,43 @@ impl<FS: FileSystem> Session<FS> {
             Ok(init_reply.as_slice()),
         ) {
             state.lock().stop_with_error(SessionError::InitFailed);
-            return Err(self.rollback_mount(fuse_file, error));
+            return Err(mounted.rollback(fuse_file, error));
         }
 
         self.protocol_version = Some(selected_config.protocol_version);
         self.capabilities = Some(selected_config.flags);
-        let (session_error, result) =
-            match self.run_request_loop(&fuse_file, state, selected_config, buffer) {
+        let result =
+            match self.run_request_loop(&fuse_file, &mounted, state, selected_config, buffer) {
                 Ok(exit) => {
                     let result = match exit {
                         RequestLoopExit::Unmounted => Ok(()),
-                        RequestLoopExit::Disconnected => {
-                            mounted.and_then(|mounted| self.unmount_disconnected(mounted))
-                        }
+                        RequestLoopExit::Disconnected => mounted.unmount(),
                     };
                     drop(fuse_file);
-                    (
-                        result.is_err().then_some(SessionError::UnmountFailed),
-                        result,
-                    )
+                    result
                 }
-                Err((session_error, error)) => (
-                    Some(session_error),
-                    Err(self.rollback_mount(fuse_file, error)),
-                ),
+                Err((reason, error)) => Err((reason, mounted.rollback(fuse_file, error))),
             };
         self.filesystem.destroy();
 
         let mut state = state.lock();
         state.status = Status::Stopped;
-        state.error = session_error;
-        result
+        match result {
+            Ok(()) => {
+                state.error = None;
+                Ok(())
+            }
+            Err((reason, error)) => {
+                state.error = Some(reason);
+                Err(error)
+            }
+        }
     }
 
     fn run_request_loop(
         &self,
         fuse_file: &File,
+        mounted: &Mount,
         state: &Mutex<HandleState>,
         config: InitConfig,
         mut buffer: Vec<u8>,
@@ -597,9 +498,7 @@ impl<FS: FileSystem> Session<FS> {
             for event in [wake_event, fuse_event].into_iter().flatten() {
                 match event {
                     SessionEvent::UnmountRequested => {
-                        return umount2(&self.mount_point, MntFlags::MNT_DETACH)
-                            .map(|()| RequestLoopExit::Unmounted)
-                            .map_err(|errno| (SessionError::UnmountFailed, errno.into()));
+                        return mounted.unmount().map(|()| RequestLoopExit::Unmounted);
                     }
                     SessionEvent::RepliesReady => {
                         // TODO: Serialize and write pending replies.
