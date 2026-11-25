@@ -1194,7 +1194,7 @@ impl<FS: FileSystem> Session<FS> {
         if attr.flags & FUSE_ATTR_SUBMOUNT != 0
             && (protocol_version < 32
                 || !capabilities.contains(Flags::SUBMOUNTS)
-                || attr.mode & S_IFMT as u32 != S_IFDIR as u32)
+                || attr.mode & S_IFMT != S_IFDIR)
         {
             return Err(Errno::EIO);
         }
