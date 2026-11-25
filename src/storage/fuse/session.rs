@@ -44,6 +44,12 @@ pub struct Handle {
     pub state: Arc<Mutex<HandleState>>,
 }
 
+impl Handle {
+    pub fn request_unmount(&self) {
+        todo!()
+    }
+}
+
 pub struct HandleState {
     pub status: Status,
     pub error: Option<SessionError>,
