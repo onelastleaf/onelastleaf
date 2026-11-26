@@ -13,6 +13,7 @@ use std::{
     fs::File,
     io::{self, IoSlice, Read, Write},
     os::fd::AsFd,
+    panic::{AssertUnwindSafe, catch_unwind, resume_unwind},
     path::PathBuf,
     sync::{Arc, mpsc, nonpoison::Mutex},
     thread::{self, JoinHandle},
@@ -99,7 +100,9 @@ impl Handle {
     /// **What if the session fails?** If `join()` returns `Ok(Err(error))`, the session
     /// returned an error. For example, it could not read the mount table or unmount its
     /// filesystem. The `error` field of [`HandleState`] gives you the kind of session error.
-    /// If the thread panics, `join()` itself returns `Err`.
+    /// If the request loop panics, the session closes the FUSE device and attempts to unmount.
+    /// `join()` itself returns `Err` with the original panic. Check `error` for any cleanup
+    /// failure.
     pub fn request_unmount(&self) -> io::Result<()> {
         let wake_fd = {
             let mut state = self.state.lock();
@@ -157,6 +160,7 @@ pub enum SessionError {
     PollFailed,
     WakeFdFailed,
     UnmountFailed,
+    Panicked,
     UnknownError,
 }
 
@@ -188,6 +192,7 @@ impl std::fmt::Display for SessionError {
             Self::PollFailed => "Failed to wait for FUSE session events.",
             Self::WakeFdFailed => "The FUSE session wakeup file descriptor failed.",
             Self::UnmountFailed => "Failed to unmount the FUSE filesystem.",
+            Self::Panicked => "The FUSE session thread panicked.",
             Self::UnknownError => {
                 "The FUSE protocol stack failed to run because it encountered an unexpected error."
             }
@@ -431,19 +436,46 @@ impl<FS: FileSystem> Session<FS> {
         self.protocol_version = Some(selected_config.protocol_version);
         self.capabilities = Some(selected_config.flags);
         let mounted = Arc::new(mounted);
-        let result =
-            match self.run_request_loop(&fuse_file, &mounted, state, selected_config, buffer) {
-                Ok(exit) => {
-                    let result = match exit {
-                        RequestLoopExit::Unmounted => Ok(()),
-                        RequestLoopExit::Disconnected => mounted.unmount(),
-                    };
-                    drop(fuse_file);
-                    result
-                }
-                Err((reason, error)) => Err((reason, mounted.rollback(fuse_file, error))),
+
+        // Backend callbacks run on this thread. Catch a panic so we can shut down the session.
+        let loop_result = catch_unwind(AssertUnwindSafe(|| {
+            self.run_request_loop(&fuse_file, &mounted, state, selected_config, buffer)
+        }));
+        let (result, loop_panic) = match loop_result {
+            Ok(Ok(exit)) => {
+                let result = match exit {
+                    RequestLoopExit::Unmounted => Ok(()),
+                    RequestLoopExit::Disconnected => mounted.unmount(),
+                };
+                drop(fuse_file);
+                (result, None)
+            }
+            Ok(Err((reason, error))) => (Err((reason, mounted.rollback(fuse_file, error))), None),
+            Err(payload) => {
+                drop(fuse_file);
+                (mounted.unmount(), Some(payload))
+            }
+        };
+
+        // Even if destroy panics, update HandleState before letting the thread finish unwinding.
+        let destroy_result = catch_unwind(AssertUnwindSafe(|| self.filesystem.destroy()));
+        let panic = match (loop_panic, destroy_result) {
+            (Some(payload), Err(destroy_panic)) => {
+                // Keep the first panic. Dropping the second panic payload can itself panic.
+                std::mem::forget(destroy_panic);
+                Some(payload)
+            }
+            (Some(payload), Ok(())) | (None, Err(payload)) => Some(payload),
+            (None, Ok(())) => None,
+        };
+        if let Some(payload) = panic {
+            let reason = match result {
+                Ok(()) => SessionError::Panicked,
+                Err((reason, _)) => reason,
             };
-        self.filesystem.destroy();
+            state.lock().stop_with_error(reason);
+            resume_unwind(payload);
+        }
 
         let mut state = state.lock();
         state.status = Status::Stopped;
