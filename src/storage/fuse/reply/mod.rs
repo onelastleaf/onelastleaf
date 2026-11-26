@@ -65,10 +65,12 @@ pub enum CantReplyError {
 }
 
 impl std::fmt::Display for CantReplyError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::QueueClosed => f.write_str("the FUSE reply queue has closed"),
-            Self::WakeFdFailed(errno) => write!(f, "failed to wake the FUSE session: {errno}"),
+            Self::QueueClosed => formatter.write_str("the FUSE reply queue has closed"),
+            Self::WakeFdFailed(errno) => {
+                write!(formatter, "failed to wake the FUSE session: {errno}")
+            }
         }
     }
 }
