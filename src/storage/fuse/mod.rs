@@ -11,6 +11,58 @@ use nix::{errno::Errno, libc};
 
 use reply::Reply;
 
+pub const LOOKUP: u32 = 1;
+pub const FORGET: u32 = 2;
+pub const GETATTR: u32 = 3;
+pub const SETATTR: u32 = 4;
+pub const READLINK: u32 = 5;
+pub const SYMLINK: u32 = 6;
+pub const MKNOD: u32 = 8;
+pub const MKDIR: u32 = 9;
+pub const UNLINK: u32 = 10;
+pub const RMDIR: u32 = 11;
+pub const RENAME: u32 = 12;
+pub const LINK: u32 = 13;
+pub const OPEN: u32 = 14;
+pub const READ: u32 = 15;
+pub const WRITE: u32 = 16;
+pub const STATFS: u32 = 17;
+pub const RELEASE: u32 = 18;
+pub const FSYNC: u32 = 20;
+pub const SETXATTR: u32 = 21;
+pub const GETXATTR: u32 = 22;
+pub const LISTXATTR: u32 = 23;
+pub const REMOVEXATTR: u32 = 24;
+pub const FLUSH: u32 = 25;
+pub const INIT: u32 = 26;
+pub const OPENDIR: u32 = 27;
+pub const READDIR: u32 = 28;
+pub const RELEASEDIR: u32 = 29;
+pub const FSYNCDIR: u32 = 30;
+pub const GETLK: u32 = 31;
+pub const SETLK: u32 = 32;
+pub const SETLKW: u32 = 33;
+pub const ACCESS: u32 = 34;
+pub const CREATE: u32 = 35;
+pub const INTERRUPT: u32 = 36;
+pub const BMAP: u32 = 37;
+pub const DESTROY: u32 = 38;
+pub const IOCTL: u32 = 39;
+pub const POLL: u32 = 40;
+pub const NOTIFY_REPLY: u32 = 41;
+pub const BATCH_FORGET: u32 = 42;
+pub const FALLOCATE: u32 = 43;
+pub const READDIRPLUS: u32 = 44;
+pub const RENAME2: u32 = 45;
+pub const LSEEK: u32 = 46;
+pub const COPY_FILE_RANGE: u32 = 47;
+pub const SETUPMAPPING: u32 = 48;
+pub const REMOVEMAPPING: u32 = 49;
+pub const SYNCFS: u32 = 50;
+pub const TMPFILE: u32 = 51;
+pub const STATX: u32 = 52;
+pub const COPY_FILE_RANGE_64: u32 = 53;
+
 const SUPPORTED_PROTOCOL_MINOR: u32 = 46;
 
 // Because `Arc<Filesystem>` must be `Sync`, `Filesystem` must be `Send + Sync`.
