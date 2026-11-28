@@ -52,7 +52,7 @@ const MIN_READ_BUFFER_LEN: usize = 8192;
 // the responsibility is shifted to the caller.
 const READ_BUFFER_HEADER_ROOM: usize = 4096;
 
-type PendingReply = (u64, Result<reply::Payload, Errno>);
+pub(super) type PendingReply = (u64, Result<reply::Payload, Errno>);
 
 enum RequestLoopExit {
     Unmounted,
@@ -652,6 +652,14 @@ impl<FS: FileSystem> Session<FS> {
         reply_sender: &mpsc::Sender<PendingReply>,
         wake_fd: &Arc<EventFd>,
     ) -> Result<(), ParseError> {
+        fn make_reply<const OP: u32>(
+            unique: u64,
+            sender: &mpsc::Sender<PendingReply>,
+            wake_fd: &Arc<EventFd>,
+        ) -> reply::Reply<OP> {
+            reply::Reply::new(unique, sender.clone(), Arc::clone(wake_fd))
+        }
+
         let request::Request {
             header,
             payload,
@@ -659,151 +667,176 @@ impl<FS: FileSystem> Session<FS> {
         } = request;
         let unique = header.unique;
         let filesystem = &self.filesystem;
-        let empty = |()| reply::Payload::Empty;
-
-        macro_rules! reply {
-            ($into_payload:expr) => {{
-                let sender = reply_sender.clone();
-                let wake_fd = Arc::clone(wake_fd);
-                reply::Reply::new(move |result| {
-                    sender
-                        .send((unique, result.map($into_payload)))
-                        .map_err(|_| reply::CantReplyError::QueueClosed)?;
-                    match wake_fd.write(1) {
-                        Ok(_) | Err(Errno::EAGAIN) => Ok(()),
-                        Err(errno) => Err(reply::CantReplyError::WakeFdFailed(errno)),
-                    }
-                })
-            }};
-        }
 
         match payload {
             request::Payload::Init(_) => return Err(ParseError::UnexpectedOpcode(header.opcode)),
             request::Payload::Lookup(payload) => {
-                filesystem.lookup(header, payload, reply!(reply::Payload::Entry))
+                filesystem.lookup(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Forget(payload) => filesystem.forget(header, payload),
             request::Payload::Getattr(payload) => {
-                filesystem.getattr(header, payload, reply!(reply::Payload::Attr))
+                filesystem.getattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Setattr(payload) => {
-                filesystem.setattr(header, payload, reply!(reply::Payload::Attr))
+                filesystem.setattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Readlink => {
-                filesystem.readlink(header, reply!(reply::Payload::Readlink))
+                filesystem.readlink(header, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Symlink(payload) => {
-                filesystem.symlink(header, payload, extensions, reply!(reply::Payload::Entry))
+            request::Payload::Symlink(payload) => filesystem.symlink(
+                header,
+                payload,
+                extensions,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
+            request::Payload::Mknod(payload) => filesystem.mknod(
+                header,
+                payload,
+                extensions,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
+            request::Payload::Mkdir(payload) => filesystem.mkdir(
+                header,
+                payload,
+                extensions,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
+            request::Payload::Unlink(payload) => {
+                filesystem.unlink(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Mknod(payload) => {
-                filesystem.mknod(header, payload, extensions, reply!(reply::Payload::Entry))
+            request::Payload::Rmdir(payload) => {
+                filesystem.rmdir(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Mkdir(payload) => {
-                filesystem.mkdir(header, payload, extensions, reply!(reply::Payload::Entry))
+            request::Payload::Rename(payload) => {
+                filesystem.rename(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Unlink(payload) => filesystem.unlink(header, payload, reply!(empty)),
-            request::Payload::Rmdir(payload) => filesystem.rmdir(header, payload, reply!(empty)),
-            request::Payload::Rename(payload) => filesystem.rename(header, payload, reply!(empty)),
             request::Payload::Link(payload) => {
-                filesystem.link(header, payload, reply!(reply::Payload::Entry))
+                filesystem.link(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Open(payload) => {
-                filesystem.open(header, payload, reply!(reply::Payload::Open))
+                filesystem.open(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Read(payload) => {
-                filesystem.read(header, payload, reply!(reply::Payload::Read))
+                filesystem.read(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Write(payload) => {
-                filesystem.write(header, payload, reply!(reply::Payload::Write))
+                filesystem.write(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Statfs => filesystem.statfs(header, reply!(reply::Payload::Statfs)),
+            request::Payload::Statfs => {
+                filesystem.statfs(header, make_reply(unique, reply_sender, wake_fd))
+            }
             request::Payload::Release(payload) => {
-                filesystem.release(header, payload, reply!(empty))
+                filesystem.release(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Fsync(payload) => filesystem.fsync(header, payload, reply!(empty)),
+            request::Payload::Fsync(payload) => {
+                filesystem.fsync(header, payload, make_reply(unique, reply_sender, wake_fd))
+            }
             request::Payload::Setxattr(payload) => {
-                filesystem.setxattr(header, payload, reply!(empty))
+                filesystem.setxattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Getxattr(payload) => {
-                filesystem.getxattr(header, payload, reply!(reply::Payload::Xattr))
+                filesystem.getxattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Listxattr(payload) => {
-                filesystem.listxattr(header, payload, reply!(reply::Payload::Xattr))
+                filesystem.listxattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Removexattr(payload) => {
-                filesystem.removexattr(header, payload, reply!(empty))
+                filesystem.removexattr(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Flush(payload) => filesystem.flush(header, payload, reply!(empty)),
+            request::Payload::Flush(payload) => {
+                filesystem.flush(header, payload, make_reply(unique, reply_sender, wake_fd))
+            }
             request::Payload::Opendir(payload) => {
-                filesystem.opendir(header, payload, reply!(reply::Payload::Open))
+                filesystem.opendir(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Readdir(payload) => {
-                filesystem.readdir(header, payload, reply!(reply::Payload::Readdir))
+                filesystem.readdir(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Releasedir(payload) => {
-                filesystem.releasedir(header, payload, reply!(empty))
+                filesystem.releasedir(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Fsyncdir(payload) => {
-                filesystem.fsyncdir(header, payload, reply!(empty))
+                filesystem.fsyncdir(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Getlk(payload) => {
-                filesystem.getlk(header, payload, reply!(reply::Payload::Lock))
+                filesystem.getlk(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Setlk(payload) => filesystem.setlk(header, payload, reply!(empty)),
-            request::Payload::Setlkw(payload) => filesystem.setlkw(header, payload, reply!(empty)),
-            request::Payload::Access(payload) => filesystem.access(header, payload, reply!(empty)),
-            request::Payload::Create(payload) => {
-                filesystem.create(header, payload, extensions, reply!(reply::Payload::Create))
+            request::Payload::Setlk(payload) => {
+                filesystem.setlk(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
+            request::Payload::Setlkw(payload) => {
+                filesystem.setlkw(header, payload, make_reply(unique, reply_sender, wake_fd))
+            }
+            request::Payload::Access(payload) => {
+                filesystem.access(header, payload, make_reply(unique, reply_sender, wake_fd))
+            }
+            request::Payload::Create(payload) => filesystem.create(
+                header,
+                payload,
+                extensions,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
             request::Payload::Interrupt(payload) => filesystem.interrupt(header, payload),
             request::Payload::Bmap(payload) => {
-                filesystem.bmap(header, payload, reply!(reply::Payload::Bmap))
+                filesystem.bmap(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Destroy => {
                 // The kernel closes the connection after the acknowledgment. run calls destroy
                 // when the loop exits.
-                let _ = reply!(empty).complete(Ok(()));
+                if reply_sender
+                    .send((unique, Ok(reply::Payload::Empty)))
+                    .is_ok()
+                {
+                    let _ = wake_fd.write(1);
+                }
             }
             request::Payload::Ioctl(payload) => {
-                filesystem.ioctl(header, payload, reply!(reply::Payload::Ioctl))
+                filesystem.ioctl(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Poll(payload) => {
-                filesystem.poll(header, payload, reply!(reply::Payload::Poll))
+                filesystem.poll(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::NotifyReply(payload) => filesystem.notify_reply(header, payload),
             request::Payload::BatchForget(payload) => filesystem.batch_forget(header, payload),
             request::Payload::Fallocate(payload) => {
-                filesystem.fallocate(header, payload, reply!(empty))
+                filesystem.fallocate(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::ReaddirPlus(payload) => {
-                filesystem.readdir_plus(header, payload, reply!(reply::Payload::ReaddirPlus))
+                filesystem.readdir_plus(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Rename2(payload) => {
-                filesystem.rename2(header, payload, reply!(empty))
+                filesystem.rename2(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Lseek(payload) => {
-                filesystem.lseek(header, payload, reply!(reply::Payload::Lseek))
+                filesystem.lseek(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::CopyFileRange(payload) => {
-                filesystem.copy_file_range(header, payload, reply!(reply::Payload::Write))
-            }
+            request::Payload::CopyFileRange(payload) => filesystem.copy_file_range(
+                header,
+                payload,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
             request::Payload::Setupmapping(payload) => {
-                filesystem.setupmapping(header, payload, reply!(empty))
+                filesystem.setupmapping(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::Removemapping(payload) => {
-                filesystem.removemapping(header, payload, reply!(empty))
+                filesystem.removemapping(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
-            request::Payload::Syncfs => filesystem.syncfs(header, reply!(empty)),
-            request::Payload::Tmpfile(payload) => {
-                filesystem.tmpfile(header, payload, extensions, reply!(reply::Payload::Create))
+            request::Payload::Syncfs => {
+                filesystem.syncfs(header, make_reply(unique, reply_sender, wake_fd))
             }
+            request::Payload::Tmpfile(payload) => filesystem.tmpfile(
+                header,
+                payload,
+                extensions,
+                make_reply(unique, reply_sender, wake_fd),
+            ),
             request::Payload::Statx(payload) => {
-                filesystem.statx(header, payload, reply!(reply::Payload::Statx))
+                filesystem.statx(header, payload, make_reply(unique, reply_sender, wake_fd))
             }
             request::Payload::CopyFileRange64(payload) => filesystem.copy_file_range64(
                 header,
                 payload,
-                reply!(reply::Payload::CopyFileRange64),
+                make_reply(unique, reply_sender, wake_fd),
             ),
         }
         Ok(())

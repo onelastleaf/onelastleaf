@@ -1,6 +1,19 @@
 mod header;
 mod payload;
 
+use nix::sys::eventfd::EventFd;
+use std::sync::{Arc, mpsc};
+
+use super::{
+    ACCESS, BMAP, COPY_FILE_RANGE, COPY_FILE_RANGE_64, CREATE, FALLOCATE, FLUSH, FSYNC, FSYNCDIR,
+    GETATTR, GETLK, GETXATTR, IOCTL, LINK, LISTXATTR, LOOKUP, LSEEK, MKDIR, MKNOD, OPEN, OPENDIR,
+    POLL, READ, READDIR, READDIRPLUS, READLINK, RELEASE, RELEASEDIR, REMOVEMAPPING, REMOVEXATTR,
+    RENAME, RENAME2, RMDIR, SETATTR, SETLK, SETLKW, SETUPMAPPING, SETXATTR, STATFS, STATX, SYMLINK,
+    SYNCFS, TMPFILE, UNLINK, WRITE,
+};
+
+use super::session::PendingReply;
+
 pub use header::Header;
 pub use payload::*;
 
@@ -28,43 +41,16 @@ pub(super) enum Payload {
     CopyFileRange64(CopyFileRangeResult),
 }
 
-// Why I use `dyn`?
-//
-// To be honest, I never wanted to use `dyn` in the first place, because a `vtable` means a runtime
-// table lookup. That's runtime overhead. If I can turn that into compile-time overhead, I can cut
-// down the runtime cost.
-//
-// If I turn `Reply` into an `enum + match`, I can optimize static compilation and do a bunch of
-// really nice things, like inlining. But writing `Reply` as `dyn` is really elegant. `dyn` is a
-// completely stateless middleman: the caller makes calls through a fixed interface, the provider
-// writes the package that provides it, and neither side needs to know how that stateless interface
-// in the middle is implemented.
-//
-// But if I use `impl` and `match`, I have to encode all the information in the state. I'd have to
-// nail the interface definition down exactly; I couldn't just stuff in a closure—I'd have to stuff
-// in a state value. I'd need to define what state `read` passes in and what state `lookup` should
-// pass in. Sure, the caller—any library using this filesystem—always ends up needing to know these
-// states anyway, but it gets really ugly.
-//
-// So I decided to go with `dyn` after all. There aren't that many requests. This `dyn` only gets
-// hit on reply; it's not a call that happens hundreds or thousands of times per second, and each
-// call only costs about 1–2 ms, so it's actually acceptable.
-//
-// But using `dyn` still sticks in my craw. I'm the kind of person who gets really uncomfortable
-// when I grep for `dyn` in a project. I treat the codebase as a work of art; using `dyn` makes me
-// miserable, and I have to vent.
-type Finish<T> = Box<dyn FnOnce(Result<T, Errno>) -> Result<(), CantReplyError> + Send + 'static>;
-
 /// An error while handing a reply to the session thread.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CantReplyError {
+pub enum ReplyError {
     /// The reply queue's receiver was dropped before the reply could be queued.
     QueueClosed,
     /// The reply was queued, but waking the session failed.
     WakeFdFailed(Errno),
 }
 
-impl std::fmt::Display for CantReplyError {
+impl std::fmt::Display for ReplyError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::QueueClosed => formatter.write_str("the FUSE reply queue has closed"),
@@ -75,32 +61,327 @@ impl std::fmt::Display for CantReplyError {
     }
 }
 
-impl std::error::Error for CantReplyError {}
+impl std::error::Error for ReplyError {}
 
 #[must_use = "complete the reply or pass it to a worker"]
-pub struct Reply<T> {
-    finish: Option<Finish<T>>,
+pub struct Reply<const OP: u32> {
+    target: Option<Target>,
 }
 
-impl<T> Reply<T> {
+struct Target {
+    unique: u64,
+    sender: mpsc::Sender<PendingReply>,
+    wake_fd: Arc<EventFd>,
+}
+
+impl<const OP: u32> Reply<OP> {
     pub(super) fn new(
-        finish: impl FnOnce(Result<T, Errno>) -> Result<(), CantReplyError> + Send + 'static,
+        unique: u64,
+        sender: mpsc::Sender<PendingReply>,
+        wake_fd: Arc<EventFd>,
     ) -> Self {
+        let reply_target = Target {
+            unique,
+            sender,
+            wake_fd,
+        };
         Self {
-            finish: Some(Box::new(finish)),
+            target: Some(reply_target),
         }
     }
 
-    pub fn complete(mut self, result: Result<T, Errno>) -> Result<(), CantReplyError> {
-        let finish = self.finish.take().expect("a pending reply has a callback");
-        finish(result)
+    fn submit(&mut self, result: Result<Payload, Errno>) -> Result<(), ReplyError> {
+        let Some(target) = self.target.take() else {
+            return Ok(());
+        };
+
+        target
+            .sender
+            .send((target.unique, result))
+            .map_err(|_| ReplyError::QueueClosed)?;
+
+        match target.wake_fd.write(1) {
+            Ok(_) | Err(Errno::EAGAIN) => Ok(()),
+            Err(errno) => Err(ReplyError::WakeFdFailed(errno)),
+        }
     }
 }
 
-impl<T> Drop for Reply<T> {
+impl Reply<{ LOOKUP }> {
+    pub fn complete(mut self, result: Result<EntryResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Entry))
+    }
+}
+
+impl Reply<{ GETATTR }> {
+    pub fn complete(mut self, result: Result<AttrResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Attr))
+    }
+}
+
+impl Reply<{ SETATTR }> {
+    pub fn complete(mut self, result: Result<AttrResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Attr))
+    }
+}
+
+impl Reply<{ READLINK }> {
+    pub fn complete(mut self, result: Result<ReadlinkResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Readlink))
+    }
+}
+
+impl Reply<{ SYMLINK }> {
+    pub fn complete(mut self, result: Result<EntryResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Entry))
+    }
+}
+
+impl Reply<{ MKNOD }> {
+    pub fn complete(mut self, result: Result<EntryResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Entry))
+    }
+}
+
+impl Reply<{ MKDIR }> {
+    pub fn complete(mut self, result: Result<EntryResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Entry))
+    }
+}
+
+impl Reply<{ UNLINK }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ RMDIR }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ RENAME }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ LINK }> {
+    pub fn complete(mut self, result: Result<EntryResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Entry))
+    }
+}
+
+impl Reply<{ OPEN }> {
+    pub fn complete(mut self, result: Result<OpenResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Open))
+    }
+}
+
+impl Reply<{ READ }> {
+    pub fn complete(mut self, result: Result<ReadResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Read))
+    }
+}
+
+impl Reply<{ WRITE }> {
+    pub fn complete(mut self, result: Result<WriteResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Write))
+    }
+}
+
+impl Reply<{ STATFS }> {
+    pub fn complete(mut self, result: Result<StatfsResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Statfs))
+    }
+}
+
+impl Reply<{ RELEASE }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ FSYNC }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ SETXATTR }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ GETXATTR }> {
+    pub fn complete(mut self, result: Result<XattrResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Xattr))
+    }
+}
+
+impl Reply<{ LISTXATTR }> {
+    pub fn complete(mut self, result: Result<XattrResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Xattr))
+    }
+}
+
+impl Reply<{ REMOVEXATTR }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ FLUSH }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ OPENDIR }> {
+    pub fn complete(mut self, result: Result<OpenResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Open))
+    }
+}
+
+impl Reply<{ READDIR }> {
+    pub fn complete(mut self, result: Result<ReaddirResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Readdir))
+    }
+}
+
+impl Reply<{ RELEASEDIR }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ FSYNCDIR }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ GETLK }> {
+    pub fn complete(mut self, result: Result<LockResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Lock))
+    }
+}
+
+impl Reply<{ SETLK }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ SETLKW }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ ACCESS }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ CREATE }> {
+    pub fn complete(mut self, result: Result<CreateResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Create))
+    }
+}
+
+impl Reply<{ BMAP }> {
+    pub fn complete(mut self, result: Result<BmapResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Bmap))
+    }
+}
+
+impl Reply<{ IOCTL }> {
+    pub fn complete(mut self, result: Result<IoctlResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Ioctl))
+    }
+}
+
+impl Reply<{ POLL }> {
+    pub fn complete(mut self, result: Result<PollResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Poll))
+    }
+}
+
+impl Reply<{ FALLOCATE }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ READDIRPLUS }> {
+    pub fn complete(mut self, result: Result<ReaddirPlusResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::ReaddirPlus))
+    }
+}
+
+impl Reply<{ RENAME2 }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ LSEEK }> {
+    pub fn complete(mut self, result: Result<LseekResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Lseek))
+    }
+}
+
+impl Reply<{ COPY_FILE_RANGE }> {
+    pub fn complete(mut self, result: Result<WriteResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Write))
+    }
+}
+
+impl Reply<{ SETUPMAPPING }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ REMOVEMAPPING }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ SYNCFS }> {
+    pub fn complete(mut self, result: Result<(), Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(|()| Payload::Empty))
+    }
+}
+
+impl Reply<{ TMPFILE }> {
+    pub fn complete(mut self, result: Result<CreateResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Create))
+    }
+}
+
+impl Reply<{ STATX }> {
+    pub fn complete(mut self, result: Result<StatxResult, Errno>) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::Statx))
+    }
+}
+
+impl Reply<{ COPY_FILE_RANGE_64 }> {
+    pub fn complete(
+        mut self,
+        result: Result<CopyFileRangeResult, Errno>,
+    ) -> Result<(), ReplyError> {
+        self.submit(result.map(Payload::CopyFileRange64))
+    }
+}
+
+impl<const OP: u32> Drop for Reply<OP> {
     fn drop(&mut self) {
-        if let Some(finish) = self.finish.take() {
-            let _ = finish(Err(Errno::EIO));
-        }
+        let _ = self.submit(Err(Errno::EIO));
     }
 }

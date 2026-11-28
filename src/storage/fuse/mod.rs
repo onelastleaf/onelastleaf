@@ -83,7 +83,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::LookupPayload<'_>,
-        reply: Reply<reply::EntryResult>,
+        reply: Reply<{ LOOKUP }>,
     );
 
     /// Corresponds to FUSE opcode 2.
@@ -102,7 +102,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::GetattrPayload,
-        reply: Reply<reply::AttrResult>,
+        reply: Reply<{ GETATTR }>,
     );
 
     /// Corresponds to FUSE opcode 4.
@@ -114,7 +114,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::SetattrPayload,
-        reply: Reply<reply::AttrResult>,
+        reply: Reply<{ SETATTR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -124,7 +124,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. Linux returns the error from this symlink target lookup
     /// and can still send later `FUSE_READLINK` requests.
     #[expect(unused_variables)]
-    fn readlink(&self, header: request::Header, reply: Reply<reply::ReadlinkResult>) {
+    fn readlink(&self, header: request::Header, reply: Reply<{ READLINK }>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -138,7 +138,7 @@ pub trait FileSystem: Send + Sync + 'static {
         header: request::Header,
         payload: request::SymlinkPayload<'_>,
         extensions: Option<request::Extensions<'_>>,
-        reply: Reply<reply::EntryResult>,
+        reply: Reply<{ SYMLINK }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -153,7 +153,7 @@ pub trait FileSystem: Send + Sync + 'static {
         header: request::Header,
         payload: request::MknodPayload<'_>,
         extensions: Option<request::Extensions<'_>>,
-        reply: Reply<reply::EntryResult>,
+        reply: Reply<{ MKNOD }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -168,7 +168,7 @@ pub trait FileSystem: Send + Sync + 'static {
         header: request::Header,
         payload: request::MkdirPayload<'_>,
         extensions: Option<request::Extensions<'_>>,
-        reply: Reply<reply::EntryResult>,
+        reply: Reply<{ MKDIR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -182,7 +182,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::UnlinkPayload<'_>,
-        reply: Reply<()>,
+        reply: Reply<{ UNLINK }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -192,7 +192,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. The directory removal fails, and Linux can still send
     /// later `FUSE_RMDIR` requests.
     #[expect(unused_variables)]
-    fn rmdir(&self, header: request::Header, payload: request::RmdirPayload<'_>, reply: Reply<()>) {
+    fn rmdir(
+        &self,
+        header: request::Header,
+        payload: request::RmdirPayload<'_>,
+        reply: Reply<{ RMDIR }>,
+    ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -205,7 +210,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::RenamePayload<'_>,
-        reply: Reply<()>,
+        reply: Reply<{ RENAME }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -220,7 +225,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::LinkPayload<'_>,
-        reply: Reply<reply::EntryResult>,
+        reply: Reply<{ LINK }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -234,12 +239,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Other opens succeed with `fh = 0` and zero flags and backing IDs. Later `read` and `write`
     /// methods can identify the file through `header.nodeid`.
     #[expect(unused_variables)]
-    fn open(
-        &self,
-        header: request::Header,
-        payload: request::OpenPayload,
-        reply: Reply<reply::OpenResult>,
-    ) {
+    fn open(&self, header: request::Header, payload: request::OpenPayload, reply: Reply<{ OPEN }>) {
         if payload.flags & (libc::O_TRUNC as u32) != 0 {
             let _ = reply.complete(Err(Errno::EOPNOTSUPP));
             return;
@@ -258,12 +258,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. This read request fails, and Linux can still send later
     /// `FUSE_READ` requests.
     #[expect(unused_variables)]
-    fn read(
-        &self,
-        header: request::Header,
-        payload: request::ReadPayload,
-        reply: Reply<reply::ReadResult>,
-    ) {
+    fn read(&self, header: request::Header, payload: request::ReadPayload, reply: Reply<{ READ }>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -277,7 +272,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::WritePayload<'_>,
-        reply: Reply<reply::WriteResult>,
+        reply: Reply<{ WRITE }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -287,7 +282,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. Linux returns the error from this statistics query and
     /// can still send later `FUSE_STATFS` requests.
     #[expect(unused_variables)]
-    fn statfs(&self, header: request::Header, reply: Reply<reply::StatfsResult>) {
+    fn statfs(&self, header: request::Header, reply: Reply<{ STATFS }>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -295,7 +290,12 @@ pub trait FileSystem: Send + Sync + 'static {
     ///
     /// The default acknowledges the file handle release with an empty success reply.
     #[expect(unused_variables)]
-    fn release(&self, header: request::Header, payload: request::ReleasePayload, reply: Reply<()>) {
+    fn release(
+        &self,
+        header: request::Header,
+        payload: request::ReleasePayload,
+        reply: Reply<{ RELEASE }>,
+    ) {
         let _ = reply.complete(Ok(()));
     }
 
@@ -305,7 +305,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// Linux propagates this error. An `ENOSYS` reply would be treated as success and disable later
     /// `FUSE_FSYNC` requests on the connection.
     #[expect(unused_variables)]
-    fn fsync(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
+    fn fsync(
+        &self,
+        header: request::Header,
+        payload: request::FsyncPayload,
+        reply: Reply<{ FSYNC }>,
+    ) {
         let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
@@ -318,7 +323,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::SetxattrPayload<'_>,
-        reply: Reply<()>,
+        reply: Reply<{ SETXATTR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -332,7 +337,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::GetxattrPayload<'_>,
-        reply: Reply<reply::XattrResult>,
+        reply: Reply<{ GETXATTR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -346,7 +351,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::ListxattrPayload,
-        reply: Reply<reply::XattrResult>,
+        reply: Reply<{ LISTXATTR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -360,7 +365,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::RemovexattrPayload<'_>,
-        reply: Reply<()>,
+        reply: Reply<{ REMOVEXATTR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -370,7 +375,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default acknowledges the current `FUSE_FLUSH` request with an empty success reply. Linux
     /// can still send flush requests for later closes.
     #[expect(unused_variables)]
-    fn flush(&self, header: request::Header, payload: request::FlushPayload, reply: Reply<()>) {
+    fn flush(
+        &self,
+        header: request::Header,
+        payload: request::FlushPayload,
+        reply: Reply<{ FLUSH }>,
+    ) {
         let _ = reply.complete(Ok(()));
     }
 
@@ -383,7 +393,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::OpenPayload,
-        reply: Reply<reply::OpenResult>,
+        reply: Reply<{ OPENDIR }>,
     ) {
         let _ = reply.complete(Ok(reply::OpenResult {
             fh: 0,
@@ -402,7 +412,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::ReadPayload,
-        reply: Reply<reply::ReaddirResult>,
+        reply: Reply<{ READDIR }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -415,7 +425,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::ReleasePayload,
-        reply: Reply<()>,
+        reply: Reply<{ RELEASEDIR }>,
     ) {
         let _ = reply.complete(Ok(()));
     }
@@ -426,7 +436,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// unsupported. Linux propagates this error. An `ENOSYS` reply would be treated as success and
     /// disable later `FUSE_FSYNCDIR` requests on the connection.
     #[expect(unused_variables)]
-    fn fsyncdir(&self, header: request::Header, payload: request::FsyncPayload, reply: Reply<()>) {
+    fn fsyncdir(
+        &self,
+        header: request::Header,
+        payload: request::FsyncPayload,
+        reply: Reply<{ FSYNCDIR }>,
+    ) {
         let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
@@ -439,7 +454,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::LockPayload,
-        reply: Reply<reply::LockResult>,
+        reply: Reply<{ GETLK }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -450,7 +465,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// or unlock request. It selects kernel-local locking at `INIT` when the corresponding remote
     /// locking capability is absent.
     #[expect(unused_variables)]
-    fn setlk(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
+    fn setlk(
+        &self,
+        header: request::Header,
+        payload: request::LockPayload,
+        reply: Reply<{ SETLK }>,
+    ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -460,7 +480,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// error. Linux selects local or remote locking at `INIT` and keeps that choice after this
     /// reply.
     #[expect(unused_variables)]
-    fn setlkw(&self, header: request::Header, payload: request::LockPayload, reply: Reply<()>) {
+    fn setlkw(
+        &self,
+        header: request::Header,
+        payload: request::LockPayload,
+        reply: Reply<{ SETLKW }>,
+    ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -469,7 +494,12 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `EACCES`. Linux fails the current permission check and can still
     /// send `FUSE_ACCESS` requests for later checks.
     #[expect(unused_variables)]
-    fn access(&self, header: request::Header, payload: request::AccessPayload, reply: Reply<()>) {
+    fn access(
+        &self,
+        header: request::Header,
+        payload: request::AccessPayload,
+        reply: Reply<{ ACCESS }>,
+    ) {
         let _ = reply.complete(Err(Errno::EACCES));
     }
 
@@ -485,7 +515,7 @@ pub trait FileSystem: Send + Sync + 'static {
         header: request::Header,
         payload: request::CreatePayload<'_>,
         extensions: Option<request::Extensions<'_>>,
-        reply: Reply<reply::CreateResult>,
+        reply: Reply<{ CREATE }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -503,12 +533,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. Linux returns block number zero to indicate that no
     /// mapping is available and disables further `FUSE_BMAP` requests on the connection.
     #[expect(unused_variables)]
-    fn bmap(
-        &self,
-        header: request::Header,
-        payload: request::BmapPayload,
-        reply: Reply<reply::BmapResult>,
-    ) {
+    fn bmap(&self, header: request::Header, payload: request::BmapPayload, reply: Reply<{ BMAP }>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -520,7 +545,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::IoctlPayload<'_>,
-        reply: Reply<reply::IoctlResult>,
+        reply: Reply<{ IOCTL }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOTTY));
     }
@@ -530,12 +555,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default replies with `ENOSYS`. Linux uses its default readable and writable event mask
     /// for this poll and skips further `FUSE_POLL` requests on the connection.
     #[expect(unused_variables)]
-    fn poll(
-        &self,
-        header: request::Header,
-        payload: request::PollPayload,
-        reply: Reply<reply::PollResult>,
-    ) {
+    fn poll(&self, header: request::Header, payload: request::PollPayload, reply: Reply<{ POLL }>) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
 
@@ -568,7 +588,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::FallocatePayload,
-        reply: Reply<()>,
+        reply: Reply<{ FALLOCATE }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -583,7 +603,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::ReadPayload,
-        reply: Reply<reply::ReaddirPlusResult>,
+        reply: Reply<{ READDIRPLUS }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -597,7 +617,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::Rename2Payload<'_>,
-        reply: Reply<()>,
+        reply: Reply<{ RENAME2 }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -613,7 +633,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::LseekPayload,
-        reply: Reply<reply::LseekResult>,
+        reply: Reply<{ LSEEK }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -628,7 +648,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::CopyFileRangePayload,
-        reply: Reply<reply::WriteResult>,
+        reply: Reply<{ COPY_FILE_RANGE }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -642,7 +662,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::SetupmappingPayload,
-        reply: Reply<()>,
+        reply: Reply<{ SETUPMAPPING }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -656,7 +676,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::RemovemappingPayload,
-        reply: Reply<()>,
+        reply: Reply<{ REMOVEMAPPING }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -670,7 +690,7 @@ pub trait FileSystem: Send + Sync + 'static {
     /// The default `INIT` configuration leaves `FUSE_HAS_SYNCFS` unset for kernels that negotiate
     /// it.
     #[expect(unused_variables)]
-    fn syncfs(&self, header: request::Header, reply: Reply<()>) {
+    fn syncfs(&self, header: request::Header, reply: Reply<{ SYNCFS }>) {
         let _ = reply.complete(Err(Errno::EOPNOTSUPP));
     }
 
@@ -684,7 +704,7 @@ pub trait FileSystem: Send + Sync + 'static {
         header: request::Header,
         payload: request::CreatePayload<'_>,
         extensions: Option<request::Extensions<'_>>,
-        reply: Reply<reply::CreateResult>,
+        reply: Reply<{ TMPFILE }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -699,7 +719,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::StatxPayload,
-        reply: Reply<reply::StatxResult>,
+        reply: Reply<{ STATX }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
@@ -715,7 +735,7 @@ pub trait FileSystem: Send + Sync + 'static {
         &self,
         header: request::Header,
         payload: request::CopyFileRangePayload,
-        reply: Reply<reply::CopyFileRangeResult>,
+        reply: Reply<{ COPY_FILE_RANGE_64 }>,
     ) {
         let _ = reply.complete(Err(Errno::ENOSYS));
     }
