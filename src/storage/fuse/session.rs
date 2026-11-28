@@ -381,7 +381,8 @@ impl<FS: FileSystem> Session<FS> {
             }
         };
 
-        let request::Payload::Init(init_payload) = &request.payload else {
+        // Partial move happened here.
+        let request::Payload::Init(init_payload) = request.payload else {
             state
                 .lock()
                 .stop_with_error(SessionError::CannotParseRequest);
@@ -419,46 +420,43 @@ impl<FS: FileSystem> Session<FS> {
             }
         };
 
-        let writeback_cache =
-            (init_config.flags & init_payload.flags).contains(Flags::WRITEBACK_CACHE);
-        if !(1..=2).contains(&init_config.max_stack_depth) || writeback_cache {
-            init_config
-                .flags
-                .remove(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2);
-            init_config.max_stack_depth = 0;
-        }
-
-        let (selected_config, init_reply) = Self::serialize_init(init_payload, init_config);
-
-        // Linux rejects INIT if FUSE_ALLOW_IDMAP is set without VFS permission checks. Either
-        // default_permissions at mount time or FUSE_POSIX_ACL in the INIT reply enables them.
-        let default_permissions = self.mount_options.default_permissions
-            || selected_config.flags.contains(Flags::POSIX_ACL);
-        if selected_config.flags.contains(Flags::ALLOW_IDMAP) && !default_permissions {
-            state.lock().stop_with_error(SessionError::InitFailed);
-            let error = io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "FUSE_ALLOW_IDMAP requires default_permissions or FUSE_POSIX_ACL",
-            );
-            return Err(mounted.rollback(fuse_file, error));
-        }
-
-        if let Err(error) =
-            Self::write_reply(&fuse_file, request.header.unique, Ok(init_reply.as_slice()))
-        {
-            state.lock().stop_with_error(SessionError::InitFailed);
-            return Err(mounted.rollback(fuse_file, error));
-        }
-
-        self.protocol_version = Some(selected_config.protocol_version);
-        self.capabilities = Some(selected_config.flags);
+        let init_unique = request.header.unique;
         let mounted = Arc::new(mounted);
 
-        // Backend callbacks run on this thread. Catch a panic so we can shut down the session.
-        let loop_result = catch_unwind(AssertUnwindSafe(|| {
+        // After successful initialization, complete negotiation and process requests.
+        // Ensure cleanup runs even if either step fails.
+        let run_result = catch_unwind(AssertUnwindSafe(|| {
+            let writeback_cache =
+                (init_config.flags & init_payload.flags).contains(Flags::WRITEBACK_CACHE);
+            if !(1..=2).contains(&init_config.max_stack_depth) || writeback_cache {
+                init_config
+                    .flags
+                    .remove(Flags::PASSTHROUGH | Flags::PASSTHROUGH_V2);
+                init_config.max_stack_depth = 0;
+            }
+
+            let (selected_config, init_reply) = Self::serialize_init(&init_payload, init_config);
+
+            // Linux rejects INIT if FUSE_ALLOW_IDMAP is set without VFS permission checks. Either
+            // default_permissions at mount time or FUSE_POSIX_ACL in the INIT reply enables them.
+            let default_permissions = self.mount_options.default_permissions
+                || selected_config.flags.contains(Flags::POSIX_ACL);
+            if selected_config.flags.contains(Flags::ALLOW_IDMAP) && !default_permissions {
+                let error = io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "FUSE_ALLOW_IDMAP requires default_permissions or FUSE_POSIX_ACL",
+                );
+                return Err((SessionError::InitFailed, error));
+            }
+
+            Self::write_reply(&fuse_file, init_unique, Ok(init_reply.as_slice()))
+                .map_err(|error| (SessionError::InitFailed, error))?;
+
+            self.protocol_version = Some(selected_config.protocol_version);
+            self.capabilities = Some(selected_config.flags);
             self.run_request_loop(&fuse_file, &mounted, state, selected_config, buffer)
         }));
-        let (result, loop_panic) = match loop_result {
+        let (result, run_panic) = match run_result {
             Ok(Ok(exit)) => {
                 let result = match exit {
                     RequestLoopExit::Unmounted => Ok(()),
@@ -476,7 +474,7 @@ impl<FS: FileSystem> Session<FS> {
 
         // Even if destroy panics, update HandleState before letting the thread finish unwinding.
         let destroy_result = catch_unwind(AssertUnwindSafe(|| self.filesystem.destroy()));
-        let panic = match (loop_panic, destroy_result) {
+        let panic = match (run_panic, destroy_result) {
             (Some(payload), Err(destroy_panic)) => {
                 // Keep the first panic. Dropping the second panic payload can itself panic.
                 std::mem::forget(destroy_panic);
