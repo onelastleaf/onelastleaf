@@ -342,17 +342,22 @@ impl<FS: FileSystem> Session<FS> {
     }
 
     fn run(mut self, state: &Mutex<HandleState>) -> io::Result<()> {
-        let (mounted, mut fuse_file) = match Mount::new(
-            &self.mount_point,
-            &self.filesystem.get_name(),
-            self.mount_options,
-        ) {
-            Ok(mounted) => mounted,
-            Err((reason, error)) => {
-                state.lock().stop_with_error(reason);
-                return Err(error);
+        let filesystem_name = match catch_unwind(AssertUnwindSafe(|| self.filesystem.get_name())) {
+            Ok(name) => name,
+            Err(payload) => {
+                state.lock().stop_with_error(SessionError::Panicked);
+                resume_unwind(payload);
             }
         };
+
+        let (mounted, mut fuse_file) =
+            match Mount::new(&self.mount_point, &filesystem_name, self.mount_options) {
+                Ok(mounted) => mounted,
+                Err((reason, error)) => {
+                    state.lock().stop_with_error(reason);
+                    return Err(error);
+                }
+            };
 
         // Receive the INIT packet from the Linux kernel.
         let mut buffer = vec![0u8; MIN_READ_BUFFER_LEN];
