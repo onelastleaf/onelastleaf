@@ -402,11 +402,20 @@ impl<FS: FileSystem> Session<FS> {
             return Err(mounted.rollback(fuse_file, error));
         }
 
-        let mut init_config = match self.filesystem.init() {
-            Ok(config) => config,
-            Err(errno) => {
+        let mut init_config = match catch_unwind(AssertUnwindSafe(|| self.filesystem.init())) {
+            Ok(Ok(config)) => config,
+            Ok(Err(errno)) => {
                 state.lock().stop_with_error(SessionError::InitFailed);
                 return Err(mounted.rollback(fuse_file, errno.into()));
+            }
+            Err(payload) => {
+                drop(fuse_file);
+                let reason = match mounted.unmount() {
+                    Ok(()) => SessionError::Panicked,
+                    Err((reason, _)) => reason,
+                };
+                state.lock().stop_with_error(reason);
+                resume_unwind(payload);
             }
         };
 
