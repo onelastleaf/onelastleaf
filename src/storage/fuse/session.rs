@@ -520,6 +520,8 @@ impl<FS: FileSystem> Session<FS> {
         config: InitConfig,
         mut buffer: Vec<u8>,
     ) -> Result<RequestLoopExit, (SessionError, io::Error)> {
+        // TODO: io_uring support, includes OVER_IO_URING, HAS_IO_URING_BUFPOOL, and
+        // FOPEN_IO_URING_ZERO_COPY
         enum SessionEvent {
             UnmountRequested,
             RepliesReady,
