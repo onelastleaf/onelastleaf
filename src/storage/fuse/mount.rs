@@ -1,18 +1,21 @@
 use super::session::SessionError;
 use nix::{
     errno::Errno,
-    libc::O_NONBLOCK,
+    fcntl::{FcntlArg, OFlag, fcntl},
+    libc::{self, O_NONBLOCK},
     mount::{MntFlags, MsFlags, mount, umount2},
     unistd::{Gid, Uid},
 };
 use std::{
     fs::{self, File, OpenOptions},
     io,
+    mem::{offset_of, size_of, zeroed},
     os::{
-        fd::AsRawFd,
-        unix::{ffi::OsStringExt, fs::OpenOptionsExt},
+        fd::{AsRawFd, FromRawFd, OwnedFd, RawFd},
+        unix::{ffi::OsStringExt, fs::OpenOptionsExt, net::UnixStream},
     },
     path::{Path, PathBuf},
+    process::{Command, Output, Stdio},
 };
 
 /// Options used when mounting a FUSE session.
@@ -25,6 +28,7 @@ pub struct MountOptions {
 
 pub(super) struct Mount {
     fsname: String,
+    unmount_helper: Option<&'static str>,
 }
 
 impl Mount {
@@ -33,17 +37,45 @@ impl Mount {
         filesystem_name: &str,
         options: MountOptions,
     ) -> Result<(Self, File), (SessionError, io::Error)> {
+        let mount_point = fs::canonicalize(mount_point)
+            .map_err(|error| (SessionError::ResolveMountPointFailed, error))?;
+        let suffix: u32 = std::random::random(..);
+        let fsname = format!("{filesystem_name}-{suffix:08x}");
+
+        match Self::mount_direct(&mount_point, &fsname, options) {
+            Ok(fuse_file) => Ok((
+                Self {
+                    fsname,
+                    unmount_helper: None,
+                },
+                fuse_file,
+            )),
+            Err((reason, error)) if error.kind() == io::ErrorKind::PermissionDenied => {
+                Self::mount_with_helper(&mount_point, fsname, options).map_err(|helper_error| {
+                    let error = io::Error::new(
+                        error.kind(),
+                        format!(
+                            "Direct FUSE mount failed: {error}. Helper mount failed: {helper_error}"
+                        ),
+                    );
+                    (reason, error)
+                })
+            }
+            Err(error) => Err(error),
+        }
+    }
+
+    fn mount_direct(
+        mount_point: &Path,
+        fsname: &str,
+        options: MountOptions,
+    ) -> Result<File, (SessionError, io::Error)> {
         let fuse_file = OpenOptions::new()
             .read(true)
             .write(true)
             .custom_flags(O_NONBLOCK)
             .open("/dev/fuse")
             .map_err(|error| (SessionError::NoFuseFile, error))?;
-
-        let mount_point = fs::canonicalize(mount_point)
-            .map_err(|error| (SessionError::ResolveMountPointFailed, error))?;
-        let suffix: u32 = std::random::random(..);
-        let fsname = format!("{filesystem_name}-{suffix:08x}");
 
         let mut mount_options = format!(
             "fd={},rootmode=40000,user_id={},group_id={}",
@@ -56,8 +88,8 @@ impl Mount {
         }
 
         mount(
-            Some(fsname.as_str()),
-            &mount_point,
+            Some(fsname),
+            mount_point,
             Some("fuse"),
             MsFlags::MS_NOSUID | MsFlags::MS_NODEV,
             Some(mount_options.as_str()),
@@ -71,7 +103,76 @@ impl Mount {
             (reason, errno.into())
         })?;
 
-        Ok((Self { fsname }, fuse_file))
+        Ok(fuse_file)
+    }
+
+    fn mount_with_helper(
+        mount_point: &Path,
+        fsname: String,
+        options: MountOptions,
+    ) -> io::Result<(Self, File)> {
+        let mut mount_options = String::from("fsname=");
+        for (index, character) in fsname.char_indices() {
+            if matches!(character, ',' | '\\') {
+                mount_options.push('\\');
+            }
+            mount_options.push(character);
+            if character == ',' && fsname[index + 1..].starts_with("x-") {
+                // Recent fusermount3 versions extract x-* options before unescaping fsname.
+                mount_options.push('\\');
+            }
+        }
+        mount_options.push_str(",nosuid,nodev");
+        if options.default_permissions {
+            mount_options.push_str(",default_permissions");
+        }
+
+        let mut helper = "fusermount3";
+        loop {
+            let (socket, helper_socket) = UnixStream::pair()?;
+            // Pass the socket as fd 0 only in the child.
+            let child = match Command::new(helper)
+                .args(["-o", &mount_options, "--"])
+                .arg(mount_point)
+                .env("_FUSE_COMMFD", "0")
+                .stdin(Stdio::from(OwnedFd::from(helper_socket)))
+                .stdout(Stdio::null())
+                .stderr(Stdio::piped())
+                .spawn()
+            {
+                Ok(child) => child,
+                Err(error)
+                    if helper == "fusermount3" && error.kind() == io::ErrorKind::NotFound =>
+                {
+                    helper = "fusermount";
+                    // libfuse 2 otherwise refuses to mount over a nonempty directory.
+                    mount_options.push_str(",nonempty");
+                    continue;
+                }
+                Err(error) => {
+                    return Err(io::Error::new(
+                        error.kind(),
+                        format!("could not start {helper} ({error})"),
+                    ));
+                }
+            };
+
+            let mounted = Self {
+                fsname,
+                unmount_helper: Some(helper),
+            };
+            // The helper sends one byte and one fd. The socket keeps the fd until we receive it.
+            let result = child.wait_with_output().and_then(|output| {
+                check_helper_status(helper, output)?;
+                let fuse_file = receive_fuse_file(&socket)?;
+                let flags = OFlag::from_bits_retain(fcntl(&fuse_file, FcntlArg::F_GETFL)?);
+                fcntl(&fuse_file, FcntlArg::F_SETFL(flags | OFlag::O_NONBLOCK))?;
+                Ok(fuse_file)
+            });
+            drop(socket);
+            let fuse_file = result.map_err(|error| mounted.cleanup_after_error(error))?;
+            return Ok((mounted, fuse_file));
+        }
     }
 
     pub(super) fn current_mount_point(&self) -> Result<Option<PathBuf>, (SessionError, io::Error)> {
@@ -81,16 +182,27 @@ impl Mount {
     }
 
     pub(super) fn unmount(&self) -> Result<(), (SessionError, io::Error)> {
-        if let Some(mount_point) = self.current_mount_point()? {
-            umount2(&mount_point, MntFlags::MNT_DETACH)
-                .map_err(|errno| (SessionError::UnmountFailed, errno.into()))?;
-        }
-        Ok(())
+        let Some(mount_point) = self.current_mount_point()? else {
+            return Ok(());
+        };
+        let result = if let Some(helper) = self.unmount_helper {
+            Command::new(helper)
+                .args(["-u", "-z", "--"])
+                .arg(&mount_point)
+                .output()
+                .and_then(|output| check_helper_status(helper, output))
+        } else {
+            umount2(&mount_point, MntFlags::MNT_DETACH).map_err(io::Error::from)
+        };
+        result.map_err(|error| (SessionError::UnmountFailed, error))
     }
 
     pub(super) fn rollback(&self, fuse_file: File, error: io::Error) -> io::Error {
         drop(fuse_file);
+        self.cleanup_after_error(error)
+    }
 
+    fn cleanup_after_error(&self, error: io::Error) -> io::Error {
         match self.unmount() {
             Ok(()) => error,
             Err((reason, unmount_error)) => io::Error::new(
@@ -102,6 +214,80 @@ impl Mount {
             ),
         }
     }
+}
+
+fn check_helper_status(helper: &str, output: Output) -> io::Result<()> {
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Err(io::Error::other(format!(
+        "{helper} failed ({}). {}",
+        output.status,
+        stderr.trim(),
+    )))
+}
+
+fn receive_fuse_file(socket: &UnixStream) -> io::Result<File> {
+    #[repr(C)]
+    struct ControlMessage {
+        header: libc::cmsghdr,
+        fd: RawFd,
+    }
+
+    // Exclude the tail padding to give the kernel room for exactly one descriptor.
+    const CONTROL_LEN: usize = offset_of!(ControlMessage, fd) + size_of::<RawFd>();
+    let mut byte = [0u8];
+    let mut iovec = libc::iovec {
+        iov_base: byte.as_mut_ptr().cast(),
+        iov_len: byte.len(),
+    };
+    // Both types contain only integers and pointers, which can be zero initialized.
+    let mut control: ControlMessage = unsafe { zeroed() };
+    let mut message: libc::msghdr = unsafe { zeroed() };
+    message.msg_iov = &mut iovec;
+    message.msg_iovlen = 1;
+    message.msg_control = (&mut control as *mut ControlMessage).cast();
+    let received = loop {
+        message.msg_controllen = CONTROL_LEN as _;
+        // The pointers and lengths refer to live, writable buffers for the duration of recvmsg.
+        let received =
+            unsafe { libc::recvmsg(socket.as_raw_fd(), &mut message, libc::MSG_CMSG_CLOEXEC) };
+        if received >= 0 {
+            break received;
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    };
+
+    // Linux can install a descriptor and set MSG_CTRUNC in the same receive. Take ownership of
+    // the installed descriptor before checking for truncation so the error path also closes it.
+    let fd = (message.msg_controllen as usize == CONTROL_LEN
+        && control.header.cmsg_len as usize == CONTROL_LEN
+        && control.header.cmsg_level == libc::SOL_SOCKET
+        && control.header.cmsg_type == libc::SCM_RIGHTS
+        && control.fd >= 0)
+        .then(|| unsafe { OwnedFd::from_raw_fd(control.fd) });
+    if message.msg_flags & libc::MSG_CTRUNC != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mount helper's FUSE fd message was truncated",
+        ));
+    }
+    if received == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "mount helper closed the socket without sending a FUSE fd",
+        ));
+    }
+    fd.map(File::from).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "mount helper must send exactly one FUSE fd",
+        )
+    })
 }
 
 struct MountInfo<'a> {

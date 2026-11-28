@@ -17,7 +17,7 @@ path = "src/main.rs"
 
 [dependencies]
 xxhash-rust = { version = "0.8", features = ["xxh3"] }
-nix = { version = "0.32", features = ["mount", "user", "event"] }
+nix = { version = "0.32", features = ["mount", "user", "event", "fs"] }
 bitflags = { version = "2.13" }
 
 [dev-dependencies]
